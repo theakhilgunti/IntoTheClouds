@@ -19,7 +19,7 @@ export type OsmBuilding = {
 
 export type OsmContext = {
   building: OsmBuilding | null;
-  chosenBy: "contains-point" | "in-view-direction" | "nearest" | "none";
+  chosenBy: "address-tag" | "geocoder-building" | "contains-point" | "in-view-direction" | "nearest" | "none";
   buildingCount: number;
   /** Unit vector (local frame) from the building toward the nearest road, if any road was found. */
   roadDir: Point | null;
@@ -85,11 +85,31 @@ async function runQuery(query: string): Promise<OsmWay[]> {
   throw lastErr;
 }
 
+export type AddressHint = {
+  /** Street address as matched by the geocoder, e.g. "17 SCHUYLER AVE, LATHAM, NY". */
+  address?: string | null;
+  /** OSM way id of the building Nominatim says holds this address. */
+  wayId?: number | null;
+};
+
+const STREET_WORDS: Record<string, string> = {
+  avenue: "ave", street: "st", road: "rd", drive: "dr", lane: "ln", court: "ct", boulevard: "blvd",
+  place: "pl", circle: "cir", terrace: "ter", highway: "hwy", parkway: "pkwy", north: "n", south: "s", east: "e", west: "w",
+};
+const normStreet = (s: string) =>
+  s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean).map((w) => STREET_WORDS[w] ?? w).join(" ");
+
+/** "17 SCHUYLER AVE, LATHAM, NY" -> { num: "17", street: "schuyler ave" } */
+function parseAddress(a?: string | null): { num: string; street: string } | null {
+  const m = a?.split(",")[0].trim().match(/^(\d+[a-z]?)\s+(.+)$/i);
+  return m ? { num: m[1].toLowerCase(), street: normStreet(m[2]) } : null;
+}
+
 /**
  * Find the house at `origin`. If `heading` (compass degrees the camera faced) is given and the point
  * is not inside any outline, prefer buildings in that direction.
  */
-export async function lookupBuilding(origin: LatLng, heading?: number | null): Promise<OsmContext> {
+export async function lookupBuilding(origin: LatLng, heading?: number | null, hint?: AddressHint): Promise<OsmContext> {
   const q = `[out:json][timeout:20];
 (
   way["building"](around:80,${origin.lat},${origin.lng});
@@ -117,8 +137,23 @@ out tags geom;`;
 
   let building: OsmBuilding | null = null;
   let chosenBy: OsmContext["chosenBy"] = "none";
+  const want = parseAddress(hint?.address);
+  const tagged = want
+    ? buildings.find((b) => {
+        const n = b.tags["addr:housenumber"]?.toLowerCase();
+        const st = b.tags["addr:street"];
+        return n === want.num && !!st && normStreet(st) === want.street;
+      })
+    : undefined;
+  const byWay = hint?.wayId ? buildings.find((b) => b.id === hint.wayId) : undefined;
   const inside = pool.find((b) => pointInPolygon(here, b.ring));
-  if (inside) {
+  if (tagged) {
+    building = tagged;
+    chosenBy = "address-tag";
+  } else if (byWay) {
+    building = byWay;
+    chosenBy = "geocoder-building";
+  } else if (inside) {
     building = inside;
     chosenBy = "contains-point";
   } else if (pool.length) {

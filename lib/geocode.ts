@@ -48,3 +48,13 @@ export async function geocode(address: string, report: SourceReport[]): Promise<
   }
   return null;
 }
+
+/** The OSM building (way id) Nominatim associates with an address, if it points at one. Used to pick the right house. */
+export async function nominatimBuildingId(address: string): Promise<number | null> {
+  try {
+    const j = await getJson(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=jsonv2&limit=1`);
+    return j[0]?.osm_type === "way" ? Number(j[0].osm_id) : null;
+  } catch {
+    return null;
+  }
+}

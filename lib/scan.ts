@@ -3,8 +3,9 @@
  * Every step reports what it used, so the UI can show exactly where each fact came from.
  */
 import { fromLocal, polygonArea, polygonCentroid, type LatLng } from "./geo";
-import { geocode } from "./geocode";
+import { geocode, nominatimBuildingId } from "./geocode";
 import { lookupBuilding, type OsmContext } from "./overpass";
+import { pinnedWayId } from "./pins";
 import { aerialImage, type Image } from "./imagery";
 import { describeHouse, geminiAvailable, geminiModel, type HouseFacts } from "./vision";
 import { buildHouse, type GarageSide } from "./layout";
@@ -66,7 +67,8 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   step("outline", "active");
   let osm: OsmContext | null = null;
   try {
-    osm = await lookupBuilding(origin, input.heading);
+    const wayId = pinnedWayId(address) ?? (address ? await nominatimBuildingId(input.address ?? address) : null);
+    osm = await lookupBuilding(origin, input.heading, { address, wayId });
   } catch (e) {
     sources.push({ id: "osm", name: "OpenStreetMap buildings", status: "failed", detail: `Map server didn't respond (${String(e)}).` });
   }
@@ -80,6 +82,8 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     footprint = b.ring.map(([x, y]) => [x - c[0], y - c[1]] as Point);
     id = `osm-${b.id}`;
     const how = {
+      "address-tag": "its mapped house number and street match your address",
+      "geocoder-building": "the map's address search points to it",
       "contains-point": "the address point is inside it",
       "in-view-direction": "it's the closest building in the direction the camera faced",
       nearest: "it's the closest building to the address point",
@@ -90,6 +94,9 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       detail: `Building outline #${b.id} (${Math.round(b.area)} m²), picked because ${how}. ${osm!.buildingCount} buildings nearby.`,
     });
     step("outline", "done", `${Math.round(b.area)} m² outline`);
+    if (input.address && osm!.chosenBy === "nearest") {
+      warnings.push("We couldn't match this address to a specific mapped building, so we used the closest one. It may be a neighbor. Check it against the aerial photo.");
+    }
     if (NOT_A_HOUSE.has(b.tags.building)) {
       warnings.push(`OpenStreetMap lists this as "${b.tags.building}", not a house. The room layout assumes a home.`);
     }
