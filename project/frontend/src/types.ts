@@ -39,3 +39,19 @@ export interface WifiScan {
   rssi_dbm: number;
 }
 
+
+export interface RFMapBounds {
+  min_x: number;
+  min_y: number;
+  max_x: number;
+  max_y: number;
+}
+
+/** GET /api/map. cells[anchorId][row=y][col=x] is mean dBm or null. */
+export interface RFMapResponse {
+  cell_m: number;
+  bounds: RFMapBounds;
+  width: number;
+  height: number;
+  cells: Record<string, (number | null)[][]>;
+}
