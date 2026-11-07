@@ -7,7 +7,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from .models import BeaconAnchor, FirefighterState, HazardPin, TelemetryPayload
+import numpy as np
 from .fusion.math_engine import ParticleFilterLocalizer
+from .fusion.rf_map import RFMap
 from .explored_session import build_exploration_payload, persist_exploration
 
 logging.basicConfig(level=logging.INFO)
@@ -63,6 +65,8 @@ for _a in DEFAULT_ANCHORS:
 hazards: List[HazardPin] = []
 breadcrumbs: List[Dict[str, float]] = []
 localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=(-2.0, -2.0, 12.0, 12.0))
+# BE-08: per-anchor RSSI heatmap over the same bounds (a signal map, not a floor plan).
+rf_map = RFMap(-2.0, -2.0, 12.0, 12.0, cell_m=0.5)
 current_state: FirefighterState = localizer.get_state("FF_Pi_Rig_1", 0.0, time.time())
 session_started_at: float = time.time()
 
@@ -107,6 +111,28 @@ async def add_hazard(hazard: HazardPin):
     return {"message": "Hazard pinned", "hazard": hazard}
 
 
+@app.get("/api/map")
+async def get_rf_map():
+    """RSSI signal heatmap per anchor id (a signal-coverage map, NOT a floor plan).
+
+    `cells[anchor_id]` is a list of rows; row index follows y (row 0 = y at
+    `bounds.min_y`), column index follows x (column 0 = `bounds.min_x`), so
+    `cells[id][j][i]` covers x in [min_x+i*cell_m, +cell_m), y likewise.
+    Values are mean RSSI in dBm rounded to 1 decimal; unmeasured cells are null.
+    """
+    cells = {}
+    for aid in rf_map.anchor_ids:
+        g = rf_map.grid(aid)
+        cells[aid] = [[None if np.isnan(v) else round(float(v), 1) for v in row] for row in g]
+    return {
+        "cell_m": rf_map.cell_m,
+        "bounds": {"min_x": rf_map.min_x, "min_y": rf_map.min_y, "max_x": rf_map.max_x, "max_y": rf_map.max_y},
+        "width": rf_map.nx,
+        "height": rf_map.ny,
+        "cells": cells,
+    }
+
+
 @app.post("/api/reset")
 async def reset_session():
     global localizer, breadcrumbs, hazards, current_state, session_started_at
@@ -120,6 +146,7 @@ async def reset_session():
     localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=(-2.0, -2.0, 12.0, 12.0))
     breadcrumbs.clear()
     hazards.clear()
+    rf_map.reset()
     session_started_at = time.time()
     current_state = localizer.get_state("FF_Pi_Rig_1", 0.0, session_started_at)
     await broadcast_to_dashboards({
@@ -177,6 +204,12 @@ async def telemetry_endpoint(websocket: WebSocket):
                     heading_deg=pdr.get("heading_deg", 0.0),
                     timestamp=timestamp,
                 )
+
+                # BE-08: record each anchor reading at the estimated position.
+                for scan in wifi_scans:
+                    anchor = anchors.get(str(scan.get("bssid") or "").lower())
+                    if anchor is not None and scan.get("rssi_dbm") is not None:
+                        rf_map.add(anchor.id, current_state.x, current_state.y, scan["rssi_dbm"])
 
                 # Record breadcrumbs
                 if pdr.get("step_detected", False) or len(breadcrumbs) == 0:
