@@ -1,10 +1,10 @@
 /**
- * Bloxburg-style roofs from wall vertices & edges.
+ * Simple sealed roof prisms from footprint volumes.
  *
- * One roof piece per closed wall ring:
- *  - hip  → one trapezoid per eave edge → matching inset ridge verts (same count)
- *  - gable → two slopes from long eaves to a ridge between short-wall midpoints
- *  - flat → opaque deck on the eaves polygon
+ * Each wing is an oriented rectangle:
+ *  - gable → two slope quads + two end triangles along the long axis
+ *  - hip   → same layout with a shortened ridge (hip ends)
+ *  - flat  → opaque deck
  */
 export type Pt = [number, number];
 
@@ -187,42 +187,105 @@ function bbox(poly: Pt[]) {
   return { minX, maxX, minY, maxY, w: maxX - minX, d: maxY - minY };
 }
 
-/** Hip / pyramid: one solid face per wall edge. */
-export function meshHipPiece(poly: Pt[], height: number, out: number[], overhang = 0.3) {
-  const walls = simplifyRing(poly);
-  const eaves = expandOut(walls, overhang);
-  const peak = Math.max(0.3, height);
-  meshDeck(eaves, 0.05, out);
-
-  const box = bbox(eaves);
-  const short = Math.min(box.w, box.d);
-  // Try a few inset depths so concave / odd rings still get a ridge.
-  let ridge: Pt[] | null = null;
-  for (const t of [0.38, 0.28, 0.2, 0.14]) {
-    const cand = insetRing(eaves, Math.max(0.25, short * t));
-    if (cand && cand.length === eaves.length) {
-      ridge = cand;
-      break;
+/**
+ * Oriented bounding box of a ring — used so rotated houses get aligned ridges,
+ * not world-axis AABB garbage.
+ */
+function minAreaRect(ringIn: Pt[]) {
+  const ring = ccw(ringIn);
+  let best: {
+    u: Pt; v: Pt; wU: number; wV: number; center: Pt; minU: number; maxU: number; minV: number; maxV: number; area: number;
+  } | null = null;
+  for (let i = 0; i < ring.length; i++) {
+    const [x1, y1] = ring[i];
+    const [x2, y2] = ring[(i + 1) % ring.length];
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    if (len < 0.05) continue;
+    const u: Pt = [(x2 - x1) / len, (y2 - y1) / len];
+    const v: Pt = [-u[1], u[0]];
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    for (const [x, y] of ring) {
+      const pu = x * u[0] + y * u[1];
+      const pv = x * v[0] + y * v[1];
+      minU = Math.min(minU, pu); maxU = Math.max(maxU, pu);
+      minV = Math.min(minV, pv); maxV = Math.max(maxV, pv);
+    }
+    const area = (maxU - minU) * (maxV - minV);
+    if (!best || area < best.area) {
+      const mu = (minU + maxU) / 2, mv = (minV + maxV) / 2;
+      best = {
+        u, v, wU: maxU - minU, wV: maxV - minV, area, minU, maxU, minV, maxV,
+        center: [mu * u[0] + mv * v[0], mu * u[1] + mv * v[1]],
+      };
     }
   }
-
-  if (!ridge) {
-    const apex: Pt = [(box.minX + box.maxX) / 2, (box.minY + box.maxY) / 2];
-    for (let i = 0; i < eaves.length; i++) {
-      pushTri(out, eaves[i], 0.06, eaves[(i + 1) % eaves.length], 0.06, apex, peak);
-    }
-    return;
+  if (!best) {
+    const box = bbox(ring);
+    return {
+      u: [1, 0] as Pt, v: [0, 1] as Pt, wU: box.w, wV: box.d, area: box.w * box.d,
+      minU: box.minX, maxU: box.maxX, minV: box.minY, maxV: box.maxY,
+      center: [(box.minX + box.maxX) / 2, (box.minY + box.maxY) / 2] as Pt,
+    };
   }
-
-  for (let i = 0; i < eaves.length; i++) {
-    const j = (i + 1) % eaves.length;
-    pushQuad(out, eaves[i], 0.06, eaves[j], 0.06, ridge[j], peak, ridge[i], peak);
-  }
-  meshDeck(ridge, peak, out);
+  return best;
 }
 
-function onRidge(p: Pt, a: Pt, b: Pt, tol = 0.15): boolean {
-  return nearestOnSeg(p, a, b).d < tol;
+function corner(r: ReturnType<typeof minAreaRect>, su: number, sv: number): Pt {
+  return [
+    r.center[0] + r.u[0] * su * (r.wU / 2) + r.v[0] * sv * (r.wV / 2),
+    r.center[1] + r.u[1] * su * (r.wU / 2) + r.v[1] * sv * (r.wV / 2),
+  ];
+}
+
+/**
+ * Gable over the real eaves outline: each wall edge slopes up to the ridge.
+ * Ridge verts are real mesh peaks (not a center fan / pyramid).
+ */
+export function meshGablePiece(poly: Pt[], ridge: [Pt, Pt] | undefined, height: number, out: number[], overhang = 0.3) {
+  const walls = simplifyRing(poly);
+  if (walls.length < 3) return;
+  const eaves = expandOut(walls, overhang);
+  const peak = Math.max(0.3, height);
+  const eaveH = 0.05;
+  const r = ridge && dist(ridge[0], ridge[1]) > 0.25 ? ridge : defaultRidge(eaves, "auto");
+
+  for (let i = 0; i < eaves.length; i++) {
+    const a = eaves[i];
+    const b = eaves[(i + 1) % eaves.length];
+    const na = nearestOnSeg(a, r[0], r[1]).at;
+    const nb = nearestOnSeg(b, r[0], r[1]).at;
+    // Skip the ridge-top edge itself if we ever emit one.
+    if (dist(na, a) < 0.08 && dist(nb, b) < 0.08) continue;
+    if (dist(na, nb) < 0.08) pushTri(out, a, eaveH, b, eaveH, na, peak);
+    else pushQuad(out, a, eaveH, b, eaveH, nb, peak, na, peak);
+  }
+}
+
+/** Compact hip: short ridge + edge-to-ridge slopes (no apex cone, no floor deck). */
+export function meshHipPiece(poly: Pt[], height: number, out: number[], overhang = 0.3) {
+  const walls = simplifyRing(poly);
+  if (walls.length < 3) return;
+  const base = walls.length <= 6 && !isConcave(walls) ? walls : snapToObb(walls);
+  const eaves = expandOut(base, overhang);
+  const peak = Math.max(0.3, height);
+  const eaveH = 0.05;
+  const r = defaultRidge(eaves, "auto");
+  const dx = r[1][0] - r[0][0],
+    dy = r[1][1] - r[0][1];
+  const len = Math.hypot(dx, dy) || 1;
+  const inset = Math.min(len * 0.28, Math.min(...eaves.map((p) => nearestOnSeg(p, r[0], r[1]).d)) * 0.9, len / 2 - 0.1);
+  const ux = dx / len,
+    uy = dy / len;
+  const ridge: [Pt, Pt] = [
+    [r[0][0] + ux * Math.max(0.15, inset), r[0][1] + uy * Math.max(0.15, inset)],
+    [r[1][0] - ux * Math.max(0.15, inset), r[1][1] - uy * Math.max(0.15, inset)],
+  ];
+  meshGablePiece(eaves, ridge, peak, out, 0);
+}
+
+function snapToObb(poly: Pt[]): Pt[] {
+  const r = minAreaRect(poly);
+  return ccw([corner(r, -1, -1), corner(r, 1, -1), corner(r, 1, 1), corner(r, -1, 1)]);
 }
 
 export function splitByRidge(poly: Pt[], a: Pt, b: Pt): { left: Pt[]; right: Pt[] } {
@@ -259,50 +322,27 @@ export function splitByRidge(poly: Pt[], a: Pt, b: Pt): { left: Pt[]; right: Pt[
 }
 
 function defaultRidge(poly: Pt[], along: "width" | "depth" | "auto"): [Pt, Pt] {
-  const box = bbox(poly);
-  const cx = (box.minX + box.maxX) / 2;
-  const cy = (box.minY + box.maxY) / 2;
-  const alongWidth = along === "width" || (along === "auto" && box.w >= box.d);
-  return alongWidth
-    ? [
-        [box.minX + 0.05, cy],
-        [box.maxX - 0.05, cy],
-      ]
-    : [
-        [cx, box.minY + 0.05],
-        [cx, box.maxY - 0.05],
-      ];
-}
-
-/** Gable: ridge edge + slope quads from each wall half (any convex wing, incl. L arms). */
-export function meshGablePiece(poly: Pt[], ridge: [Pt, Pt] | undefined, height: number, out: number[], overhang = 0.3) {
-  const walls = simplifyRing(poly);
-  if (walls.length < 4 || isConcave(walls)) {
-    meshHipPiece(poly, height, out, overhang);
-    return;
+  const r = minAreaRect(poly);
+  const alongU =
+    along === "auto"
+      ? r.wU >= r.wV
+      : along === "width"
+        ? Math.abs(r.u[0]) >= Math.abs(r.u[1])
+        : Math.abs(r.u[1]) >= Math.abs(r.u[0]);
+  // For "width"/"depth" in model frame, prefer world axes when close.
+  let axis = alongU ? r.u : r.v;
+  let half = (alongU ? r.wU : r.wV) / 2 - 0.05;
+  if (along === "width") {
+    axis = Math.abs(r.u[0]) >= Math.abs(r.v[0]) ? r.u : r.v;
+    half = (Math.abs(r.u[0]) >= Math.abs(r.v[0]) ? r.wU : r.wV) / 2 - 0.05;
+  } else if (along === "depth") {
+    axis = Math.abs(r.u[1]) >= Math.abs(r.v[1]) ? r.u : r.v;
+    half = (Math.abs(r.u[1]) >= Math.abs(r.v[1]) ? r.wU : r.wV) / 2 - 0.05;
   }
-
-  const eaves = expandOut(walls, overhang);
-  const peak = Math.max(0.3, height);
-  meshDeck(eaves, 0.05, out);
-
-  const r = ridge && dist(ridge[0], ridge[1]) > 0.25 ? ridge : defaultRidge(eaves, "auto");
-  const { left, right } = splitByRidge(eaves, r[0], r[1]);
-
-  for (const half of [left, right]) {
-    if (half.length < 3) continue;
-    for (let i = 0; i < half.length; i++) {
-      const a = half[i];
-      const b = half[(i + 1) % half.length];
-      if (onRidge(a, r[0], r[1]) && onRidge(b, r[0], r[1])) continue;
-      const na = nearestOnSeg(a, r[0], r[1]).at;
-      const nb = nearestOnSeg(b, r[0], r[1]).at;
-      const ha = onRidge(a, r[0], r[1]) ? peak : 0.06;
-      const hb = onRidge(b, r[0], r[1]) ? peak : 0.06;
-      if (dist(na, nb) < 0.1) pushTri(out, a, ha, b, hb, na, peak);
-      else pushQuad(out, a, ha, b, hb, nb, peak, na, peak);
-    }
-  }
+  return [
+    [r.center[0] - axis[0] * half, r.center[1] - axis[1] * half],
+    [r.center[0] + axis[0] * half, r.center[1] + axis[1] * half],
+  ];
 }
 
 function meshFlatPiece(poly: Pt[], height: number, out: number[]) {
@@ -312,25 +352,16 @@ function meshFlatPiece(poly: Pt[], height: number, out: number[]) {
 function meshWing(wing: RoofWingMesh, out: number[]) {
   if (wing.polygon.length < 3 || Math.abs(signedArea(wing.polygon)) < 0.2) return;
   const h = Math.max(0.25, wing.height);
+  const overhang = 0.3;
   if (wing.shape === "flat") {
     meshFlatPiece(wing.polygon, h, out);
     return;
   }
-  const ring = simplifyRing(wing.polygon);
-  const box = bbox(ring);
-  const aspect = Math.max(box.w, box.d) / Math.max(0.5, Math.min(box.w, box.d));
-  // Gables for elongated convex wings (incl. L arms that join at a T-ridge).
-  const useGable =
-    wing.shape === "gable" &&
-    !!wing.ridge &&
-    !isConcave(ring) &&
-    ring.length >= 4 &&
-    (aspect >= 1.15 || dist(wing.ridge[0], wing.ridge[1]) > 2);
-  if (useGable) {
-    meshGablePiece(wing.polygon, wing.ridge, h, out);
+  if (wing.shape === "hip") {
+    meshHipPiece(wing.polygon, h, out, overhang);
     return;
   }
-  meshHipPiece(wing.polygon, h, out);
+  meshGablePiece(wing.polygon, wing.ridge, h, out, overhang);
 }
 
 function fallbackWings(poly: Pt[], spec: RoofMeshSpec): RoofWingMesh[] {

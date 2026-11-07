@@ -65,6 +65,15 @@ function LabelSprite({
 
 function noopRaycast() {}
 
+/** Stable outline lines — plain Edges flicker away at glancing angles / fog. */
+function SolidEdges({ color, threshold = 12 }: { color: string; threshold?: number }) {
+  return (
+    <Edges threshold={threshold} raycast={noopRaycast} renderOrder={2}>
+      <lineBasicMaterial color={color} depthTest={false} transparent opacity={0.92} toneMapped={false} />
+    </Edges>
+  );
+}
+
 const ROOM_WORDS: Record<Room["type"], string> = {
   living: "Living room",
   kitchen: "Kitchen",
@@ -224,7 +233,7 @@ function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; flo
                 transparent={xray || !wall.exterior}
                 opacity={xray ? 0.9 : wall.exterior ? 1 : faded ? 0.55 : 0.92}
               />
-              {!xray && <Edges color={edge} threshold={15} raycast={noopRaycast} />}
+              {!xray && <SolidEdges color={edge} threshold={12} />}
             </mesh>
             {Array.from({ length: nWin }, (_, k) => {
               const off = -segLen / 2 + (segLen / (nWin + 1)) * (k + 1);
@@ -232,7 +241,7 @@ function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; flo
                 <mesh key={k} position={[off, winY, 0]} raycast={raycast}>
                   <boxGeometry args={[Math.min(0.95, segLen * 0.42), winH, wall.thickness + 0.04]} />
                   <meshStandardMaterial color="#0f3a8e" transparent opacity={0.85} />
-                  <Edges color="#0b2e72" raycast={noopRaycast} />
+                  <SolidEdges color="#0b2e72" threshold={1} />
                 </mesh>
               );
             })}
@@ -255,7 +264,7 @@ function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; flo
                 transparent={xray}
                 opacity={xray ? 0.75 : 1}
               />
-              {!xray && <Edges color="#7a2e18" raycast={noopRaycast} />}
+              {!xray && <SolidEdges color="#7a2e18" threshold={1} />}
             </mesh>
           );
         })}
@@ -424,7 +433,7 @@ function OutbuildingMesh({
               depthWrite
               side={THREE.DoubleSide}
             />
-            <Edges color="#eaf1ff" threshold={20} raycast={noopRaycast} />
+            <SolidEdges color="#eaf1ff" threshold={15} />
           </mesh>
         </group>
       )}
@@ -634,7 +643,7 @@ function RoofMesh({ roof, footprint, baseY, xray }: { roof: Roof; footprint: Poi
         depthWrite={!xray}
         side={THREE.DoubleSide}
       />
-      {!xray && <Edges color="#eaf1ff" threshold={20} raycast={noopRaycast} />}
+      {!xray && <SolidEdges color="#eaf1ff" threshold={15} />}
     </>
   );
   if (!geometry.framed) {
@@ -782,18 +791,30 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
     setTip((current) => (current?.id === id ? null : current));
   };
 
-  const toggleFloor = (lv: number) =>
+  const toggleFloor = (lv: number) => {
     setHidden((h) => {
       const n = new Set(h);
-      if (n.has(lv)) n.delete(lv);
-      else n.add(lv);
+      if (n.has(lv)) {
+        // Showing this floor.
+        n.delete(lv);
+        // Peering into the basement: auto-hide every floor above so their slabs don't cover it.
+        if (lv < 0) {
+          for (const other of levels) if (other > lv) n.add(other);
+        }
+      } else {
+        n.add(lv);
+      }
       return n;
     });
+    if (lv < 0 && hidden.has(lv)) setRoofOn(false);
+  };
 
   const shown = model.floors.filter((f) => !hidden.has(f.level));
   const floorY = (f: Floor) => f.elevation + (exploded ? f.level * EXPLODE_GAP : 0);
   const top = model.floors.find((f) => f.level === topLevel)!;
   const showRoof = !!model.roof && roofOn && !hidden.has(topLevel);
+  // Basement open with ground floor gone → clear the yard/ground disc that sat on top of it.
+  const peeringBasement = shown.some((f) => f.level < 0) && !shown.some((f) => f.level >= 0);
 
   // Frame the camera on the house, whatever its size.
   const { camPos, target, extent, minDist, maxDist, camFar } = useMemo(() => {
@@ -870,7 +891,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
 
   // Plain-English explanation shown above the toolbar on hover, focus, or tap.
   const HELP: Record<string, string> = {
-    floor: "Show or hide this floor. Hide the upper floors to look at the one below.",
+    floor: "Show or hide this floor. Opening the basement hides floors above so you can look down into it.",
     roof: "Show or hide the roof. Turn it off to see straight down into the top floor.",
     explode: "Pulls the floors apart vertically so you can see every level at once. Tap again to stack them back.",
     xray: "See-through mode: walls turn to outlines so you can spot exits (green) and stairs (yellow) through them.",
@@ -911,7 +932,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         <directionalLight position={[extent * 2, extent * 3, extent * 1.5]} intensity={1.0} />
         <directionalLight position={[-extent * 2, extent, -extent * 2]} intensity={0.35} />
 
-        {!xray && (
+        {!xray && !peeringBasement && (
           <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, LAYER_Y.base, 0]} raycast={noopRaycast}>
             <circleGeometry args={[Math.max(90, Math.min(160, extent * 5.5)), 64]} />
             <meshStandardMaterial
@@ -925,17 +946,41 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
             />
           </mesh>
         )}
-        <Line points={footprintLine} color="#eaf1ff" lineWidth={1.5} dashed dashSize={0.45} gapSize={0.3} transparent opacity={xray ? 0.9 : 0.75} raycast={noopRaycast} />
+        <Line
+          points={footprintLine}
+          color="#eaf1ff"
+          lineWidth={1.5}
+          dashed
+          dashSize={0.45}
+          gapSize={0.3}
+          transparent
+          opacity={xray ? 0.9 : peeringBasement ? 0.35 : 0.75}
+          raycast={noopRaycast}
+          depthTest={!peeringBasement}
+        />
 
-        {model.compound?.features.map((feature) => (
-          <SiteFeatureMesh
-            key={feature.id}
-            feature={feature}
-            hovered={tip?.id === feature.id}
-            onOver={showTip}
-            onOut={hideTip}
-          />
-        ))}
+        {!peeringBasement &&
+          model.compound?.features.map((feature) => (
+            <SiteFeatureMesh
+              key={feature.id}
+              feature={feature}
+              hovered={tip?.id === feature.id}
+              onOver={showTip}
+              onOut={hideTip}
+            />
+          ))}
+        {peeringBasement &&
+          model.compound?.features
+            .filter((f) => f.kind === "garage" || f.kind === "shed" || f.kind === "hydrant" || f.kind === "signal" || f.kind === "fence" || f.kind === "trees")
+            .map((feature) => (
+              <SiteFeatureMesh
+                key={feature.id}
+                feature={feature}
+                hovered={tip?.id === feature.id}
+                onOver={showTip}
+                onOut={hideTip}
+              />
+            ))}
 
         {shown.map((floor) => (
           <group key={floor.level} position={[0, floorY(floor), 0]}>

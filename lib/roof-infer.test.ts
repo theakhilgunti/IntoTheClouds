@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyFootprint, inferRoofPlan, joinIntersectingLWings, splitLWings } from "./roof-infer.ts";
+import {
+  classifyFootprint,
+  decomposeRoofVolumes,
+  inferRoofPlan,
+  joinIntersectingLWings,
+  joinMainAndWings,
+  splitLWings,
+} from "./roof-infer.ts";
 import { buildRoofPositions } from "./roof-geom.ts";
 
 const rect: [number, number][] = [
@@ -47,23 +54,17 @@ test("L footprints split into two gable wings", () => {
   for (const w of plan.wings) assert.ok(w.ridge);
 });
 
-test("L roofs: taller primary runs through; shorter ridge joins its body", () => {
+test("L roofs: taller main trunk, lower wing, sealed prism mesh", () => {
   const parts = splitLWings(ell);
   assert.ok(parts.length >= 2);
   const wings = joinIntersectingLWings(parts);
   assert.ok(wings[0].height >= wings[1].height);
   assert.ok(wings[0].ridge && wings[1].ridge);
-  const [a, b] = wings[1].ridge!;
-  const [p0, p1] = wings[0].ridge!;
-  // One end of the short ridge should sit on the tall ridge.
-  const distSeg = (p: [number, number], a0: [number, number], a1: [number, number]) => {
-    const dx = a1[0] - a0[0], dy = a1[1] - a0[1];
-    const l2 = dx * dx + dy * dy || 1;
-    const t = Math.max(0, Math.min(1, ((p[0] - a0[0]) * dx + (p[1] - a0[1]) * dy) / l2));
-    return Math.hypot(p[0] - (a0[0] + t * dx), p[1] - (a0[1] + t * dy));
-  };
-  const joinOk = distSeg(a, p0, p1) < 0.35 || distSeg(b, p0, p1) < 0.35;
-  assert.ok(joinOk, "short wing ridge should T-join the primary ridge");
+  // Each wing keeps a full ridge (no mid-air clip) — length should be meaningful.
+  for (const w of wings) {
+    const [a, b] = w.ridge!;
+    assert.ok(Math.hypot(b[0] - a[0], b[1] - a[1]) > 1.5);
+  }
   const pos = buildRoofPositions(ell, {
     shape: "gable",
     ridgeAlong: "depth",
@@ -71,6 +72,8 @@ test("L roofs: taller primary runs through; shorter ridge joins its body", () =>
     wings,
   });
   assert.ok(pos.length > 40);
+  // No NaNs / degenerate verts.
+  assert.ok(pos.every((n) => Number.isFinite(n)));
 });
 
 test("OSM flat overrides footprint", () => {
@@ -117,4 +120,34 @@ test("a stepped house stays one elongated gable, not a false L", () => {
   let maxY = 0;
   for (let i = 1; i < pos.length; i += 3) maxY = Math.max(maxY, pos[i]);
   assert.ok(maxY > 1.5);
+});
+
+const uShape: [number, number][] = [
+  [0, 0], [14, 0], [14, 4], [10, 4], [10, 10], [4, 10], [4, 4], [0, 4],
+];
+
+test("U footprints decompose into main trunk + wings with lower ridges", () => {
+  const parts = decomposeRoofVolumes(uShape);
+  assert.ok(parts.length >= 2, `expected multiple volumes, got ${parts.length}`);
+  const wings = joinMainAndWings(parts);
+  assert.ok(wings.length >= 2);
+  assert.ok(wings[0].height >= wings[1].height - 1e-6, "main trunk should be tallest");
+  const plan = inferRoofPlan({ footprint: uShape });
+  assert.equal(plan.kind, "wings");
+  const pos = buildRoofPositions(uShape, {
+    shape: "gable",
+    ridgeAlong: "depth",
+    height: wings[0].height,
+    wings: plan.wings,
+  });
+  assert.ok(pos.length > 60);
+});
+
+test("decompose never returns a single twisted volume for an L", () => {
+  const parts = decomposeRoofVolumes(ell);
+  assert.ok(parts.length >= 2);
+  for (const p of parts) {
+    assert.ok(p.length >= 4);
+    assert.equal(p.length, 4, "each volume should be a rectangle");
+  }
 });
