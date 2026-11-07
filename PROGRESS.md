@@ -66,3 +66,4 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 18:22 | Claude Code | DOC-03 | Updated WORK_ORDERS.md for Pi 4, no IMU, laptop anchors: added HW-02a, Ethernet-first link, revised R3-R5 and HW-05 |
 | 18:24 | Claude Code | HW-03 | Added pi_client/scan_benchmark.py (nmcli vs iw scan rate/noise/freshness) and pi_client/README.md; parsers tested on sample data, not yet run on a Pi |
 | 18:34 | Claude Code | DOC-04 | Rewrote WORK_ORDERS.md: usage steps, priority boards, uniform task cards |
+| 18:43 | Claude Code | DOC-05 | Excluded project/ from root tsconfig and eslint so the CloudScan (Vercel) build ignores the Pi/Vite project |
