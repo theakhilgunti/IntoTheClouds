@@ -76,3 +76,4 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 20:40 | Cursor | ST-02 | Scanner walks are the only houses written to the buildings collection. |
 | 20:45 | Cursor | FE-04 | Replaced 3D HTML labels that crashed React when a scanner house loaded. |
 | 21:03 | Claude Code | DOC-08 | Removed stale 'not merged' wording for LC-01/BE-06 in project/README.md and WORK_ORDERS.md; ticked BE-06 |
+| 21:29 | BE-08 subagent | BE-08 | RFMap per-anchor RSSI heatmap (rf_map.py), recorded on telemetry, GET /api/map, cleared on reset; signal map not floor plan |

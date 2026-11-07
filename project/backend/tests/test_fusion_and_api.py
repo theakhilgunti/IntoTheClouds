@@ -172,3 +172,70 @@ def test_signal_only_tracking_converges_near_true_position():
         assert 1.0 / np.sum(pf.weights ** 2) > 1.5   # filter has not collapsed to one point
     state = pf.get_state("t", 0.0, 0.0)
     assert ((state.x - true_x) ** 2 + (state.y - true_y) ** 2) ** 0.5 < 3.0
+
+
+# ---- BE-08: RF heatmap ----
+import json as _json
+import math as _math
+import numpy as _np
+from types import SimpleNamespace
+from app import main as _main
+from app.fusion.rf_map import RFMap
+
+
+def test_rfmap_signal_falls_with_distance():
+    m = RFMap(-2, -2, 12, 12, 0.5)
+    for x in (1.0, 8.0):
+        for _ in range(5):
+            m.add("A1", x, 1.0, -40 - 25 * _math.log10(_math.hypot(x, 1.0)))
+    g = m.grid("A1")
+    row = int((1.0 + 2) // 0.5)
+    assert g[row, int((1.0 + 2) // 0.5)] > g[row, int((8.0 + 2) // 0.5)]
+
+
+def test_rfmap_ignores_bad_points_and_empty_is_nan():
+    m = RFMap(0, 0, 4, 4, 0.5)
+    assert not m.add("A", float("nan"), 1, -50)
+    assert not m.add("A", 1, 1, float("inf"))
+    assert not m.add("A", 99, 1, -50)
+    assert not m.add("A", -1, 1, -50)
+    assert m.anchor_ids == []
+    assert m.add("A", 1.2, 1.2, -50)
+    g = m.grid("A")
+    assert int(_np.isnan(g).sum()) == g.size - 1
+
+
+def test_rfmap_excess_loss_follows_model_and_detects_weaker():
+    m = RFMap(0, 0, 10, 10, 0.5)
+    a = SimpleNamespace(id="A1", x=0.0, y=0.0, p0=-40.0)
+    cx, cy = 5.25, 5.25  # centre of its cell
+    m.add("A1", cx, cy, -40.0 - 25 * _math.log10(_math.hypot(cx, cy)))
+    m.add("A1", 8.25, 2.25, -40.0 - 25 * _math.log10(_math.hypot(8.25, 2.25)) - 10.0)
+    e = m.excess_loss("A1", {"A1": a}, 2.5, -40.0)
+    assert abs(e[int(cy // 0.5), int(cx // 0.5)]) < 1e-6
+    assert abs(e[int(2.25 // 0.5), int(8.25 // 0.5)] - 10.0) < 1e-6
+
+
+def test_api_map_bssid_and_ble_same_grid_null_cells_and_reset():
+    _main.rf_map.reset()
+    try:
+        # Messages are processed in order; the handler finishes this one before
+        # it sees the disconnect when the context exits.
+        with client.websocket_connect("/ws/telemetry") as ws:
+            ws.send_text(_json.dumps({"pdr": {"step_detected": False}, "wifi_scans": [
+                {"bssid": "AA:BB:CC:11:22:33", "rssi_dbm": -55},
+                {"bssid": "ITC-A1", "rssi_dbm": -57}]}))
+        res = client.get("/api/map")
+        assert res.status_code == 200
+        assert "NaN" not in res.text
+        body = _json.loads(res.text)
+        assert list(body["cells"].keys()) == ["A1"]
+        rows = body["cells"]["A1"]
+        assert len(rows) == body["height"] and len(rows[0]) == body["width"]
+        flat = [v for r in rows for v in r]
+        assert None in flat
+        assert [v for v in flat if v is not None] == [-56.0]
+        client.post("/api/reset")
+        assert client.get("/api/map").json()["cells"] == {}
+    finally:
+        _main.rf_map.reset()
