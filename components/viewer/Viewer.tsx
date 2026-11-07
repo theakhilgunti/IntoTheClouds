@@ -99,19 +99,19 @@ const SITE_NOTE: Record<CompoundFeature["source"], string> = {
 };
 
 const ROOM_COLORS: Record<Room["type"], string> = {
-  living: "#1d4fb3",
-  kitchen: "#1f56bd",
-  dining: "#1d4fb3",
-  bedroom: "#1a4aa8",
-  bathroom: "#1f56bd",
-  hallway: "#17409a",
+  living: "#c9daf8",
+  kitchen: "#d3e0f9",
+  dining: "#c9daf8",
+  bedroom: "#bfd3f5",
+  bathroom: "#d3e0f9",
+  hallway: "#b4caf0",
   stair: "#ff8a6b",
-  garage: "#143a8c",
-  utility: "#1f56bd",
-  closet: "#143a8c",
-  office: "#1a4aa8",
-  basement: "#12378a",
-  other: "#17409a",
+  garage: "#a9c0ea",
+  utility: "#d3e0f9",
+  closet: "#a9c0ea",
+  office: "#bfd3f5",
+  basement: "#9db6e4",
+  other: "#b4caf0",
 };
 
 const MARKER_STYLE: Record<MarkerType, { color: string; label: string }> = {
@@ -191,8 +191,8 @@ function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; flo
   const ux = (bx - ax) / len, uy = (by - ay) / len;
   const angle = Math.atan2(by - ay, bx - ax);
   const raycast = passPointer ? noopRaycast : undefined;
-  const color = xray ? (wall.exterior ? "#eaf1ff" : "#9ebcff") : wall.exterior ? "#3470d4" : "#5b8be3";
-  const edge = wall.exterior ? "#eaf1ff" : "#9ebcff";
+  const color = xray ? (wall.exterior ? "#eaf1ff" : "#9ebcff") : wall.exterior ? "#dfe9fc" : "#f3f7ff";
+  const edge = "#0f3a8e";
   const faded = assumed && !wall.exterior;
   const showWindows = !xray && wall.exterior && floor.level >= 0;
   const doors = floor.doors.filter((d) => d.wallId === wall.id);
@@ -216,7 +216,7 @@ function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; flo
               <meshStandardMaterial
                 color={color}
                 emissive={color}
-                emissiveIntensity={xray ? 0 : 0.22}
+                emissiveIntensity={xray ? 0 : 0.3}
                 wireframe={xray}
                 transparent={xray || !wall.exterior}
                 opacity={xray ? 0.9 : wall.exterior ? 1 : faded ? 0.55 : 0.92}
@@ -228,8 +228,8 @@ function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; flo
               return (
                 <mesh key={k} position={[off, winY, 0]} raycast={raycast}>
                   <boxGeometry args={[Math.min(0.95, segLen * 0.42), winH, wall.thickness + 0.04]} />
-                  <meshStandardMaterial color="#9ebcff" transparent opacity={0.4} />
-                  <Edges color="#eaf1ff" raycast={noopRaycast} />
+                  <meshStandardMaterial color="#0f3a8e" transparent opacity={0.85} />
+                  <Edges color="#0b2e72" raycast={noopRaycast} />
                 </mesh>
               );
             })}
@@ -252,7 +252,7 @@ function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; flo
                 transparent={xray}
                 opacity={xray ? 0.75 : 1}
               />
-              {!xray && <Edges color="#eaf1ff" raycast={noopRaycast} />}
+              {!xray && <Edges color="#7a2e18" raycast={noopRaycast} />}
             </mesh>
           );
         })}
@@ -442,7 +442,7 @@ function RoofMesh({ roof, footprint, baseY, xray }: { roof: Roof; footprint: Poi
     <group position={[x, baseY, z]} rotation={[0, roof.rotation, 0]}>
       <mesh geometry={geometry} raycast={noopRaycast}>
         <meshStandardMaterial
-          color={xray ? "#9ebcff" : "#123a8f"}
+          color={xray ? "#9ebcff" : "#1c3f86"}
           wireframe={xray}
           transparent={xray}
           opacity={xray ? 0.35 : 1}
