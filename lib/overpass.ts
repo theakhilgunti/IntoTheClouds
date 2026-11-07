@@ -36,6 +36,8 @@ export type OsmContext = {
   fences: Point[][];
   /** Mapped swimming pools. */
   pools: Point[][];
+  /** Parking lots / parking aisles as closed rings when mapped. */
+  parking: Point[][];
   /** Road centerlines near the house, in meters from the search point. */
   roads: { name: string | null; pts: Point[] }[];
 };
@@ -64,7 +66,8 @@ async function fromOsmApi(o: LatLng, radius: number): Promise<OsmWay[]> {
     const tags = e.tags as Record<string, string>;
     const barrier = tags.barrier && /^(fence|wall|hedge)$/.test(tags.barrier);
     const pool = tags.leisure === "swimming_pool";
-    if (!tags.building && !(tags.highway && ROADS.test(tags.highway)) && !barrier && !pool) continue;
+    const parking = tags.amenity === "parking" || tags.leisure === "parking";
+    if (!tags.building && !(tags.highway && ROADS.test(tags.highway)) && !barrier && !pool && !parking) continue;
     const geometry = (e.nodes as number[]).map((id) => nodes.get(id)).filter(Boolean) as { lat: number; lon: number }[];
     ways.push({ id: e.id, tags: e.tags, geometry });
   }
@@ -72,9 +75,9 @@ async function fromOsmApi(o: LatLng, radius: number): Promise<OsmWay[]> {
 }
 
 /** Try the main OSM API first, then the Overpass mirrors. */
-async function fetchWays(origin: LatLng, overpassQuery: string): Promise<OsmWay[]> {
+async function fetchWays(origin: LatLng, overpassQuery: string, radius = 150): Promise<OsmWay[]> {
   try {
-    return await fromOsmApi(origin, 80);
+    return await fromOsmApi(origin, radius);
   } catch (e) {
     console.warn("OSM API failed, trying Overpass", e);
     return runQuery(overpassQuery);
@@ -121,20 +124,25 @@ function houseLabel(b: OsmBuilding): string {
  * is not inside any outline, prefer buildings in that direction.
  */
 export async function lookupBuilding(origin: LatLng, heading?: number | null, hint?: AddressHint): Promise<OsmContext> {
-  const q = `[out:json][timeout:20];
+  // Wide enough for a full house lot / small campus; denser cities still stay under Overpass limits.
+  const R = 150;
+  const q = `[out:json][timeout:25];
 (
-  way["building"](around:80,${origin.lat},${origin.lng});
-  way["highway"~"^(residential|service|tertiary|secondary|primary|unclassified|living_street)$"](around:70,${origin.lat},${origin.lng});
-  way["barrier"~"^(fence|wall|hedge)$"](around:70,${origin.lat},${origin.lng});
-  way["leisure"="swimming_pool"](around:70,${origin.lat},${origin.lng});
+  way["building"](around:${R},${origin.lat},${origin.lng});
+  way["highway"~"^(residential|service|tertiary|secondary|primary|unclassified|living_street|trunk)$"](around:${R},${origin.lat},${origin.lng});
+  way["barrier"~"^(fence|wall|hedge)$"](around:${R},${origin.lat},${origin.lng});
+  way["leisure"="swimming_pool"](around:${R},${origin.lat},${origin.lng});
+  way["amenity"="parking"](around:${R},${origin.lat},${origin.lng});
+  way["leisure"="parking"](around:${R},${origin.lat},${origin.lng});
 );
 out tags geom;`;
-  const els = await fetchWays(origin, q);
+  const els = await fetchWays(origin, q, R);
 
   const buildings: OsmBuilding[] = [];
   const roads: { name: string | null; pts: Point[] }[] = [];
   const fences: Point[][] = [];
   const pools: Point[][] = [];
+  const parking: Point[][] = [];
   for (const w of els) {
     if (!w.geometry || w.geometry.length < 2) continue;
     const pts = w.geometry.map((g) => toLocal(origin, { lat: g.lat, lng: g.lon }));
@@ -146,6 +154,9 @@ out tags geom;`;
     } else if (w.tags?.leisure === "swimming_pool") {
       const ring = pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1] ? pts.slice(0, -1) : pts;
       if (ring.length >= 3) pools.push(ring);
+    } else if (w.tags?.amenity === "parking" || w.tags?.leisure === "parking") {
+      const ring = pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1] ? pts.slice(0, -1) : pts;
+      if (ring.length >= 3) parking.push(ring);
     } else if (w.tags?.barrier) {
       fences.push(pts);
     }
@@ -236,6 +247,6 @@ out tags geom;`;
 
   return {
     building, chosenBy, buildingCount: buildings.length, nearby, roadDir, roadName, roadDistance,
-    structures: buildings, fences, pools, roads,
+    structures: buildings, fences, pools, parking, roads,
   };
 }

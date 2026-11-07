@@ -9,12 +9,14 @@ import { pinnedWayId } from "./pins";
 import { verifiedInterior } from "./interiors";
 import { aerialImage, type Image } from "./imagery";
 import { describeHouse, describeSite, geminiAvailable, geminiModel, type HouseFacts } from "./vision";
-import { accessFeatures, assembleCompound, boxToPolygon, pickGarage } from "./compound-geom";
+import { accessFeatures, assembleCompound, boxToPolygon, compoundReach, pickGarage } from "./compound-geom";
 import { inNyc, lookupParcel, type ParcelHit } from "./parcel";
 import { buildHouse, type GarageSide } from "./layout";
+import { analyzeAerialRoof } from "./aerial-roof";
+import { inferRoofPlan } from "./roof-infer";
 import { store } from "./store";
 import type { AttributeReport, ScanEvent, ScanResult, SourceReport, StepKey } from "./sources";
-import type { Point, RoofShape } from "@/packages/schema/building-model";
+import type { Point, RoofPlan, RoofShape } from "@/packages/schema/building-model";
 
 export type ScanInput = {
   address?: string;
@@ -141,7 +143,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   if (!input.rescan) {
     const saved = await store.get(id);
     // Empty shells, and address scans from before the lot was drawn, get rebuilt.
-    const stale = !!saved && (saved.model.source === "address" || saved.model.source === "photo") && saved.model.compound?.basis !== "outline-v1";
+    const stale = !!saved && (saved.model.source === "address" || saved.model.source === "photo") && saved.model.compound?.basis !== "compound-v2";
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -189,11 +191,17 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   let aerialHalf = 40;
   const extent = footprint ? Math.max(...footprint.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y)))) : 8;
   try {
-    // Esri refuses to render below ~35 m half-width (beyond its max zoom), so never ask for less than 40.
-    const shot = await aerialImage(center, Math.min(80, Math.max(40, extent * 2.5)));
+    // Wide enough to cover the lot around large footprints; Esri needs ≥ ~40 m half-width.
+    const wantHalf = Math.min(180, Math.max(40, extent * 3.5, footprint ? compoundReach(footprint) * 0.85 : 40));
+    const shot = await aerialImage(center, wantHalf);
     aerial = shot.image;
     aerialHalf = shot.halfSize;
-    sources.push({ id: "esri", name: "Esri World Imagery", status: "used", detail: "Aerial photo centered on the building." });
+    sources.push({
+      id: "esri",
+      name: "Esri World Imagery",
+      status: "used",
+      detail: `Aerial photo (~${Math.round(aerialHalf)} m half-width) centered on the building.`,
+    });
     step("imagery", "done");
   } catch (e) {
     sources.push({ id: "esri", name: "Esri World Imagery", status: "failed", detail: String(e) });
@@ -277,17 +285,60 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     stories = 3;
   }
 
-  let roof: RoofShape = "gable";
-  const area = footprint ? polygonArea(footprint) : 99;
-  if (tags["roof:shape"] && OSM_ROOF[tags["roof:shape"]]) {
-    roof = OSM_ROOF[tags["roof:shape"]];
-    attributes.push({ field: "Roof", value: roof, from: "map", note: `OpenStreetMap roof:shape=${tags["roof:shape"]}` });
-  } else if (sure) {
-    roof = sure.roof_shape;
-    attributes.push({ field: "Roof", value: roof, from: "photos" });
-  } else {
-    roof = area > 350 ? "flat" : "gable";
-    attributes.push({ field: "Roof", value: roof, from: "estimated", note: area > 350 ? "Large footprint" : "Most common roof type" });
+  const aerialCue = aerial ? analyzeAerialRoof(aerial) : null;
+  const inferred = footprint
+    ? inferRoofPlan({
+        footprint,
+        osmTags: tags,
+        aerial: aerialCue,
+        gemini: sure
+          ? { roof_shape: sure.roof_shape, ridge_along: sure.ridge_along ?? "unknown" }
+          : null,
+      })
+    : null;
+  let roof: RoofShape = inferred?.shape ?? "gable";
+  let ridgeAlong: "width" | "depth" | undefined = inferred?.ridgeAlong;
+  let roofPlan: RoofPlan | null = inferred
+    ? {
+        kind: inferred.kind,
+        source: inferred.source,
+        wings: inferred.wings.map((w, i) => ({
+          polygon: w.polygon.map(([x, y]) => [Math.round(x * 1e4) / 1e4, Math.round(y * 1e4) / 1e4] as Point),
+          ridge: w.ridge
+            ? [
+                [Math.round(w.ridge[0][0] * 1e4) / 1e4, Math.round(w.ridge[0][1] * 1e4) / 1e4] as Point,
+                [Math.round(w.ridge[1][0] * 1e4) / 1e4, Math.round(w.ridge[1][1] * 1e4) / 1e4] as Point,
+              ]
+            : undefined,
+          height: w.height,
+          shape: w.shape,
+        })),
+      }
+    : null;
+  // Keep OSM enum map for attribute wording when the tag is present.
+  const osmRoof = tags["roof:shape"] || tags["building:roof:shape"];
+  const roofFrom =
+    inferred?.source === "map" ? "map" : inferred?.source === "photos" ? "photos" : inferred?.source === "aerial" ? "photos" : "estimated";
+  attributes.push({
+    field: "Roof",
+    value: roof,
+    from: roofFrom,
+    note:
+      osmRoof && OSM_ROOF[osmRoof]
+        ? `OpenStreetMap roof:shape=${osmRoof}`
+        : aerialCue?.note
+          ? aerialCue.note
+          : inferred?.source === "footprint"
+            ? "From the mapped outline shape"
+            : undefined,
+  });
+  if (ridgeAlong) {
+    attributes.push({
+      field: "Roof ridge",
+      value: inferred?.kind === "wings" ? "Multi-wing" : ridgeAlong === "depth" ? "Along the long axis" : "Across the short axis",
+      from: roofFrom,
+      note: inferred?.kind === "wings" ? "Split at the footprint jog" : aerialCue?.ridgeBearingDeg != null ? "Aligned with the aerial roof blob" : undefined,
+    });
   }
 
   let garage: GarageSide = "none";
@@ -327,10 +378,12 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const streetDir = osm?.roadDir ?? null;
   const houseCenter = b ? polygonCentroid(b.ring) : ([0, 0] as Point);
   const parcelLocal = lot ? lot.ring.map((p) => toLocal(origin, p)) : null;
+  const reach = footprint ? compoundReach(footprint) : 40;
   const garageRing = pickGarage(
     (osm?.structures ?? []).map((s) => ({ id: s.id, tag: s.tags.building ?? "", ring: s.ring, area: s.area })),
     houseCenter,
     parcelLocal,
+    reach,
   );
   const garageAt = garageRing
     ? (() => {
@@ -360,6 +413,8 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     basement,
     garage,
     roof,
+    ridgeAlong,
+    roofPlan,
     garageAt,
   });
 
@@ -399,6 +454,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     structures: (osm?.structures ?? []).map((s) => ({ id: s.id, tag: s.tags.building ?? "", ring: shift(s.ring), area: s.area })),
     fences: (osm?.fences ?? []).map(shift),
     pools: (osm?.pools ?? []).map(shift),
+    parking: (osm?.parking ?? []).map(shift),
     parcel: lot ? shift(lot.ring.map((p) => toLocal(origin, p))) : null,
     aerial: siteBoxes.flatMap((box) => {
       const polygon = boxToPolygon(box, aerialHalf);
@@ -408,10 +464,12 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const kept = access.some((f) => f.kind === "driveway")
     ? compound.features.filter((f) => !(f.kind === "driveway" && f.source === "aerial"))
     : compound.features;
-  built.model.compound = { features: [...kept, ...access], basis: "outline-v1" };
+  built.model.compound = { features: [...kept, ...access], basis: "compound-v2" };
   if (!verified && built.model.interior) {
-    if (compound.features.some((f) => f.kind === "yard")) {
+    if (compound.features.some((f) => f.kind === "yard" && f.source === "parcel")) {
       built.model.interior.notes.push("The yard is the city tax lot. The street and driveway follow the mapped road.");
+    } else if (compound.features.some((f) => f.kind === "yard")) {
+      built.model.interior.notes.push("The site outline wraps the mapped building and nearby outbuildings.");
     }
     const roomNote = built.notes.find((n) => n.startsWith("About "));
     if (roomNote) built.model.interior.notes.push(roomNote);
@@ -480,7 +538,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     warnings,
     images: aerial ? [{ label: "Aerial view · Esri World Imagery", url: `data:${aerial.mime};base64,${aerial.base64}` }] : [],
     summary: {
-      width: built.width, depth: built.depth, area: Math.round(area), facing: built.facing, stories, streetDir,
+      width: built.width, depth: built.depth, area: Math.round(footprint ? polygonArea(footprint) : built.width * built.depth), facing: built.facing, stories, streetDir,
       nearby: osm?.nearby ?? [],
       match: osm?.chosenBy === "nearest" || osm?.chosenBy === "in-view-direction" ? "nearest" : osm?.chosenBy === "contains-point" ? "point" : "address",
     },

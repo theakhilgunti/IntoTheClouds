@@ -84,7 +84,30 @@ export const Marker = z.object({
 
 export const RoofShape = z.enum(["gable", "hip", "flat", "gambrel", "mansard", "other"]);
 
-/** Optional exterior roof, drawn on top of the highest floor. Oriented rectangle in the model frame. */
+/** One roof wing: eaves polygon plus a ridge segment (or empty ridge for flat). */
+export const RoofWing = z.object({
+  polygon: Polygon,
+  ridge: z.tuple([Point, Point]).optional().describe("Ridge segment in the model frame; omit for flat"),
+  height: z.number().nonnegative(),
+  shape: z.enum(["gable", "hip", "flat"]),
+});
+
+/**
+ * Structured roof inferred from the footprint, OSM, and aerial cues.
+ * Prefer this over a single center peak when present.
+ */
+export const RoofPlan = z.object({
+  kind: z.enum(["flat", "gable", "hip", "wings"]),
+  wings: z.array(RoofWing).min(1),
+  source: z.string().optional().describe("What decided the plan, e.g. map, aerial, footprint"),
+});
+
+/**
+ * Exterior roof on the highest floor.
+ * `polygon` is the eaves outline in the model frame (usually the mapped footprint).
+ * `ridgeAlong` is which plan axis the ridge follows: "depth" = front-to-back, "width" = across the front.
+ * `plan` carries ridge-line / multi-wing structure when inferred.
+ */
 export const Roof = z.object({
   shape: RoofShape,
   center: Point,
@@ -92,6 +115,9 @@ export const Roof = z.object({
   depth: z.number().positive(),
   rotation: z.number().describe("Radians, counter-clockwise from +x (east)"),
   height: z.number().nonnegative().describe("Rise above the top floor's ceiling, meters"),
+  polygon: Polygon.optional().describe("Eaves outline; when set, the roof follows this instead of a rectangle"),
+  ridgeAlong: z.enum(["width", "depth"]).optional().describe("Axis the ridge runs along in the plan frame"),
+  plan: RoofPlan.optional(),
 });
 
 /**
@@ -142,6 +168,8 @@ export const BuildingModel = z.object({
 
 export type Interior = z.infer<typeof Interior>;
 export type RoofShape = z.infer<typeof RoofShape>;
+export type RoofWing = z.infer<typeof RoofWing>;
+export type RoofPlan = z.infer<typeof RoofPlan>;
 export type Roof = z.infer<typeof Roof>;
 
 export type RoomType = z.infer<typeof RoomType>;

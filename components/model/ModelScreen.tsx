@@ -46,7 +46,7 @@ export default function ModelScreen({ id }: { id: string }) {
     const refreshIfEmpty = (scan: SavedScan) => {
       const model = scan.result.model;
       const empty = model.interior?.status === "unknown" && model.floors.every((f) => f.rooms.length === 0);
-      const stale = (model.source === "address" || model.source === "photo") && model.compound?.basis !== "outline-v1";
+      const stale = (model.source === "address" || model.source === "photo") && model.compound?.basis !== "compound-v2";
       if ((!empty && !stale) || !scan.query.address) return;
       const form = new FormData();
       form.append("address", scan.query.address);
