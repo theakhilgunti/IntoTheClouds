@@ -471,7 +471,7 @@ function MarkerPin({ marker }: { marker: Marker }) {
   );
 }
 
-export default function Viewer({ model }: { model: BuildingModel }) {
+export default function Viewer({ model, onReady }: { model: BuildingModel; onReady?: () => void }) {
   const levels = model.floors.map((f) => f.level);
   const topLevel = Math.max(...levels);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
@@ -567,7 +567,11 @@ export default function Viewer({ model }: { model: BuildingModel }) {
 
   return (
     <div ref={wrap} className="relative h-full w-full bg-bp">
-      <Canvas camera={{ position: camPos, fov: 45, near: 0.1, far: 1000 }} shadows={false}>
+      <Canvas
+        camera={{ position: camPos, fov: 45, near: 0.1, far: 1000 }}
+        shadows={false}
+        onCreated={() => requestAnimationFrame(() => requestAnimationFrame(() => onReady?.()))}
+      >
         <color attach="background" args={[xray ? "#0b2e72" : "#0f3a8e"]} />
         <fog attach="fog" args={[xray ? "#0b2e72" : "#0f3a8e", extent * 5, extent * 13]} />
         <hemisphereLight args={["#ffffff", "#3a5fb0", 1.05]} />

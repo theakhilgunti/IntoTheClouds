@@ -4,22 +4,31 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { usePathname, useRouter } from "next/navigation";
 
 /**
- * Page change as a drawing-sheet swap: a blueprint sheet rolls down over the page
- * (rulers ticking along its edges), the route changes underneath, then the sheet lifts away.
- * Internal links are picked up automatically; code that navigates calls `useSheetNav()`.
+ * Page change as a drawing-sheet swap that doubles as the loading screen: a blueprint sheet rolls
+ * down over the page, the route changes underneath, and the sheet stays down until the new page says
+ * it is ready (`useSheetHold`), then lifts away. Internal links are picked up automatically; code
+ * that navigates calls `useSheetNav()`.
  */
 type Phase = "idle" | "down" | "up";
 
 const DOWN_MS = 600;
 const UP_MS = 520;
-const MIN_COVER_MS = 140;
+const MIN_COVER_MS = 700; // long enough to read as a deliberate beat
+const MAX_WAIT_MS = 12000; // never trap the user behind the sheet
 
-const NavContext = createContext<((href: string) => void) | null>(null);
+type Ctx = { go: (href: string) => void; hold: () => () => void };
+const NavContext = createContext<Ctx | null>(null);
 
 export function useSheetNav(): (href: string) => void {
   const router = useRouter();
-  const go = useContext(NavContext);
-  return go ?? ((href: string) => router.push(href));
+  const ctx = useContext(NavContext);
+  return ctx?.go ?? ((href: string) => router.push(href));
+}
+
+/** Call from a page that loads data: the sheet stays down until the returned release is called. */
+export function useSheetHold(): () => () => void {
+  const ctx = useContext(NavContext);
+  return ctx?.hold ?? (() => () => {});
 }
 
 function reducedMotion() {
@@ -31,17 +40,37 @@ export default function SheetTransition({ children }: { children: React.ReactNod
   const pathname = usePathname();
   const [phase, setPhase] = useState<Phase>("idle");
   const phaseRef = useRef<Phase>("idle");
+  const pathRef = useRef(pathname);
   const target = useRef<string | null>(null);
   const coveredAt = useRef(0);
+  const holds = useRef(new Set<symbol>());
+  const liftTimer = useRef<number | null>(null);
   const timers = useRef<number[]>([]);
 
   const set = useCallback((p: Phase) => {
     phaseRef.current = p;
     setPhase(p);
   }, []);
-  const later = useCallback((fn: () => void, ms: number) => {
-    timers.current.push(window.setTimeout(fn, ms));
-  }, []);
+
+  // Lift the sheet once: sheet is down, route has changed, nothing is still loading.
+  const check = useCallback(() => {
+    if (phaseRef.current !== "down" || !coveredAt.current || liftTimer.current != null) return;
+    if (target.current && pathRef.current !== target.current) return;
+    if (holds.current.size > 0) return;
+    const wait = Math.max(0, MIN_COVER_MS - (Date.now() - coveredAt.current));
+    liftTimer.current = window.setTimeout(() => {
+      liftTimer.current = null;
+      if (holds.current.size === 0) set("up");
+    }, wait);
+  }, [set]);
+
+  const hold = useCallback(() => {
+    const key = Symbol("hold");
+    holds.current.add(key);
+    return () => {
+      if (holds.current.delete(key)) check();
+    };
+  }, [check]);
 
   const go = useCallback(
     (href: string) => {
@@ -51,25 +80,27 @@ export default function SheetTransition({ children }: { children: React.ReactNod
       }
       target.current = href.split(/[?#]/)[0];
       set("down");
-      later(() => {
-        coveredAt.current = Date.now();
-        router.push(href);
-      }, DOWN_MS);
-      // Never leave the sheet down if the route doesn't change.
-      later(() => {
-        if (phaseRef.current === "down") set("up");
-      }, DOWN_MS + 4000);
+      timers.current.push(
+        window.setTimeout(() => {
+          coveredAt.current = Date.now();
+          router.push(href);
+          check();
+        }, DOWN_MS),
+        window.setTimeout(() => {
+          if (phaseRef.current === "down") {
+            holds.current.clear();
+            set("up");
+          }
+        }, DOWN_MS + MAX_WAIT_MS),
+      );
     },
-    [router, set, later],
+    [router, set, check],
   );
 
-  // Route changed while the sheet is down: lift it.
   useEffect(() => {
-    if (phaseRef.current !== "down" || !coveredAt.current) return;
-    if (target.current && pathname !== target.current) return;
-    const wait = Math.max(0, MIN_COVER_MS - (Date.now() - coveredAt.current));
-    later(() => set("up"), wait);
-  }, [pathname, set, later]);
+    pathRef.current = pathname;
+    check();
+  }, [pathname, check]);
 
   useEffect(() => {
     if (phase !== "up") return;
@@ -78,7 +109,6 @@ export default function SheetTransition({ children }: { children: React.ReactNod
     return () => window.clearTimeout(t);
   }, [phase, set]);
 
-  // Intercept clicks on internal links.
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
       if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -99,24 +129,28 @@ export default function SheetTransition({ children }: { children: React.ReactNod
     return () => all.forEach((t) => window.clearTimeout(t));
   }, []);
 
-  const y = phase === "down" ? "translateY(0)" : phase === "up" ? "translateY(-102%)" : "translateY(-102%)";
-  const dur = phase === "down" ? DOWN_MS : phase === "up" ? UP_MS : 0;
-
+  const down = phase === "down";
   return (
-    <NavContext.Provider value={go}>
+    <NavContext.Provider value={{ go, hold }}>
       {children}
       <div
         aria-hidden
         className="bp-sheet-swap fixed inset-0 z-[100]"
         style={{
-          transform: y,
-          transition: `transform ${dur}ms cubic-bezier(.55,0,.15,1)`,
+          transform: down ? "translateY(0)" : "translateY(-102%)",
+          transition: `transform ${down ? DOWN_MS : phase === "up" ? UP_MS : 0}ms cubic-bezier(.55,0,.15,1)`,
           visibility: phase === "idle" ? "hidden" : "visible",
           pointerEvents: phase === "idle" ? "none" : "auto",
         }}
       >
         <div className="bp-ruler-x" />
         <div className="bp-ruler-y" />
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 font-data text-[11px] uppercase tracking-[0.2em] text-bp-ink">
+          <svg width="220" height="6" aria-hidden>
+            <line className="bp-route" x1="0" y1="3" x2="220" y2="3" stroke="#ff8a6b" strokeWidth="2.4" />
+          </svg>
+          Loading
+        </div>
       </div>
     </NavContext.Provider>
   );

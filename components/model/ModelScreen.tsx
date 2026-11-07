@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSheetHold } from "@/components/ui/SheetTransition";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -40,6 +41,18 @@ export default function ModelScreen({ id }: { id: string }) {
   const [rescanning, setRescanning] = useState(false);
   const [version, setVersion] = useState(0);
   const [wrongOpen, setWrongOpen] = useState(false);
+  const [viewerReady, setViewerReady] = useState(false);
+  const holdSheet = useSheetHold();
+  const releaseSheet = useRef<(() => void) | null>(null);
+
+  // Keep the page-change sheet down until the model has drawn its first frame.
+  useEffect(() => {
+    releaseSheet.current = holdSheet();
+    return () => releaseSheet.current?.();
+  }, [holdSheet]);
+  useEffect(() => {
+    if (viewerReady || state.kind === "missing") releaseSheet.current?.();
+  }, [viewerReady, state.kind]);
 
   useEffect(() => {
     let cancel = false;
@@ -183,7 +196,7 @@ export default function ModelScreen({ id }: { id: string }) {
 
   return (
     <div className="relative h-full w-full">
-      <Viewer key={`${model.id}-${version}`} model={model} />
+      <Viewer key={`${model.id}-${version}`} model={model} onReady={() => setViewerReady(true)} />
 
       <div className="pointer-events-none absolute left-3 right-3 top-3 flex items-start justify-between gap-3">
         <div className="pointer-events-auto max-w-sm border border-bp-ink/60 bg-bp-deep px-3.5 py-2.5 text-bp-ink">
