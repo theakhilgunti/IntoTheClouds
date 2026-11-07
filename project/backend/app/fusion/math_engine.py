@@ -15,8 +15,10 @@ def estimate_distance_rssi(rssi: float, p0: float = -40.0, n: float = 2.5) -> fl
 
 
 class ParticleFilterLocalizer:
-    def __init__(self, num_particles: int = 500, room_bounds: Tuple[float, float, float, float] = (0.0, 0.0, 15.0, 15.0)):
+    def __init__(self, num_particles: int = 500, room_bounds: Tuple[float, float, float, float] = (0.0, 0.0, 15.0, 15.0),
+                 diffuse_sigma_m: float = 0.3):
         self.num_particles = num_particles
+        self.diffuse_sigma_m = diffuse_sigma_m
         self.min_x, self.min_y, self.max_x, self.max_y = room_bounds
         
         # Initialize particles uniformly across the room bounds
@@ -46,6 +48,18 @@ class ParticleFilterLocalizer:
         
         self.particles[:, 0] = np.clip(self.particles[:, 0] + dx + noise_x, self.min_x, self.max_x)
         self.particles[:, 1] = np.clip(self.particles[:, 1] + dy + noise_y, self.min_y, self.max_y)
+
+    def diffuse(self, sigma_m: float = None):
+        """Random-walk motion model for when there are no steps (no motion sensor).
+
+        Without this, particles never move between signal updates, so resampling
+        piles them onto the same few spots and the filter locks up.
+        """
+        sigma = self.diffuse_sigma_m if sigma_m is None else sigma_m
+        if sigma <= 0:
+            return
+        self.particles[:, 0] = np.clip(self.particles[:, 0] + np.random.normal(0, sigma, self.num_particles), self.min_x, self.max_x)
+        self.particles[:, 1] = np.clip(self.particles[:, 1] + np.random.normal(0, sigma, self.num_particles), self.min_y, self.max_y)
 
     def update_rssi(self, wifi_scans: List[dict], anchors: Dict[str, BeaconAnchor], path_loss_n: float = 2.5):
         """Weight particles by likelihood given RSSI distance measurements."""
