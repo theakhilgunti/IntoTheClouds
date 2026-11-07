@@ -157,8 +157,8 @@ Each card says what to build (**Steps**) and how to know it's finished (**Done w
 - `GET /api/anchors` matches the physical layout.
 - The laptop sees all three anchors from the middle of the room.
 
-### LC-01: Run the Windows Wi-Fi + Bluetooth scan spike
-**Est.** 1 h · **Depends on** none · GitHub issue #28 · Scripts are in `project/laptop_client/` (merged; needs a run on the Windows laptop)
+### LC-01: Run the Windows Wi-Fi + Bluetooth scan spike *(done)*
+**Est.** 1 h · **Depends on** none · GitHub issue #28 · Benchmark data and hybrid decision committed to `project/laptop_client/README.md`.
 **Steps**
 1. Pull that branch. Follow `project/laptop_client/README.md`: set up the 3 phone hotspots (and optionally Bluetooth beacons with the same names).
 2. Run `win_scan_benchmark.py` and `ble_scan_benchmark.py` at 1 m, 3 m and 6 m from one phone.

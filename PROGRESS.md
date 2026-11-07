@@ -9,7 +9,7 @@
 
 | Task ID | Claimed Files / Directories | Owner / Agent | Branch | Status | Timestamp (UTC) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `LC-01` | `project/laptop_client/README.md` | Antigravity | `agent/laptop/LC-01-windows-scan-spike` | 🟡 In Progress | 2026-11-07 22:56 UTC |
+| *None* | *(No active locks — all modules available)* | — | — | ⚪ Open | — |
 
 ---
 
@@ -83,3 +83,4 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 22:10 | Cursor | UI-03 | Checked the lot against the map, drew Simonson Avenue and the driveway to the garage, and sized rooms from how many windows fit. |
 | 22:25 | Cursor | UI-04 | Cut the walls, floors, and roof to the yellow mapped outline instead of the bounding rectangle. |
 | 22:31 | Claude-design | DS-01 | Finished task |
+| 23:20 | Antigravity | LC-01 | Completed LC-01: Windows Wi-Fi and BLE benchmark results recorded, hybrid strategy chosen |
