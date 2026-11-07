@@ -211,19 +211,25 @@ export function applyFloorPlan(
 
   const notes: string[] = [];
   const frontNormals: Record<string, Point> = { top: [0, 1], bottom: [0, -1], left: [-1, 0], right: [1, 0] };
-  let chosen = bestParity[0];
+  // Every rotation whose proportions fit the outline is allowed; among them, prefer the one whose entrance faces the street.
+  const fits = candidates.filter((c) => mismatch(c) <= 1.3);
+  const byFit = [...fits].sort((p, q) => mismatch(p) - mismatch(q));
   const fn = frontNormals[plan.front_side];
+  let chosen = byFit[0];
   if (fn && streetDir) {
-    const score = (c: { a: Point }) => {
-      const b = rot90(c.a);
-      const n: Point = [fn[0] * c.a[0] + fn[1] * b[0], fn[0] * c.a[1] + fn[1] * b[1]];
+    const facing = (c: { a: Point }) => {
+      const bb = rot90(c.a);
+      const n: Point = [fn[0] * c.a[0] + fn[1] * bb[0], fn[0] * c.a[1] + fn[1] * bb[1]];
       return n[0] * streetDir[0] + n[1] * streetDir[1];
     };
-    chosen = score(bestParity[0]) >= score(bestParity[1]) ? bestParity[0] : bestParity[1];
+    chosen = [...fits].sort((p, q) => facing(q) - facing(p) || mismatch(p) - mismatch(q))[0];
+    if (facing(chosen) < 0.5) {
+      notes.push("The entrance on the plan doesn't face the street the map shows. Check that the plan is placed the right way round.");
+    }
   } else {
     notes.push("Couldn't tell which side of the plan is the front, so the plan may be turned 180°. Check the entrance position.");
   }
-  if (worst > 1.12) notes.push("The plan's proportions differ a little from the mapped outline, so it was stretched to fit.");
+  if (mismatch(chosen) > 1.12) notes.push("The plan's proportions differ from the mapped outline, so it was stretched to fit.");
   const a = chosen.a, b = rot90(chosen.a);
   const T = (px: number, py: number): Point => {
     const qx = (px - minX) / Wp - 0.5;
