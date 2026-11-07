@@ -16,6 +16,22 @@ export function parseStreetAddress(a?: string | null): { num: string; street: st
   return line ? { num: line[1].toLowerCase(), street: normStreet(line[2]) } : null;
 }
 
+const PLUTO_SUFFIX: Record<string, string> = {
+  ave: "AVENUE", st: "STREET", rd: "ROAD", dr: "DRIVE", ln: "LANE", ct: "COURT", blvd: "BOULEVARD",
+  pl: "PLACE", cir: "CIRCLE", ter: "TERRACE", hwy: "HIGHWAY", pkwy: "PARKWAY",
+};
+
+/** NYC MapPLUTO spells the street in full, e.g. "213 SIMONSON AVENUE". */
+export function plutoAddress(a?: string | null): string | null {
+  const p = parseStreetAddress(a);
+  if (!p) return null;
+  const parts = p.street.split(" ");
+  const last = parts.pop();
+  if (!last) return null;
+  const suffix = PLUTO_SUFFIX[last] ?? last.toUpperCase();
+  return `${p.num.toUpperCase()} ${[...parts.map((w) => w.toUpperCase()), suffix].join(" ")}`;
+}
+
 export function streetsMatch(a: string, b: string): boolean {
   if (a === b) return true;
   const words = (s: string) => s.split(" ").filter((w) => w && !STREET_SUFFIX.has(w));

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { parseStreetAddress, streetsMatch } from "./address.ts";
+import { parseStreetAddress, plutoAddress, streetsMatch } from "./address.ts";
 
 describe("street address parsing", () => {
   it("reads a Census one-line address", () => {
@@ -15,6 +15,10 @@ describe("street address parsing", () => {
       num: "213",
       street: "simonson ave",
     });
+  });
+
+  it("spells a street the way NYC tax lots do", () => {
+    assert.equal(plutoAddress("213 SIMONSON AVE, STATEN ISLAND, NY, 10303"), "213 SIMONSON AVENUE");
   });
 
   it("treats Avenue and Ave as the same street", () => {

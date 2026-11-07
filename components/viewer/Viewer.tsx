@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
 import { Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type {
   BuildingModel,
+  CompoundFeature,
   Floor,
   Marker,
   MarkerType,
@@ -14,6 +15,7 @@ import type {
   Room,
   Wall,
 } from "@/packages/schema/building-model";
+import { clipPolyToRect, signedArea, splitAtX, type Pt } from "@/lib/outline";
 // Model frame: x = east, y = north. Three.js frame: x = east, y = up, z = south.
 const toXZ = ([x, y]: Point): [number, number] => [x, -y];
 
@@ -21,12 +23,14 @@ function LabelSprite({
   text,
   color,
   textColor = "#111111",
-  scale = [1.8, 0.45, 1],
+  scale,
+  fit = false,
 }: {
   text: string;
   color: string;
   textColor?: string;
   scale?: [number, number, number];
+  fit?: boolean;
 }) {
   const texture = useMemo(() => {
     const canvas = document.createElement("canvas");
@@ -37,7 +41,8 @@ function LabelSprite({
     ctx.fillStyle = color;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = textColor;
-    ctx.font = "bold 64px sans-serif";
+    const font = text.length > 22 ? 36 : text.length > 14 ? 48 : 64;
+    ctx.font = `bold ${font}px sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(text, canvas.width / 2, canvas.height / 2);
@@ -46,12 +51,49 @@ function LabelSprite({
     return map;
   }, [text, color, textColor]);
   if (!texture) return null;
+  const used = scale ?? (fit ? [Math.min(5, 0.16 * text.length + 0.8), 0.42, 1] as [number, number, number] : [1.8, 0.45, 1] as [number, number, number]);
   return (
-    <sprite scale={scale}>
-      <spriteMaterial map={texture} transparent />
+    <sprite scale={used}>
+      <spriteMaterial map={texture} transparent depthTest={false} />
     </sprite>
   );
 }
+
+function noopRaycast() {}
+
+const ROOM_WORDS: Record<Room["type"], string> = {
+  living: "Living room",
+  kitchen: "Kitchen",
+  dining: "Dining room",
+  bedroom: "Bedroom",
+  bathroom: "Bathroom",
+  hallway: "Hall",
+  stair: "Stairs",
+  garage: "Garage",
+  utility: "Utility",
+  closet: "Closet",
+  office: "Office",
+  basement: "Basement",
+  other: "Room",
+};
+
+const SITE_COLOR: Record<CompoundFeature["kind"], string> = {
+  yard: "#1b4332",
+  driveway: "#6b7280",
+  patio: "#a8a29e",
+  pool: "#0e7490",
+  garage: "#9aa0a8",
+  shed: "#78716c",
+  fence: "#e7e5e4",
+  trees: "#166534",
+  road: "#3a3f46",
+};
+
+const SITE_NOTE: Record<CompoundFeature["source"], string> = {
+  map: "From the map",
+  aerial: "From the aerial photo",
+  parcel: "City tax lot",
+};
 
 const ROOM_COLORS: Record<Room["type"], string> = {
   living: "#3b4252",
@@ -99,13 +141,53 @@ function wallSegments(wall: Wall, floor: Floor): Array<[number, number]> {
   return segs;
 }
 
-function WallMesh({ wall, floor, xray }: { wall: Wall; floor: Floor; xray: boolean }) {
+const WINDOW_FOR: Record<Room["type"], { every: number; max: number; h: number; y: number }> = {
+  living: { every: 2.3, max: 2, h: 1.25, y: 0.2 },
+  dining: { every: 2.5, max: 1, h: 1.15, y: 0.2 },
+  kitchen: { every: 2.6, max: 1, h: 1.05, y: 0.25 },
+  bedroom: { every: 2.4, max: 2, h: 1.15, y: 0.22 },
+  bathroom: { every: 1.6, max: 1, h: 0.62, y: 0.5 },
+  office: { every: 2.4, max: 1, h: 1.1, y: 0.22 },
+  hallway: { every: 8, max: 1, h: 0.9, y: 0.3 },
+  stair: { every: 99, max: 0, h: 0, y: 0 },
+  garage: { every: 99, max: 0, h: 0, y: 0 },
+  utility: { every: 4, max: 1, h: 0.7, y: 0.35 },
+  closet: { every: 99, max: 0, h: 0, y: 0 },
+  basement: { every: 99, max: 0, h: 0, y: 0 },
+  other: { every: 3, max: 1, h: 1, y: 0.2 },
+};
+
+function pointInRing(p: Point, ring: Point[]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > p[1] !== yj > p[1] && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** The room just inside this wall, so a bedroom gets one window and a hall gets almost none. */
+function roomBeside(wall: Wall, floor: Floor, mid: Point): Room | null {
+  const len = Math.hypot(wall.b[0] - wall.a[0], wall.b[1] - wall.a[1]) || 1;
+  const nx = -(wall.b[1] - wall.a[1]) / len;
+  const ny = (wall.b[0] - wall.a[0]) / len;
+  for (const sign of [1, -1]) {
+    const p: Point = [mid[0] + nx * sign * 0.45, mid[1] + ny * sign * 0.45];
+    const room = floor.rooms.find((r) => pointInRing(p, r.polygon));
+    if (room) return room;
+  }
+  return null;
+}
+
+function WallMesh({ wall, floor, xray, passPointer }: { wall: Wall; floor: Floor; xray: boolean; passPointer: boolean }) {
   const [ax, ay] = wall.a;
   const [bx, by] = wall.b;
   const len = Math.hypot(bx - ax, by - ay);
   if (len < 0.01) return null;
   const ux = (bx - ax) / len, uy = (by - ay) / len;
   const angle = Math.atan2(by - ay, bx - ax);
+  const raycast = passPointer ? noopRaycast : undefined;
   const color = xray ? (wall.exterior ? "#ef4444" : "#facc15") : wall.exterior ? "#e4ddd0" : "#b6bcc6";
   const showWindows = !xray && wall.exterior && floor.level >= 0;
   const doors = floor.doors.filter((d) => d.wallId === wall.id);
@@ -116,10 +198,15 @@ function WallMesh({ wall, floor, xray }: { wall: Wall; floor: Floor; xray: boole
         const mid = (s + e) / 2;
         const [x, z] = toXZ([ax + ux * mid, ay + uy * mid]);
         const segLen = e - s;
-        const nWin = showWindows ? Math.floor((segLen - 0.8) / 2.4) : 0;
+        const segMid: Point = [ax + ux * mid, ay + uy * mid];
+        const beside = showWindows ? roomBeside(wall, floor, segMid) : null;
+        const budget = beside ? WINDOW_FOR[beside.type] : null;
+        const nWin = budget ? Math.max(0, Math.min(budget.max, Math.floor((segLen - 0.5) / budget.every))) : 0;
+        const winH = budget?.h ?? 1.1;
+        const winY = budget?.y ?? 0.2;
         return (
           <group key={i} position={[x, floor.height / 2, z]} rotation={[0, angle, 0]}>
-            <mesh>
+            <mesh raycast={raycast}>
               <boxGeometry args={[segLen, floor.height, wall.thickness]} />
               <meshStandardMaterial
                 color={color}
@@ -131,8 +218,8 @@ function WallMesh({ wall, floor, xray }: { wall: Wall; floor: Floor; xray: boole
             {Array.from({ length: nWin }, (_, k) => {
               const off = -segLen / 2 + (segLen / (nWin + 1)) * (k + 1);
               return (
-                <mesh key={k} position={[off, 0.25, 0]}>
-                  <boxGeometry args={[0.95, 1.25, wall.thickness + 0.04]} />
+                <mesh key={k} position={[off, winY, 0]} raycast={raycast}>
+                  <boxGeometry args={[Math.min(0.95, segLen * 0.42), winH, wall.thickness + 0.04]} />
                   <meshStandardMaterial color="#1f3b57" emissive="#0b1d2e" roughness={0.2} metalness={0.3} />
                 </mesh>
               );
@@ -147,7 +234,7 @@ function WallMesh({ wall, floor, xray }: { wall: Wall; floor: Floor; xray: boole
           const [x, z] = toXZ([ax + ux * along, ay + uy * along]);
           const h = Math.min(2.1, floor.height - 0.2);
           return (
-            <mesh key={d.id} position={[x, h / 2, z]} rotation={[0, angle, 0]}>
+            <mesh key={d.id} position={[x, h / 2, z]} rotation={[0, angle, 0]} raycast={raycast}>
               <boxGeometry args={[d.width, h, wall.thickness * 0.5]} />
               <meshStandardMaterial
                 color={xray ? "#22c55e" : "#6b3a1f"}
@@ -165,14 +252,22 @@ function WallMesh({ wall, floor, xray }: { wall: Wall; floor: Floor; xray: boole
 
 function RoomSlab({
   room,
+  floorName,
   xray,
   showLabel,
+  hovered,
   onPick,
+  onOver,
+  onOut,
 }: {
   room: Room;
+  floorName: string;
   xray: boolean;
   showLabel: boolean;
+  hovered: boolean;
   onPick: (e: ThreeEvent<MouseEvent>) => void;
+  onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
+  onOut: (id: string) => void;
 }) {
   const geom = useMemo(() => {
     const shape = new THREE.Shape(room.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
@@ -187,64 +282,155 @@ function RoomSlab({
   const isStair = room.type === "stair";
   return (
     <group>
-      <mesh geometry={geom} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]} onClick={onPick}>
+      <mesh
+        geometry={geom}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.04, 0]}
+        onClick={onPick}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          onOver(e, room.id, room.name, `${floorName} · ${ROOM_WORDS[room.type]}`);
+        }}
+        onPointerOut={(e) => {
+          e.stopPropagation();
+          onOut(room.id);
+        }}
+      >
         <meshStandardMaterial
           color={xray && !isStair ? "#111111" : ROOM_COLORS[room.type]}
-          emissive={isStair ? "#facc15" : "#000000"}
-          emissiveIntensity={isStair ? (xray ? 0.8 : 0.3) : 0}
+          emissive={hovered ? "#ffffff" : isStair ? "#facc15" : "#000000"}
+          emissiveIntensity={hovered ? 0.35 : isStair ? (xray ? 0.8 : 0.3) : 0}
           side={THREE.DoubleSide}
         />
       </mesh>
-      {showLabel && (
-        <group position={[center[0], 0.45, center[1]]}>
-          <LabelSprite text={room.name} color="#111111" textColor="#ffffff" />
+      {(showLabel || hovered) && (
+        <group position={[center[0], 0.7, center[1]]}>
+          <LabelSprite text={room.name} color="#111111" textColor="#ffffff" fit />
         </group>
       )}
     </group>
   );
 }
 
-/** Roof geometry for an oriented rectangle. Ridge runs along the longer side. */
-function RoofMesh({ roof, baseY, xray }: { roof: Roof; baseY: number; xray: boolean }) {
-  const overhang = roof.shape === "flat" ? 0.1 : 0.45;
-  const W = roof.width + overhang * 2;
-  const D = roof.depth + overhang * 2;
-  const ridgeAlongWidth = W >= D;
-  const span = ridgeAlongWidth ? D : W;
-  const length = ridgeAlongWidth ? W : D;
-  const h = roof.height;
+function SiteFeatureMesh({
+  feature,
+  hovered,
+  onOver,
+  onOut,
+}: {
+  feature: CompoundFeature;
+  hovered: boolean;
+  onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
+  onOut: (id: string) => void;
+}) {
+  const geom = useMemo(() => {
+    const shape = new THREE.Shape(feature.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
+    if (feature.kind === "yard" || feature.kind === "trees") return new THREE.ShapeGeometry(shape);
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: Math.max(0.06, feature.height), bevelEnabled: false });
+    geo.rotateX(-Math.PI / 2);
+    return geo;
+  }, [feature]);
+  const center = useMemo(() => {
+    const n = feature.polygon.length || 1;
+    const c = feature.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]] as Point, [0, 0] as Point);
+    return toXZ([c[0] / n, c[1] / n]);
+  }, [feature.polygon]);
+  const hover = (e: ThreeEvent<PointerEvent>) => {
+    e.stopPropagation();
+    onOver(e, feature.id, feature.label, SITE_NOTE[feature.source]);
+  };
+  if (feature.kind === "trees") {
+    return (
+      <group position={[center[0], 0, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
+        <mesh position={[0, 1.1, 0]}>
+          <cylinderGeometry args={[0.14, 0.2, 2.2, 6]} />
+          <meshStandardMaterial color="#5c4033" />
+        </mesh>
+        <mesh position={[0, 2.8, 0]}>
+          <coneGeometry args={[1.3, 2.4, 7]} />
+          <meshStandardMaterial color={hovered ? "#4ade80" : SITE_COLOR.trees} />
+        </mesh>
+      </group>
+    );
+  }
+  const flat = feature.kind === "yard";
+  const lift = feature.kind === "driveway" || feature.kind === "road" || feature.kind === "patio" || feature.kind === "pool" ? 0.03 : 0;
+  return (
+    <mesh
+      geometry={geom}
+      rotation={flat ? [-Math.PI / 2, 0, 0] : [0, 0, 0]}
+      position={[0, flat ? -0.03 : lift, 0]}
+      onPointerOver={hover}
+      onPointerOut={() => onOut(feature.id)}
+    >
+      <meshStandardMaterial
+        color={SITE_COLOR[feature.kind]}
+        emissive={hovered ? "#ffffff" : "#000000"}
+        emissiveIntensity={hovered ? 0.25 : 0}
+        roughness={0.95}
+        transparent={feature.kind === "pool"}
+        opacity={feature.kind === "pool" ? 0.9 : 1}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
 
-  const geometry = useMemo(() => {
-    const s = span / 2;
-    switch (roof.shape) {
-      case "flat":
-        return new THREE.BoxGeometry(span, h, length).translate(0, h / 2, 0);
-      case "hip": {
-        const g = new THREE.ConeGeometry(Math.SQRT1_2, 1, 4, 1).rotateY(Math.PI / 4);
-        return g.scale(span, h, length).translate(0, h / 2, 0);
-      }
-      case "mansard": {
-        const g = new THREE.CylinderGeometry(Math.SQRT1_2 * 0.62, Math.SQRT1_2, 1, 4, 1).rotateY(Math.PI / 4);
-        return g.scale(span, h, length).translate(0, h / 2, 0);
-      }
-      case "gambrel": {
-        const shape = new THREE.Shape([
-          new THREE.Vector2(-s, 0), new THREE.Vector2(s, 0), new THREE.Vector2(s * 0.62, h * 0.62),
-          new THREE.Vector2(0, h), new THREE.Vector2(-s * 0.62, h * 0.62),
-        ]);
-        return new THREE.ExtrudeGeometry(shape, { depth: length, bevelEnabled: false }).translate(0, 0, -length / 2);
-      }
-      default: {
-        const shape = new THREE.Shape([new THREE.Vector2(-s, 0), new THREE.Vector2(s, 0), new THREE.Vector2(0, h)]);
-        return new THREE.ExtrudeGeometry(shape, { depth: length, bevelEnabled: false }).translate(0, 0, -length / 2);
+function plateGeometry(parts: Pt[][], heightAt: (p: Pt) => number): THREE.BufferGeometry | null {
+  const positions: number[] = [];
+  for (const part of parts) {
+    if (part.length < 3 || Math.abs(signedArea(part)) < 0.2) continue;
+    let faces: number[][] = [];
+    try {
+      faces = THREE.ShapeUtils.triangulateShape(part.map((p) => new THREE.Vector2(p[0], p[1])), []);
+    } catch {
+      continue;
+    }
+    for (const face of faces) {
+      for (const idx of face) {
+        const p = part[idx];
+        if (!p) continue;
+        positions.push(p[0], heightAt(p), -p[1]);
       }
     }
-  }, [roof.shape, span, length, h]);
+  }
+  if (positions.length < 9) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Roof sits on the mapped outline. The ridge runs down the middle; the eaves follow the yellow line. */
+function RoofMesh({ roof, footprint, baseY, xray }: { roof: Roof; footprint: Point[]; baseY: number; xray: boolean }) {
+  const geometry = useMemo(() => {
+    const cos = Math.cos(roof.rotation);
+    const sin = Math.sin(roof.rotation);
+    const local = footprint.map(([x, y]) => {
+      const dx = x - roof.center[0];
+      const dy = y - roof.center[1];
+      return [dx * cos + dy * sin, -dx * sin + dy * cos] as Pt;
+    });
+    const plate = clipPolyToRect(local, {
+      x0: -roof.width / 2,
+      y0: -roof.depth / 2,
+      x1: roof.width / 2,
+      y1: roof.depth / 2,
+    });
+    const h = roof.height;
+    if (roof.shape === "flat") return plateGeometry([plate], () => h);
+    const xs = plate.map((p) => p[0]);
+    const ridge = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0;
+    const { neg, pos } = splitAtX(plate, ridge);
+    return plateGeometry([neg, pos], (p) => (Math.abs(p[0] - ridge) < 0.08 ? h : 0))
+      ?? new THREE.BoxGeometry(roof.width, Math.max(0.2, h), roof.depth).translate(0, h / 2, 0);
+  }, [roof, footprint]);
 
   const [x, z] = toXZ(roof.center);
+  if (!geometry) return null;
   return (
     <group position={[x, baseY, z]} rotation={[0, roof.rotation, 0]}>
-      <mesh geometry={geometry} rotation={[0, ridgeAlongWidth ? Math.PI / 2 : 0, 0]}>
+      <mesh geometry={geometry} raycast={noopRaycast}>
         <meshStandardMaterial
           color={xray ? "#ef4444" : "#4a4f57"}
           wireframe={xray}
@@ -284,6 +470,28 @@ export default function Viewer({ model }: { model: BuildingModel }) {
   const [tool, setTool] = useState<MarkerType | null>(null);
   const [marksOpen, setMarksOpen] = useState(false);
   const [markers, setMarkers] = useState<Marker[]>(model.markers);
+  const wrap = useRef<HTMLDivElement>(null);
+  const [tip, setTip] = useState<{ id: string; title: string; detail: string; x: number; y: number } | null>(null);
+
+  const showTip = (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => {
+    const rect = wrap.current?.getBoundingClientRect();
+    const canvas = e.nativeEvent.target;
+    if (canvas instanceof HTMLElement) canvas.style.cursor = "pointer";
+    const rawX = e.nativeEvent.clientX - (rect?.left ?? 0) + 14;
+    const rawY = e.nativeEvent.clientY - (rect?.top ?? 0) + 16;
+    setTip({
+      id,
+      title,
+      detail,
+      x: Math.max(8, Math.min(rawX, (rect?.width ?? 320) - 176)),
+      y: Math.max(8, Math.min(rawY, (rect?.height ?? 240) - 56)),
+    });
+  };
+  const hideTip = (id: string) => {
+    const canvas = wrap.current?.querySelector("canvas");
+    if (canvas) canvas.style.cursor = "";
+    setTip((current) => (current?.id === id ? null : current));
+  };
 
   const toggleFloor = (lv: number) =>
     setHidden((h) => {
@@ -300,7 +508,10 @@ export default function Viewer({ model }: { model: BuildingModel }) {
 
   // Frame the camera on the house, whatever its size.
   const { camPos, target, extent } = useMemo(() => {
-    const pts = model.floors.flatMap((f) => f.walls.flatMap((w) => [w.a, w.b]));
+    const pts = [
+      ...model.floors.flatMap((f) => f.walls.flatMap((w) => [w.a, w.b])),
+      ...(model.compound?.features.flatMap((f) => f.polygon) ?? []),
+    ];
     const ext = Math.max(6, ...pts.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y))));
     const height = top.elevation + top.height + (model.roof?.height ?? 0);
     // Portrait screens see less width, so back the camera off further.
@@ -343,7 +554,7 @@ export default function Viewer({ model }: { model: BuildingModel }) {
     }`;
 
   return (
-    <div className="relative h-full w-full bg-neutral-950">
+    <div ref={wrap} className="relative h-full w-full bg-neutral-950">
       <Canvas camera={{ position: camPos, fov: 45, near: 0.1, far: 1000 }} shadows={false}>
         <color attach="background" args={[xray ? "#050505" : "#0d1420"]} />
         <hemisphereLight args={["#dbe7ff", "#2a2a2a", 0.9]} />
@@ -351,12 +562,22 @@ export default function Viewer({ model }: { model: BuildingModel }) {
         <directionalLight position={[-extent * 2, extent, -extent * 2]} intensity={0.35} />
 
         {!xray && (
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]}>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.08, 0]} raycast={noopRaycast}>
             <circleGeometry args={[extent * 3, 48]} />
             <meshStandardMaterial color="#1c2a1f" transparent opacity={hidden.size || exploded ? 0.35 : 0.85} />
           </mesh>
         )}
-        <Line points={footprintLine} color="#facc15" lineWidth={1.5} transparent opacity={xray ? 0.9 : 0.5} />
+        <Line points={footprintLine} color="#facc15" lineWidth={1.5} transparent opacity={xray ? 0.9 : 0.5} raycast={noopRaycast} />
+
+        {model.compound?.features.map((feature) => (
+          <SiteFeatureMesh
+            key={feature.id}
+            feature={feature}
+            hovered={tip?.id === feature.id}
+            onOver={showTip}
+            onOut={hideTip}
+          />
+        ))}
 
         {shown.map((floor) => (
           <group key={floor.level} position={[0, floorY(floor), 0]}>
@@ -364,13 +585,17 @@ export default function Viewer({ model }: { model: BuildingModel }) {
               <RoomSlab
                 key={room.id}
                 room={room}
+                floorName={floor.name}
                 xray={xray}
                 showLabel={shown.length === 1 || exploded}
+                hovered={tip?.id === room.id}
                 onPick={dropMarker(floor)}
+                onOver={showTip}
+                onOut={hideTip}
               />
             ))}
             {floor.walls.map((wall) => (
-              <WallMesh key={wall.id} wall={wall} floor={floor} xray={xray} />
+              <WallMesh key={wall.id} wall={wall} floor={floor} xray={xray} passPointer={!tool} />
             ))}
             {markers
               .filter((m) => m.floor === floor.level)
@@ -380,11 +605,29 @@ export default function Viewer({ model }: { model: BuildingModel }) {
           </group>
         ))}
 
-        {showRoof && <RoofMesh roof={model.roof!} baseY={floorY(top) + top.height} xray={xray} />}
+        {showRoof && (
+          <RoofMesh roof={model.roof!} footprint={model.footprint} baseY={floorY(top) + top.height} xray={xray} />
+        )}
 
         <gridHelper args={[extent * 6, Math.round(extent * 3), "#333", "#1a1a1a"]} position={[0, -2.7, 0]} />
-        <OrbitControls makeDefault target={target} maxPolarAngle={Math.PI * 0.49} minDistance={4} maxDistance={extent * 8} />
+        <OrbitControls
+          makeDefault
+          target={target}
+          maxPolarAngle={Math.PI * 0.49}
+          minDistance={4}
+          maxDistance={extent * 8}
+          onStart={() => setTip(null)}
+        />
       </Canvas>
+      {tip && (
+        <div
+          className="pointer-events-none absolute z-10 max-w-[11rem] rounded-md bg-black/90 px-2.5 py-1.5 text-white shadow-lg"
+          style={{ left: tip.x, top: tip.y }}
+        >
+          <div className="text-xs font-medium leading-snug">{tip.title}</div>
+          <div className="text-[11px] leading-snug text-neutral-400">{tip.detail}</div>
+        </div>
+      )}
 
       <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-3">
         <div className="pointer-events-auto flex max-w-full gap-1 overflow-x-auto rounded-full bg-black/40 p-1 backdrop-blur">

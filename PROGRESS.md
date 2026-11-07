@@ -77,3 +77,6 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 20:45 | Cursor | FE-04 | Replaced 3D HTML labels that crashed React when a scanner house loaded. |
 | 21:03 | Claude Code | DOC-08 | Removed stale 'not merged' wording for LC-01/BE-06 in project/README.md and WORK_ORDERS.md; ticked BE-06 |
 | 21:15 | Cursor | UI-01 | Address match uses the house number, not the closest outline; typical interiors are drawn; the model page no longer covers the house. |
+| 21:55 | Cursor | UI-02 | Draws the city lot and mapped garage around the house, and shows the room name when a room is hovered. |
+| 22:10 | Cursor | UI-03 | Checked the lot against the map, drew Simonson Avenue and the driveway to the garage, and sized rooms from how many windows fit. |
+| 22:25 | Cursor | UI-04 | Cut the walls, floors, and roof to the yellow mapped outline instead of the bounding rectangle. |

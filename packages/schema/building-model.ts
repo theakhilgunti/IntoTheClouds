@@ -108,6 +108,23 @@ export const Interior = z.object({
   notes: z.array(z.string()).default([]).describe("Caveats, e.g. placement unconfirmed"),
 });
 
+export const CompoundKind = z.enum(["yard", "garage", "shed", "driveway", "patio", "pool", "fence", "trees", "road"]);
+
+/** A lot, outbuilding, or surface around the house. Approximate: map lot, mapped shed, or an aerial box. */
+export const CompoundFeature = z.object({
+  id: z.string(),
+  kind: CompoundKind,
+  label: z.string(),
+  polygon: Polygon,
+  height: z.number().nonnegative().default(0),
+  source: z.enum(["map", "aerial", "parcel"]),
+});
+
+export const Compound = z.object({
+  features: z.array(CompoundFeature),
+  basis: z.string().optional().describe("Set when the lot, street, and driveway pass has run"),
+});
+
 export const BuildingModel = z.object({
   id: z.string(),
   source: z.enum(["photo", "address", "wifi", "upload", "demo"]),
@@ -120,6 +137,7 @@ export const BuildingModel = z.object({
   markers: z.array(Marker).default([]),
   roof: Roof.optional(),
   interior: Interior.optional().describe("Absent on old scans and the demo house"),
+  compound: Compound.optional().describe("Lot, outbuildings, and surfaces around the house. Absent on older scans."),
 });
 
 export type Interior = z.infer<typeof Interior>;
@@ -134,4 +152,7 @@ export type Stairs = z.infer<typeof Stairs>;
 export type Floor = z.infer<typeof Floor>;
 export type MarkerType = z.infer<typeof MarkerType>;
 export type Marker = z.infer<typeof Marker>;
+export type CompoundKind = z.infer<typeof CompoundKind>;
+export type CompoundFeature = z.infer<typeof CompoundFeature>;
+export type Compound = z.infer<typeof Compound>;
 export type BuildingModel = z.infer<typeof BuildingModel>;

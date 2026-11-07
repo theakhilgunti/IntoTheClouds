@@ -18,7 +18,7 @@ function exportUrl(c: LatLng, halfSize: number) {
  * Esri's export sometimes returns HTTP 500 for tight crops (beyond the zoom it has cached there),
  * so we step out to wider views until one renders.
  */
-export async function aerialImage(c: LatLng, halfSize: number): Promise<Image> {
+export async function aerialImage(c: LatLng, halfSize: number): Promise<{ image: Image; halfSize: number }> {
   const sizes = [halfSize, 60, 80, 110].filter((s, i, a) => s >= halfSize && a.indexOf(s) === i);
   let lastErr: unknown;
   for (const size of sizes) {
@@ -27,7 +27,7 @@ export async function aerialImage(c: LatLng, halfSize: number): Promise<Image> {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
       if (buf.length < 2000) throw new Error("empty image");
-      return { base64: buf.toString("base64"), mime: "image/jpeg" };
+      return { image: { base64: buf.toString("base64"), mime: "image/jpeg" }, halfSize: size };
     } catch (e) {
       lastErr = e;
     }

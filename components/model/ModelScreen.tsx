@@ -44,8 +44,10 @@ export default function ModelScreen({ id }: { id: string }) {
   useEffect(() => {
     let cancel = false;
     const refreshIfEmpty = (scan: SavedScan) => {
-      const empty = scan.result.model.interior?.status === "unknown" && scan.result.model.floors.every((f) => f.rooms.length === 0);
-      if (!empty || !scan.query.address) return;
+      const model = scan.result.model;
+      const empty = model.interior?.status === "unknown" && model.floors.every((f) => f.rooms.length === 0);
+      const stale = (model.source === "address" || model.source === "photo") && model.compound?.basis !== "outline-v1";
+      if ((!empty && !stale) || !scan.query.address) return;
       const form = new FormData();
       form.append("address", scan.query.address);
       form.append("rescan", "1");
@@ -170,7 +172,11 @@ export default function ModelScreen({ id }: { id: string }) {
     interior?.status === "verified"
       ? "Rooms from your floor plan"
       : interior?.status === "estimated"
-        ? "Outline from the map · rooms are a typical layout"
+        ? model.compound?.features.some((f) => f.kind === "driveway" || f.kind === "road")
+          ? "Street and driveway from the map · rooms follow the footprint"
+          : model.compound?.features.some((f) => f.kind === "yard")
+            ? "City lot around the house · rooms follow the footprint"
+            : "Outline from the map · rooms follow the footprint"
         : state.kind === "demo"
           ? "Sample house"
           : "Outline from the map";

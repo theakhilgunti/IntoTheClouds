@@ -2,13 +2,15 @@
  * The scan pipeline: address or photo location -> building outline -> imagery -> photo reading -> 3D model.
  * Every step reports what it used, so the UI can show exactly where each fact came from.
  */
-import { fromLocal, polygonArea, polygonCentroid, type LatLng } from "./geo";
+import { fromLocal, pointInPolygon, polygonArea, polygonCentroid, toLocal, type LatLng } from "./geo";
 import { geocode, nominatimBuildingId } from "./geocode";
 import { lookupBuilding, type OsmContext } from "./overpass";
 import { pinnedWayId } from "./pins";
 import { verifiedInterior } from "./interiors";
 import { aerialImage, type Image } from "./imagery";
-import { describeHouse, geminiAvailable, geminiModel, type HouseFacts } from "./vision";
+import { describeHouse, describeSite, geminiAvailable, geminiModel, type HouseFacts } from "./vision";
+import { accessFeatures, assembleCompound, boxToPolygon, pickGarage } from "./compound-geom";
+import { inNyc, lookupParcel, type ParcelHit } from "./parcel";
 import { buildHouse, type GarageSide } from "./layout";
 import { store } from "./store";
 import type { AttributeReport, ScanEvent, ScanResult, SourceReport, StepKey } from "./sources";
@@ -38,6 +40,12 @@ function storiesFromHeight(meters: number): number {
   if (meters < 11) return 2;
   if (meters < 14) return 3;
   return Math.min(5, Math.round(meters / 3.2));
+}
+
+/** 2.5 in the tax roll is two full floors plus a half story, so it counts as 2. */
+function storiesFromPluto(n: number): number | null {
+  if (!Number.isFinite(n) || n < 1 || n > 8) return null;
+  return Math.max(1, Math.round(n - 0.01));
 }
 
 const NOT_A_HOUSE = new Set([
@@ -132,21 +140,59 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   // Saved scan? Then we're done, no imagery or AI calls needed.
   if (!input.rescan) {
     const saved = await store.get(id);
-    // Empty shells from before interiors were drawn again should be rebuilt.
-    if (saved && saved.model.interior?.status !== "unknown") {
+    // Empty shells, and address scans from before the lot was drawn, get rebuilt.
+    const stale = !!saved && (saved.model.source === "address" || saved.model.source === "photo") && saved.model.compound?.basis !== "outline-v1";
+    if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
       return;
     }
   }
 
+  // City lot, when this address is in New York City. The yard follows the lot the building actually sits on.
+  let lot: ParcelHit | null = null;
+  let buildingOnLot = false;
+  if (inNyc(center)) {
+    try {
+      const byAddress = address ? await lookupParcel(origin, address) : null;
+      const addressRing = byAddress ? byAddress.ring.map((p) => toLocal(origin, p)) : null;
+      const atBuilding = b ? polygonCentroid(b.ring) : null;
+      const addressHoldsBuilding = !!(atBuilding && addressRing && pointInPolygon(atBuilding, addressRing));
+      if (b && !addressHoldsBuilding) {
+        const under = await lookupParcel(center);
+        lot = under ?? byAddress;
+        if (under && byAddress && under.address && byAddress.address && under.address !== byAddress.address) {
+          warnings.push(
+            `The mapped building sits on the city lot for ${under.address}, not ${byAddress.address}. The yard follows the lot the building is on.`,
+          );
+        }
+      } else {
+        lot = byAddress;
+      }
+      if (lot && atBuilding) buildingOnLot = pointInPolygon(atBuilding, lot.ring.map((p) => toLocal(origin, p)));
+      sources.push({
+        id: "parcel",
+        name: "NYC tax lot",
+        status: lot ? "used" : "failed",
+        detail: lot
+          ? `${lot.address || "Lot"}${lot.numBuildings != null ? `, ${lot.numBuildings} building${lot.numBuildings === 1 ? "" : "s"} on the lot` : ""}.`
+          : "No tax lot matched this address.",
+      });
+    } catch (e) {
+      sources.push({ id: "parcel", name: "NYC tax lot", status: "failed", detail: String(e).slice(0, 160) });
+    }
+  }
+
   // 3. Aerial imagery.
   step("imagery", "active");
   let aerial: Image | null = null;
+  let aerialHalf = 40;
   const extent = footprint ? Math.max(...footprint.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y)))) : 8;
   try {
     // Esri refuses to render below ~35 m half-width (beyond its max zoom), so never ask for less than 40.
-    aerial = await aerialImage(center, Math.min(80, Math.max(40, extent * 2.5)));
+    const shot = await aerialImage(center, Math.min(80, Math.max(40, extent * 2.5)));
+    aerial = shot.image;
+    aerialHalf = shot.halfSize;
     sources.push({ id: "esri", name: "Esri World Imagery", status: "used", detail: "Aerial photo centered on the building." });
     step("imagery", "done");
   } catch (e) {
@@ -164,9 +210,15 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     tags["building:material"] ? `Material: ${tags["building:material"]}` : null,
   ].filter(Boolean).join("\n");
 
-  // 4. Read the house from the photos (Gemini).
+  // 4. Read the house from the photos (Gemini). The site boxes run alongside that, and a missing key just skips both.
   step("vision", "active");
   let facts: HouseFacts | null = null;
+  const sitePromise = geminiAvailable() && aerial
+    ? describeSite(aerial).catch((e) => {
+        console.warn("aerial site read failed", e);
+        return [];
+      })
+    : Promise.resolve([]);
   if (!geminiAvailable()) {
     sources.push({
       id: "gemini", name: "Google Gemini (photo reading)", status: "skipped",
@@ -193,7 +245,9 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       step("vision", "skipped", "Photo reading failed");
     }
   }
+  const siteBoxes = await sitePromise;
   const sure = facts && facts.confidence >= 0.35 ? facts : null;
+  const plutoStories = buildingOnLot && lot?.numFloors != null ? storiesFromPluto(lot.numFloors) : null;
 
   // Merge: map data and photos first, typical values last. Record where each value came from.
   let stories = 2;
@@ -205,6 +259,9 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   } else if (osmLevels >= 1 && osmLevels <= 5) {
     stories = osmLevels;
     attributes.push({ field: "Floors above ground", value: String(stories), from: "map", note: "OpenStreetMap building:levels" });
+  } else if (plutoStories) {
+    stories = plutoStories;
+    attributes.push({ field: "Floors above ground", value: String(stories), from: "map", note: `NYC tax lot lists ${lot!.numFloors}` });
   } else if (osmHeight > 2) {
     stories = storiesFromHeight(osmHeight);
     attributes.push({ field: "Floors above ground", value: String(stories), from: "map", note: `From mapped height ${osmHeight} m` });
@@ -252,6 +309,12 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   } else if (sure && sure.basement === "unlikely") {
     basement = false;
     attributes.push({ field: "Basement", value: "No", from: "photos" });
+  } else if (buildingOnLot && lot?.basement === true) {
+    basement = true;
+    attributes.push({ field: "Basement", value: "Yes", from: "map", note: "NYC tax lot lists a basement" });
+  } else if (buildingOnLot && lot?.basement === false) {
+    basement = false;
+    attributes.push({ field: "Basement", value: "No", from: "map", note: "NYC tax lot lists no basement" });
   } else {
     attributes.push({
       field: "Basement", value: basement ? "Yes" : "No", from: "estimated",
@@ -262,6 +325,19 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   // 5. Build the 3D model.
   step("build", "active");
   const streetDir = osm?.roadDir ?? null;
+  const houseCenter = b ? polygonCentroid(b.ring) : ([0, 0] as Point);
+  const parcelLocal = lot ? lot.ring.map((p) => toLocal(origin, p)) : null;
+  const garageRing = pickGarage(
+    (osm?.structures ?? []).map((s) => ({ id: s.id, tag: s.tags.building ?? "", ring: s.ring, area: s.area })),
+    houseCenter,
+    parcelLocal,
+  );
+  const garageAt = garageRing
+    ? (() => {
+        const c = polygonCentroid(garageRing);
+        return [c[0] - houseCenter[0], c[1] - houseCenter[1]] as Point;
+      })()
+    : null;
   let confidence = 0.2;
   if (footprint) confidence += 0.3;
   if (streetDir) confidence += 0.1;
@@ -284,6 +360,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     basement,
     garage,
     roof,
+    garageAt,
   });
 
   if (verified) {
@@ -306,6 +383,54 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     warnings.push(...built.notes);
   } else {
     warnings.push(...built.notes);
+  }
+
+  const originShift = b ? polygonCentroid(b.ring) : ([0, 0] as Point);
+  const shift = (ring: Point[]) => ring.map(([x, y]) => [x - originShift[0], y - originShift[1]] as Point);
+  const access = accessFeatures({
+    footprint: built.model.footprint,
+    streetDir,
+    roads: (osm?.roads ?? []).map((r) => ({ name: r.name, pts: shift(r.pts) })),
+    garage: garageRing ? shift(garageRing) : null,
+  });
+  const compound = assembleCompound({
+    mainId: b?.id ?? null,
+    mainRing: built.model.footprint,
+    structures: (osm?.structures ?? []).map((s) => ({ id: s.id, tag: s.tags.building ?? "", ring: shift(s.ring), area: s.area })),
+    fences: (osm?.fences ?? []).map(shift),
+    pools: (osm?.pools ?? []).map(shift),
+    parcel: lot ? shift(lot.ring.map((p) => toLocal(origin, p))) : null,
+    aerial: siteBoxes.flatMap((box) => {
+      const polygon = boxToPolygon(box, aerialHalf);
+      return polygon ? [{ kind: box.kind, label: box.label, polygon }] : [];
+    }),
+  });
+  const kept = access.some((f) => f.kind === "driveway")
+    ? compound.features.filter((f) => !(f.kind === "driveway" && f.source === "aerial"))
+    : compound.features;
+  built.model.compound = { features: [...kept, ...access], basis: "outline-v1" };
+  if (!verified && built.model.interior) {
+    if (compound.features.some((f) => f.kind === "yard")) {
+      built.model.interior.notes.push("The yard is the city tax lot. The street and driveway follow the mapped road.");
+    }
+    const roomNote = built.notes.find((n) => n.startsWith("About "));
+    if (roomNote) built.model.interior.notes.push(roomNote);
+  }
+  if (access.some((f) => f.kind === "driveway")) {
+    warnings.push(
+      garageRing
+        ? `The driveway runs from ${osm?.roadName ?? "the street"} to the garage, the way the lot is laid out on the map.`
+        : `The driveway runs from ${osm?.roadName ?? "the street"} to the front of the house.`,
+    );
+  }
+  const mappedOutbuildings = compound.features.filter((f) => f.kind === "garage" || f.kind === "shed");
+  if (mappedOutbuildings.length) {
+    const row = attributes.find((a) => a.field === "Garage");
+    if (row && (row.from === "estimated" || row.value.startsWith("Detached"))) {
+      row.value = [...new Set(mappedOutbuildings.map((f) => f.label))].join(", ");
+      row.from = "map";
+      row.note = "Drawn beside the house from the map";
+    }
   }
 
   attributes.unshift(
@@ -338,6 +463,14 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
           detail: "Typical room plan drawn inside the mapped outline. Not a measured scan.",
         },
   );
+  const shown = built.model.compound?.features ?? [];
+  const lotLabels = [...new Set(shown.map((f) => f.label))];
+  sources.push({
+    id: "compound",
+    name: "Yard and outbuildings",
+    status: shown.length ? "used" : "skipped",
+    detail: lotLabels.length ? lotLabels.slice(0, 8).join(", ") : "Nothing around the house was mapped.",
+  });
   step("build", "done");
 
   const result: ScanResult = {

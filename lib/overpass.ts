@@ -30,6 +30,14 @@ export type OsmContext = {
   roadDir: Point | null;
   roadName: string | null;
   roadDistance: number | null;
+  /** Every mapped building in the box, including garages and sheds. Coordinates are relative to the search point. */
+  structures: OsmBuilding[];
+  /** Fence, wall, and hedge centerlines. */
+  fences: Point[][];
+  /** Mapped swimming pools. */
+  pools: Point[][];
+  /** Road centerlines near the house, in meters from the search point. */
+  roads: { name: string | null; pts: Point[] }[];
 };
 
 const NON_HOUSE = new Set(["garage", "garages", "shed", "roof", "carport", "service", "hut", "cabin", "greenhouse", "barn"]);
@@ -53,7 +61,10 @@ async function fromOsmApi(o: LatLng, radius: number): Promise<OsmWay[]> {
   const ways: OsmWay[] = [];
   for (const e of j.elements) {
     if (e.type !== "way" || !e.tags) continue;
-    if (!e.tags.building && !(e.tags.highway && ROADS.test(e.tags.highway))) continue;
+    const tags = e.tags as Record<string, string>;
+    const barrier = tags.barrier && /^(fence|wall|hedge)$/.test(tags.barrier);
+    const pool = tags.leisure === "swimming_pool";
+    if (!tags.building && !(tags.highway && ROADS.test(tags.highway)) && !barrier && !pool) continue;
     const geometry = (e.nodes as number[]).map((id) => nodes.get(id)).filter(Boolean) as { lat: number; lon: number }[];
     ways.push({ id: e.id, tags: e.tags, geometry });
   }
@@ -114,20 +125,29 @@ export async function lookupBuilding(origin: LatLng, heading?: number | null, hi
 (
   way["building"](around:80,${origin.lat},${origin.lng});
   way["highway"~"^(residential|service|tertiary|secondary|primary|unclassified|living_street)$"](around:70,${origin.lat},${origin.lng});
+  way["barrier"~"^(fence|wall|hedge)$"](around:70,${origin.lat},${origin.lng});
+  way["leisure"="swimming_pool"](around:70,${origin.lat},${origin.lng});
 );
 out tags geom;`;
   const els = await fetchWays(origin, q);
 
   const buildings: OsmBuilding[] = [];
   const roads: { name: string | null; pts: Point[] }[] = [];
+  const fences: Point[][] = [];
+  const pools: Point[][] = [];
   for (const w of els) {
     if (!w.geometry || w.geometry.length < 2) continue;
     const pts = w.geometry.map((g) => toLocal(origin, { lat: g.lat, lng: g.lon }));
     if (w.tags?.building) {
-      const ring = pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] ? pts.slice(0, -1) : pts;
+      const ring = pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1] ? pts.slice(0, -1) : pts;
       if (ring.length >= 3) buildings.push({ id: w.id, tags: w.tags, ring, area: polygonArea(ring) });
     } else if (w.tags?.highway) {
       roads.push({ name: w.tags.name ?? null, pts });
+    } else if (w.tags?.leisure === "swimming_pool") {
+      const ring = pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1] ? pts.slice(0, -1) : pts;
+      if (ring.length >= 3) pools.push(ring);
+    } else if (w.tags?.barrier) {
+      fences.push(pts);
     }
   }
 
@@ -214,5 +234,8 @@ out tags geom;`;
     nearby.unshift({ id: building.id, label: houseLabel(building) });
   }
 
-  return { building, chosenBy, buildingCount: buildings.length, nearby, roadDir, roadName, roadDistance };
+  return {
+    building, chosenBy, buildingCount: buildings.length, nearby, roadDir, roadName, roadDistance,
+    structures: buildings, fences, pools, roads,
+  };
 }
