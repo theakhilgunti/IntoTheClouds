@@ -64,3 +64,36 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .bp-route, .bp-ping { animation: none; }
 }
+
+/* Page-change sheet (components/ui/SheetTransition.tsx) */
+.bp-sheet-swap {
+  background-color: var(--color-bp-deep);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+  background-size: 20px 20px;
+  border-bottom: 2px solid var(--color-bp-ink);
+}
+.bp-ruler-x,
+.bp-ruler-y {
+  position: absolute;
+  pointer-events: none;
+}
+.bp-ruler-x {
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 14px;
+  background:
+    repeating-linear-gradient(90deg, var(--color-bp-ink) 0 1px, transparent 1px 10px) 0 0 / 100% 6px no-repeat,
+    repeating-linear-gradient(90deg, var(--color-bp-ink) 0 1px, transparent 1px 50px) 0 0 / 100% 14px no-repeat;
+}
+.bp-ruler-y {
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  background:
+    repeating-linear-gradient(0deg, var(--color-bp-ink) 0 1px, transparent 1px 10px) 0 0 / 6px 100% no-repeat,
+    repeating-linear-gradient(0deg, var(--color-bp-ink) 0 1px, transparent 1px 50px) 0 0 / 14px 100% no-repeat;
+}

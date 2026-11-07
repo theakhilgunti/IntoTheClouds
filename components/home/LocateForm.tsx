@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useSheetNav } from "@/components/ui/SheetTransition";
 import { saveScan, recentScans, type SavedScan, type ScanQuery } from "@/lib/clientStore";
 import { streamScan } from "@/lib/scanClient";
 import { STEP_LABELS, type StepKey } from "@/lib/sources";
@@ -53,7 +53,7 @@ function deviceLocation(): Promise<{ lat: number; lng: number; heading?: number 
 }
 
 export default function LocateForm() {
-  const router = useRouter();
+  const go = useSheetNav();
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [address, setAddress] = useState("");
@@ -136,7 +136,7 @@ export default function LocateForm() {
         }
       });
       saveScan({ result, query, photo: thumb });
-      router.push(`/model/${encodeURIComponent(result.model.id)}`);
+      go(`/model/${encodeURIComponent(result.model.id)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
       setBusy(false);

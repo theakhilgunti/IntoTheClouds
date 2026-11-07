@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Barlow_Condensed, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import SheetTransition from "@/components/ui/SheetTransition";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -38,7 +39,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${barlow.variable} ${jetbrains.variable} antialiased`}
       >
-        {children}
+        <SheetTransition>{children}</SheetTransition>
       </body>
     </html>
   );
