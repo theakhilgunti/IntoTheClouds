@@ -16,7 +16,7 @@ Before writing or modifying any code in this repository:
 Never begin editing without declaring your claim:
 1. Add an entry to the **Active Locks** table in `PROGRESS.md` or execute:
    ```bash
-   python3 scripts/agent_claim.py claim --agent "MyAgentName" --task "BE-01" --files "backend/app/fusion/*"
+   python3 scripts/agent_claim.py claim --agent "MyAgentName" --task "BE-01" --files "project/backend/app/fusion/*"
    ```
 2. Include the files or directories you are about to touch.
 
