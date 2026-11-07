@@ -26,7 +26,15 @@ export type ScanResult = {
   warnings: string[];
   /** Images the scan looked at, as data: URLs. */
   images: { label: string; url: string }[];
-  summary: { width: number; depth: number; area: number; facing: string; stories: number };
+  summary: {
+    width: number; depth: number; area: number; facing: string;     stories: number;
+    /** Unit vector in the model frame from the building toward the nearest street (for aligning floor plans). */
+    streetDir?: [number, number] | null;
+    /** Addressed buildings next to the one we drew, so the user can switch. */
+    nearby?: { id: number; label: string }[];
+    /** How the outline was chosen. "nearest" means we may have the house next door. */
+    match?: "address" | "point" | "nearest";
+  };
   createdAt: string;
 };
 

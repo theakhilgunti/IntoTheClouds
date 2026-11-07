@@ -10,6 +10,15 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Blueprint design tokens (see DESIGN_PLAN.md) */
+  --color-bp: #0f3a8e;
+  --color-bp-deep: #0b2e72;
+  --color-bp-ink: #eaf1ff;
+  --color-bp-line: #9ebcff;
+  --color-bp-red: #ff8a6b;
+  --font-display: var(--font-barlow), "Arial Narrow", sans-serif;
+  --font-data: var(--font-jetbrains), ui-monospace, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -23,4 +32,35 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+}
+
+/* Blueprint sheet: cyanotype blue with a faint 20px drafting grid */
+.bp-sheet {
+  background-color: var(--color-bp);
+  background-image:
+    linear-gradient(rgb(255 255 255 / 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.08) 1px, transparent 1px);
+  background-size: 20px 20px;
+  color: var(--color-bp-ink);
+}
+
+/* Dashed route that marches along its path */
+@keyframes bp-march {
+  to { stroke-dashoffset: -22; }
+}
+.bp-route {
+  stroke-dasharray: 6 5;
+  animation: bp-march 1s linear infinite;
+}
+@keyframes bp-ping {
+  0% { transform: scale(1); opacity: 0.9; }
+  100% { transform: scale(3.4); opacity: 0; }
+}
+.bp-ping {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: bp-ping 1.8s ease-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bp-route, .bp-ping { animation: none; }
 }

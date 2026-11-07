@@ -387,6 +387,134 @@
         "rotation",
         "height"
       ]
+    },
+    "interior": {
+      "description": "Absent on old scans and the demo house",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "estimated",
+            "unknown"
+          ]
+        },
+        "source": {
+          "description": "Where the rooms came from, e.g. 'floor plan' or 'typical layout'",
+          "type": "string"
+        },
+        "reasons": {
+          "default": [],
+          "description": "Why a measured interior is missing",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "knownLevels": {
+          "default": [],
+          "description": "Floors whose rooms come from a real source",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          }
+        },
+        "notes": {
+          "default": [],
+          "description": "Caveats, e.g. placement unconfirmed",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "compound": {
+      "description": "Lot, outbuildings, and surfaces around the house. Absent on older scans.",
+      "type": "object",
+      "properties": {
+        "features": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "yard",
+                  "garage",
+                  "shed",
+                  "driveway",
+                  "patio",
+                  "pool",
+                  "fence",
+                  "trees",
+                  "road"
+                ]
+              },
+              "label": {
+                "type": "string"
+              },
+              "polygon": {
+                "minItems": 3,
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "items": false,
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[x, y] in meters"
+                },
+                "description": "Closed ring, no repeated last point"
+              },
+              "height": {
+                "default": 0,
+                "type": "number",
+                "minimum": 0
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "map",
+                  "aerial",
+                  "parcel"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "label",
+              "polygon",
+              "source"
+            ]
+          }
+        },
+        "basis": {
+          "description": "Set when the lot, street, and driveway pass has run",
+          "type": "string"
+        }
+      },
+      "required": [
+        "features"
+      ]
     }
   },
   "required": [

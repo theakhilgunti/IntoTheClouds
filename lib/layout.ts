@@ -3,8 +3,8 @@
  * into a BuildingModel with rooms, walls, doors and stairs.
  *
  * Interior rooms are an estimate: no public data source has real floor plans, so we lay out
- * a typical American house plan inside the real footprint. Walls are derived from the room
- * rectangles, so the plan is always consistent (every room is reachable, no overlaps).
+ * a typical American house plan, then cut it to the mapped footprint. Walls follow that
+ * outline, so the shell matches the yellow line instead of the bounding rectangle.
  *
  * Plan frame: meters, house centered at 0,0, front of the house at -y, +x on your right
  * when you stand on the street looking at the front door.
@@ -13,6 +13,8 @@ import type {
   BuildingModel, Door, Floor, Point, Roof, RoofShape, RoomType, Stairs, Wall,
 } from "@/packages/schema/building-model";
 import { minAreaRect } from "./geo";
+import { roomBays } from "./compound-geom";
+import { clipPolyToRect, signedArea, wallsAlongOutline, type OutlineWall } from "./outline";
 
 type Rect = { x0: number; y0: number; x1: number; y1: number };
 type PlanRoom = { id: string; name: string; type: RoomType; r: Rect; zone: string };
@@ -26,6 +28,8 @@ export type HouseSpec = {
   stories: number; // above ground, 1..3
   basement: boolean;
   garage: GarageSide;
+  /** Which side the driveway is on, as you stand on the street looking at the front door. */
+  drivewaySide: "left" | "right" | null;
 };
 
 const FLOOR_NAMES: Record<number, string> = { [-1]: "Basement", 0: "1st Floor", 1: "2nd Floor", 2: "3rd Floor" };
@@ -67,15 +71,24 @@ function planHouse(spec: HouseSpec, notes: string[]): PlanFloor[] {
     return { id, name: n === 1 ? "Primary Bedroom" : `Bedroom ${n}`, type: "bedroom", r, zone: id };
   };
 
-  // Hall band: a center hall for wide houses, a side hall for narrow (row-house style) ones.
+  // Hall band: a center hall for wide houses, a side hall for narrow ones.
+  // The side hall sits on the driveway so that side has the door and the other side has the windows.
   const center = Wm >= 8.5;
-  let hx0: number, hx1: number, front: number;
+  let hx0: number, hx1: number, rx0: number, rx1: number, front: number;
   if (center) {
     const mid = (mx0 + mx1) / 2;
     hx0 = mid - 1.2; hx1 = mid + 1.2;
+    rx0 = mx0; rx1 = mx1;
     front = y0 + D * 0.5;
+  } else if (spec.drivewaySide === "left") {
+    const hallW = Math.min(1.3, Wm * 0.25);
+    hx0 = mx0; hx1 = mx0 + hallW;
+    rx0 = hx1; rx1 = mx1;
+    front = y0 + D * 0.36;
   } else {
-    hx1 = mx1; hx0 = mx1 - Math.min(1.3, Wm * 0.25);
+    const hallW = Math.min(1.3, Wm * 0.25);
+    hx1 = mx1; hx0 = mx1 - hallW;
+    rx0 = mx0; rx1 = hx0;
     front = y0 + D * 0.36;
   }
   const stairEnd = Math.min(y1, front + STAIR_LEN);
@@ -91,7 +104,11 @@ function planHouse(spec: HouseSpec, notes: string[]): PlanFloor[] {
     return out;
   }
 
-  // Ground floor
+  const bays = roomBays(D);
+  const edges = bayEdges(y0, D, bays);
+  const column = (i: number): Rect => ({ x0: rx0, y0: edges[i], x1: rx1, y1: edges[i + 1] });
+
+  // Ground floor. Bay count follows how many windows fit down the long side.
   const g: PlanRoom[] = [...garageRooms, ...hallPieces("g-", "Front Hall")];
   if (center) {
     g.push(
@@ -100,13 +117,34 @@ function planHouse(spec: HouseSpec, notes: string[]): PlanFloor[] {
       { id: "family", name: "Family Room", type: "living", r: { x0: mx0, y0: front, x1: hx0, y1 }, zone: "family" },
       { id: "kitchen", name: "Kitchen", type: "kitchen", r: { x0: hx1, y0: front, x1: mx1, y1 }, zone: "kitchen" },
     );
+    const kitchen = g.find((r) => r.id === "kitchen");
+    if (kitchen && D >= 13 && kitchen.r.y1 - kitchen.r.y0 > 4.2) {
+      const cut = kitchen.r.y1 - 2.3;
+      g.push({ id: "powder", name: "Powder Room", type: "bathroom", r: { x0: kitchen.r.x0, y0: cut, x1: kitchen.r.x1, y1: kitchen.r.y1 }, zone: "powder" });
+      kitchen.r = { ...kitchen.r, y1: cut };
+    }
   } else {
-    const b = y0 + D * 0.66;
-    g.push(
-      { id: "living", name: "Living Room", type: "living", r: { x0: mx0, y0, x1: hx0, y1: front }, zone: "living" },
-      { id: "dining", name: "Dining Room", type: "dining", r: { x0: mx0, y0: front, x1: hx0, y1: b }, zone: "dining" },
-      { id: "kitchen", name: "Kitchen", type: "kitchen", r: { x0: mx0, y0: b, x1: hx0, y1 }, zone: "kitchen" },
-    );
+    const groundPlan: { id: string; name: string; type: RoomType }[] =
+      bays === 2
+        ? [
+            { id: "living", name: "Living Room", type: "living" },
+            { id: "kitchen", name: "Kitchen", type: "kitchen" },
+          ]
+        : bays === 3
+          ? [
+              { id: "living", name: "Living Room", type: "living" },
+              { id: "dining", name: "Dining Room", type: "dining" },
+              { id: "kitchen", name: "Kitchen", type: "kitchen" },
+            ]
+          : [
+              { id: "living", name: "Living Room", type: "living" },
+              { id: "dining", name: "Dining Room", type: "dining" },
+              { id: "powder", name: "Powder Room", type: "bathroom" },
+              { id: "kitchen", name: "Kitchen", type: "kitchen" },
+            ];
+    groundPlan.forEach((room, i) => {
+      g.push({ ...room, r: column(i), zone: room.id });
+    });
   }
   floors.push({ level: 0, rooms: g, stair });
 
@@ -122,97 +160,90 @@ function planHouse(spec: HouseSpec, notes: string[]): PlanFloor[] {
         bed(`${p}bedC`, { x0: hx1, y0: front, x1: mx1, y1 }),
       );
     } else {
-      const b = y0 + D * 0.62;
-      u.push(
-        bed(`${p}bedA`, { x0: mx0, y0, x1: hx0, y1: front }),
-        { id: `${p}bath`, name: "Bathroom", type: "bathroom", r: { x0: mx0, y0: front, x1: hx0, y1: b }, zone: `${p}bath` },
-        bed(`${p}bedB`, { x0: mx0, y0: b, x1: hx0, y1 }),
-      );
+      const upper: { kind: "bed" | "bath" }[] =
+        bays === 2 ? [{ kind: "bed" }, { kind: "bed" }]
+          : bays === 3 ? [{ kind: "bed" }, { kind: "bath" }, { kind: "bed" }]
+            : [{ kind: "bed" }, { kind: "bed" }, { kind: "bath" }, { kind: "bed" }];
+      // Two bays still need a bathroom, taken off the back of the rear bedroom.
+      upper.forEach((slot, i) => {
+        if (slot.kind === "bath") {
+          u.push({ id: `${p}bath`, name: "Bathroom", type: "bathroom", r: column(i), zone: `${p}bath` });
+        } else {
+          u.push(bed(`${p}bed${i}`, column(i)));
+        }
+      });
+      if (!upper.some((slot) => slot.kind === "bath")) {
+        const rear = [...u].reverse().find((room) => room.type === "bedroom");
+        if (rear && rear.r.y1 - rear.r.y0 > 3.4) {
+          const cut = rear.r.y1 - 2.2;
+          u.push({ id: `${p}bath`, name: "Bathroom", type: "bathroom", r: { ...rear.r, y0: cut }, zone: `${p}bath` });
+          rear.r = { ...rear.r, y1: cut };
+        }
+      }
     }
     floors.push({ level: lv, rooms: u, stair });
   }
 
   if (spec.stories === 1) {
-    // Single story: bedrooms replace the family room / dining on the ground floor.
-    const fam = g.find((r) => r.id === (center ? "family" : "dining"));
+    const fam = g.find((r) => r.id === "family" || r.id === "dining");
     if (fam) Object.assign(fam, { name: "Primary Bedroom", type: "bedroom" as RoomType });
   }
+
+  const above = floors.filter((f) => f.level >= 0);
+  const beds = above.reduce((n, f) => n + f.rooms.filter((r) => r.type === "bedroom").length, 0);
+  const baths = above.reduce((n, f) => n + f.rooms.filter((r) => r.type === "bathroom").length, 0);
+  notes.push(
+    `About ${bays} windows fit along the long side, so each floor is ${bays} rooms: ${beds} bedroom${beds === 1 ? "" : "s"} and ${baths} bath${baths === 1 ? "" : "s"}. ` +
+      `The front door faces the street and the back door is at the kitchen${spec.drivewaySide ? ", with a side door toward the driveway" : ""}.`,
+  );
 
   // Basement: open space with the stairs and a utility room (breaker panel, furnace, water heater).
   if (spec.basement) {
     const b: PlanRoom[] = [
       { id: "b-stair", name: "Basement Stairs", type: "stair", r: stair!, zone: "base" },
       { id: "b-hallF", name: "Basement", type: "basement", r: { x0: hx0, y0, x1: hx1, y1: front }, zone: "base" },
-      { id: "b-main", name: "Basement", type: "basement", r: { x0: mx0, y0, x1: hx0, y1 }, zone: "base" },
+      { id: "b-main", name: "Basement", type: "basement", r: { x0: center ? mx0 : rx0, y0, x1: center ? hx0 : rx1, y1 }, zone: "base" },
     ];
     if (stairEnd < y1 - 0.3) b.push({ id: "b-hallB", name: "Basement", type: "basement", r: { x0: hx0, y0: stairEnd, x1: hx1, y1 }, zone: "base" });
     if (center) b.push({ id: "b-util", name: "Utility / Breaker Panel", type: "utility", r: { x0: hx1, y0, x1: mx1, y1 }, zone: "util" });
     else {
-      // Narrow house: utility at the back of the main column.
       const main = b.find((r) => r.id === "b-main")!;
       main.r = { ...main.r, y1: y0 + D * 0.7 };
-      b.push({ id: "b-util", name: "Utility / Breaker Panel", type: "utility", r: { x0: mx0, y0: y0 + D * 0.7, x1: hx0, y1 }, zone: "util" });
+      b.push({ id: "b-util", name: "Utility / Breaker Panel", type: "utility", r: { x0: rx0, y0: y0 + D * 0.7, x1: rx1, y1 }, zone: "util" });
     }
     floors.unshift({ level: -1, rooms: b, stair });
   }
   return floors;
 }
 
-/** Derive walls (between different zones) and doors (so every room is reachable) from the room rectangles. */
-function wallsAndDoors(prefix: string, rooms: PlanRoom[], isGround: boolean) {
-  const xs = [...new Set(rooms.flatMap((r) => [r4(r.r.x0), r4(r.r.x1)]))].sort((a, b) => a - b);
-  const ys = [...new Set(rooms.flatMap((r) => [r4(r.r.y0), r4(r.r.y1)]))].sort((a, b) => a - b);
-  const zoneAt = (cx: number, cy: number): string | null => {
-    const r = rooms.find((q) => cx > q.r.x0 && cx < q.r.x1 && cy > q.r.y0 && cy < q.r.y1);
-    return r ? r.zone : null;
-  };
+function bayEdges(y0: number, depth: number, n: number): number[] {
+  const frac = n === 4 ? [0, 0.3, 0.54, 0.7, 1] : n === 3 ? [0, 0.36, 0.66, 1] : [0, 0.55, 1];
+  return frac.map((t) => y0 + depth * t);
+}
 
-  type Seg = { a: Point; b: Point; zA: string | null; zB: string | null };
-  const segs: Seg[] = [];
-  const eps = 1e-3;
-  for (let k = 0; k < xs.length; k++) {
-    for (let j = 0; j < ys.length - 1; j++) {
-      const cy = (ys[j] + ys[j + 1]) / 2;
-      const L = zoneAt(xs[k] - eps, cy), R = zoneAt(xs[k] + eps, cy);
-      if (L !== R) segs.push({ a: [xs[k], ys[j]], b: [xs[k], ys[j + 1]], zA: L, zB: R });
-    }
-  }
-  for (let j = 0; j < ys.length; j++) {
-    for (let k = 0; k < xs.length - 1; k++) {
-      const cx = (xs[k] + xs[k + 1]) / 2;
-      const B = zoneAt(cx, ys[j] - eps), T = zoneAt(cx, ys[j] + eps);
-      if (B !== T) segs.push({ a: [xs[k], ys[j]], b: [xs[k + 1], ys[j]], zA: B, zB: T });
-    }
-  }
+type ZWall = Wall & { zones: [string, string | null] };
 
-  // Merge collinear touching segments that separate the same two zones.
-  type W = Wall & { zones: [string | null, string | null] };
-  const walls: W[] = [];
-  for (const s of segs) {
-    const key = (z: [string | null, string | null]) => [z[0] ?? "", z[1] ?? ""].sort().join("|");
-    const prev = walls.find(
-      (w) => key(w.zones) === key([s.zA, s.zB]) && w.b[0] === s.a[0] && w.b[1] === s.a[1] &&
-        (w.a[0] === s.b[0] || w.a[1] === s.b[1]),
-    );
-    if (prev) prev.b = s.b;
-    else {
-      const ext = s.zA === null || s.zB === null;
-      walls.push({ id: "", a: s.a, b: s.b, thickness: ext ? 0.25 : 0.12, exterior: ext, zones: [s.zA, s.zB] });
-    }
-  }
-  walls.forEach((w, i) => (w.id = `${prefix}w${i}`));
-
+/** Doors on walls that already follow the outline. Front and back are the long edges; the side door faces the driveway. */
+function placeDoors(prefix: string, raw: OutlineWall[], zones: string[], isGround: boolean, drivewaySide: "left" | "right" | null) {
+  const walls: ZWall[] = raw.map((w, i) => ({
+    id: `${prefix}w${i}`,
+    a: w.a,
+    b: w.b,
+    thickness: w.exterior ? 0.25 : 0.12,
+    exterior: w.exterior,
+    zones: w.zones,
+  }));
   const len = (w: Wall) => Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
+  const mid = (w: Wall): Point => [(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2];
+  const across = (w: Wall) => Math.abs(w.b[0] - w.a[0]) >= Math.abs(w.b[1] - w.a[1]);
   const between = (z1: string, z2: string) =>
-    walls.filter((w) => !w.exterior && w.zones.includes(z1) && w.zones.includes(z2) && len(w) >= 1.1);
+    walls.filter((w) => !w.exterior && w.zones.includes(z1) && w.zones.includes(z2) && len(w) >= 0.7);
   const doors: Door[] = [];
-  const addDoor = (w: W, width = 0.85, exit = false) =>
-    doors.push({ id: `${prefix}d${doors.length}`, wallId: w.id, t: 0.5, width: Math.min(width, len(w) - 0.2), exit });
+  const addDoor = (w: ZWall, width = 0.85, exit = false) =>
+    doors.push({ id: `${prefix}d${doors.length}`, wallId: w.id, t: 0.5, width: Math.min(width, Math.max(0.6, len(w) - 0.2)), exit });
 
-  // Connect every zone, starting from the hall (or the living room when there is no hall).
-  const zones = [...new Set(rooms.map((r) => r.zone))];
   const start = zones.includes("hall") ? "hall" : zones.includes("base") ? "base" : zones[0];
-  const reached = new Set([start]);
+  const reached = new Set(start ? [start] : []);
   let changed = true;
   while (changed) {
     changed = false;
@@ -228,17 +259,25 @@ function wallsAndDoors(prefix: string, rooms: PlanRoom[], isGround: boolean) {
   }
 
   if (isGround) {
-    const yMin = Math.min(...ys), yMax = Math.max(...ys);
-    const extOf = (zone: string, y: number) =>
-      walls
-        .filter((w) => w.exterior && w.zones.includes(zone) && w.a[1] === y && w.b[1] === y && len(w) >= 1.2)
-        .sort((a, b) => len(b) - len(a))[0];
-    const frontDoor = extOf("hall", yMin) ?? extOf("living", yMin);
+    const ext = walls.filter((w) => w.exterior && len(w) >= 1.05);
+    const pick = (pred: (w: ZWall) => boolean, score: (w: ZWall) => number) =>
+      ext.filter(pred).sort((a, b) => score(a) - score(b))[0];
+    const frontDoor = pick((w) => across(w) && (w.zones.includes("hall") || w.zones.includes("living")), (w) => mid(w)[1]);
     if (frontDoor) addDoor(frontDoor, 1.0, true);
-    const backDoor = extOf("kitchen", yMax) ?? extOf("hall", yMax) ?? extOf("mud", yMax);
+    const backDoor = pick(
+      (w) => across(w) && w !== frontDoor && (w.zones.includes("kitchen") || w.zones.includes("hall") || w.zones.includes("mud")),
+      (w) => -mid(w)[1],
+    );
     if (backDoor) addDoor(backDoor, 0.9, true);
-    const garageDoor = extOf("garage", yMin);
-    if (garageDoor) addDoor(garageDoor, Math.min(4.8, len(garageDoor) - 0.6), true);
+    const garageDoor = pick((w) => across(w) && w.zones.includes("garage"), (w) => mid(w)[1]);
+    if (garageDoor) addDoor(garageDoor, Math.min(4.8, len(garageDoor) - 0.2), true);
+    if (drivewaySide) {
+      const sideWalls = ext.filter((w) => !across(w));
+      const preferred = sideWalls.filter((w) => w.zones.includes("kitchen") || w.zones.includes("hall"));
+      const pool = preferred.length ? preferred : sideWalls;
+      const sideDoor = pool.sort((a, b) => (drivewaySide === "right" ? mid(b)[0] - mid(a)[0] : mid(a)[0] - mid(b)[0]))[0];
+      if (sideDoor && sideDoor !== frontDoor && sideDoor !== backDoor) addDoor(sideDoor, 0.9, true);
+    }
   }
 
   return { walls: walls.map((w) => ({ id: w.id, a: w.a, b: w.b, thickness: w.thickness, exterior: w.exterior })), doors };
@@ -268,6 +307,8 @@ export type BuildInput = {
   basement: boolean;
   garage: GarageSide;
   roof: RoofShape;
+  /** Garage centroid in the model frame, used to put the hall and side door on the driveway side. */
+  garageAt?: Point | null;
 };
 
 export type BuildOutput = { model: BuildingModel; width: number; depth: number; facing: string; notes: string[] };
@@ -295,27 +336,48 @@ export function buildHouse(input: BuildInput): BuildOutput {
   const yAxis: Point = [-f[0], -f[1]];
   const [cx, cy] = rect.center;
   const T = ([x, y]: Point): Point => [r4(cx + x * xAxis[0] + y * yAxis[0]), r4(cy + x * xAxis[1] + y * yAxis[1])];
-  const rectPts = (r: Rect): Point[] => [T([r.x0, r.y0]), T([r.x1, r.y0]), T([r.x1, r.y1]), T([r.x0, r.y1])];
+  const inv = ([x, y]: Point): Point => {
+    const dx = x - cx, dy = y - cy;
+    return [dx * xAxis[0] + dy * xAxis[1], dx * yAxis[0] + dy * yAxis[1]] as Point;
+  };
+  const fpPlan = footprint.map(inv);
 
   const stories = Math.min(3, Math.max(1, Math.round(input.stories)));
-  const plan = planHouse({ width, depth, stories, basement: input.basement, garage: input.garage }, notes);
+  let drivewaySide: "left" | "right" | null = null;
+  if (input.garageAt) {
+    const s = input.garageAt[0] * xAxis[0] + input.garageAt[1] * xAxis[1];
+    if (Math.abs(s) > 0.4) drivewaySide = s > 0 ? "right" : "left";
+  }
+  const plan = planHouse({ width, depth, stories, basement: input.basement, garage: input.garage, drivewaySide }, notes);
 
   const floors: Floor[] = plan.map((pf) => {
     const prefix = pf.level < 0 ? "b-" : `f${pf.level}-`;
-    const { walls, doors } = wallsAndDoors(prefix, pf.rooms, pf.level === 0);
+    const rectPoly = (r: Rect): Point[] => [[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]];
+    const cut = pf.rooms
+      .map((r) => ({ ...r, poly: clipPolyToRect(fpPlan, r.r) }))
+      .filter((r) => r.poly.length >= 3 && Math.abs(signedArea(r.poly)) >= 0.3);
+    const rooms = cut.length ? cut : pf.rooms.map((r) => ({ ...r, poly: rectPoly(r.r) }));
+    const { walls, doors } = placeDoors(
+      prefix,
+      wallsAlongOutline(rooms.map((r) => ({ zone: r.zone, poly: r.poly }))),
+      [...new Set(rooms.map((r) => r.zone))],
+      pf.level === 0,
+      drivewaySide,
+    );
     const stairs: Stairs[] = [];
-    if (pf.stair) {
+    const stairPoly = rooms.find((r) => r.type === "stair")?.poly;
+    if (stairPoly && pf.stair) {
       const up = plan.some((p) => p.level === pf.level + 1);
       const down = plan.some((p) => p.level === pf.level - 1);
-      if (up) stairs.push({ id: `${prefix}s-up`, polygon: rectPts(pf.stair), toLevel: pf.level + 1 });
-      else if (down) stairs.push({ id: `${prefix}s-down`, polygon: rectPts(pf.stair), toLevel: pf.level - 1 });
+      if (up) stairs.push({ id: `${prefix}s-up`, polygon: stairPoly.map(T), toLevel: pf.level + 1 });
+      else if (down) stairs.push({ id: `${prefix}s-down`, polygon: stairPoly.map(T), toLevel: pf.level - 1 });
     }
     return {
       level: pf.level,
       name: FLOOR_NAMES[pf.level] ?? `Level ${pf.level}`,
       elevation: pf.level < 0 ? -2.5 : pf.level * 2.8,
       height: pf.level < 0 ? 2.5 : 2.8,
-      rooms: pf.rooms.map((r) => ({ id: `${prefix}${r.id}`, name: r.name, type: r.type, polygon: rectPts(r.r) })),
+      rooms: rooms.map((r) => ({ id: `${prefix}${r.id}`, name: r.name, type: r.type, polygon: r.poly.map(T) })),
       walls: walls.map((w) => ({ ...w, a: T(w.a), b: T(w.b) })),
       doors,
       stairs,

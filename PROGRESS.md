@@ -68,4 +68,18 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 18:34 | Claude Code | DOC-04 | Rewrote WORK_ORDERS.md: usage steps, priority boards, uniform task cards |
 | 18:43 | Claude Code | DOC-05 | Excluded project/ from root tsconfig and eslint so the CloudScan (Vercel) build ignores the Pi/Vite project |
 | 19:03 | Claude Code | DOC-06 | FE-03 now lists the missing backend dependency (particles are not sent to the dashboard); GitHub issues 2-26 expanded with detailed steps |
+| 20:35 | BE-07 subagent | BE-07 | Anchors now resolve by lowercase bssid or ble_name (new optional BeaconAnchor.ble_name); deduped listing; editable DEFAULT_ANCHORS; 4 new tests |
+| 20:40 | DOC-07 subagent | DOC-07 | Docs updated for 3 phone anchors + carried Windows laptop (no Pi): WORK_ORDERS (retired Pi tasks, new LC/BE/FE cards, risks, phases), README, DEMO_GUIDE, PITCH_OUTLINE; honest meter-level / RF obstacle hints wording |
+| 20:33 | Claude Code | BE-06 | Added ParticleFilterLocalizer.diffuse() random-walk model, used when scans arrive with no step; 3 new tests (8 pass) |
 | 20:30 | Claude Code | LC-01 | Added project/laptop_client/ Windows Wi-Fi (netsh) and BLE (bleak) scan benchmarks + README; parsers tested on sample data, not yet run on Windows |
+| 19:32 | Cursor | ST-01 | Saved houses and finished walks in MongoDB via /api/models and /api/explorations. |
+| 20:40 | Cursor | ST-02 | Scanner walks are the only houses written to the buildings collection. |
+| 20:45 | Cursor | FE-04 | Replaced 3D HTML labels that crashed React when a scanner house loaded. |
+| 21:03 | Claude Code | DOC-08 | Removed stale 'not merged' wording for LC-01/BE-06 in project/README.md and WORK_ORDERS.md; ticked BE-06 |
+| 21:15 | Cursor | UI-01 | Address match uses the house number, not the closest outline; typical interiors are drawn; the model page no longer covers the house. |
+| 21:29 | BE-08 subagent | BE-08 | RFMap per-anchor RSSI heatmap (rf_map.py), recorded on telemetry, GET /api/map, cleared on reset; signal map not floor plan |
+| 21:42 | FE-05 subagent | FE-05 | [FE-05] RF signal heatmap (InstancedMesh) on 3D floor from GET /api/map polled every 2.5s; HUD anchor selector, show toggle, legend |
+| 21:55 | Cursor | UI-02 | Draws the city lot and mapped garage around the house, and shows the room name when a room is hovered. |
+| 22:10 | Cursor | UI-03 | Checked the lot against the map, drew Simonson Avenue and the driveway to the garage, and sized rooms from how many windows fit. |
+| 22:25 | Cursor | UI-04 | Cut the walls, floors, and roof to the yellow mapped outline instead of the bounding rectangle. |
+| 22:31 | Claude-design | DS-01 | Finished task |

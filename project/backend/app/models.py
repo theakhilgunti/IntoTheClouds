@@ -22,7 +22,8 @@ class TelemetryPayload(BaseModel):
 
 class BeaconAnchor(BaseModel):
     id: str
-    bssid: str
+    bssid: str  # Wi-Fi BSSID, or any id string (e.g. a BLE advertised name)
+    ble_name: Optional[str] = None  # BLE advertised name, e.g. "ITC-A1"
     x: float
     y: float
     z: float = 1.5

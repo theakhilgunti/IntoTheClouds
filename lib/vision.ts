@@ -102,3 +102,86 @@ export async function describeHouse(opts: { photo: Image | null; aerial: Image |
   raw.observations = (raw.observations ?? []).slice(0, 6);
   return HouseFacts.parse(raw);
 }
+
+const SITE_KINDS = ["garage", "shed", "driveway", "patio", "pool", "trees"] as const;
+
+export const AerialBox = z.object({
+  kind: z.enum(SITE_KINDS),
+  label: z.string().max(40).default(""),
+  x0: z.number(),
+  y0: z.number(),
+  x1: z.number(),
+  y1: z.number(),
+});
+export type AerialBox = z.infer<typeof AerialBox>;
+
+const SITE_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    features: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          kind: { type: "STRING", enum: [...SITE_KINDS] },
+          label: { type: "STRING", description: "Short name, e.g. Garage or Driveway" },
+          x0: { type: "NUMBER", description: "Left edge, 0 to 1000" },
+          y0: { type: "NUMBER", description: "Top edge, 0 to 1000" },
+          x1: { type: "NUMBER", description: "Right edge, 0 to 1000" },
+          y1: { type: "NUMBER", description: "Bottom edge, 0 to 1000" },
+        },
+        required: ["kind", "label", "x0", "y0", "x1", "y1"],
+      },
+    },
+  },
+  required: ["features"],
+};
+
+/** Boxes around things next to the house in a north-up aerial photo. Empty when nothing is clear. */
+export async function describeSite(aerial: Image): Promise<AerialBox[]> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) return [];
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel()}:generateContent`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({
+        contents: [{
+          role: "user",
+          parts: [
+            { text: "Aerial photo. North is up. The house is at the center. Do not box the house itself." },
+            { inlineData: { mimeType: aerial.mime, data: aerial.base64 } },
+            {
+              text:
+                "Mark only features you can actually see around that house: detached garage, shed, driveway, patio or deck, swimming pool, and a distinct clump of trees. " +
+                "Coordinates are 0 to 1000. x grows to the right (east). y grows downward (south). Boxes should be tight. " +
+                "If you are not sure a feature is there, leave it out. Do not mark fences. Return an empty list when the photo is unclear.",
+            },
+          ],
+        }],
+        generationConfig: { responseMimeType: "application/json", responseSchema: SITE_SCHEMA, temperature: 0.1 },
+      }),
+      signal: AbortSignal.timeout(30000),
+    },
+  );
+  if (!res.ok) throw new Error(`Gemini HTTP ${res.status}`);
+  const j = await res.json();
+  const text: string | undefined = j.candidates?.[0]?.content?.parts?.find((p: { text?: string }) => p.text)?.text;
+  if (!text) return [];
+  const raw = JSON.parse(text);
+  const list = Array.isArray(raw?.features) ? raw.features : [];
+  const boxes: AerialBox[] = [];
+  for (const item of list) {
+    const parsed = AerialBox.safeParse({
+      ...item,
+      label: String(item?.label ?? "").slice(0, 40),
+      x0: Number(item?.x0),
+      y0: Number(item?.y0),
+      x1: Number(item?.x1),
+      y1: Number(item?.y1),
+    });
+    if (parsed.success) boxes.push(parsed.data);
+  }
+  return boxes.slice(0, 8);
+}

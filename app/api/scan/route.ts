@@ -28,6 +28,7 @@ export async function POST(req: Request) {
     lng: num(form.get("lng")),
     heading: num(form.get("heading")) ?? null,
     rescan: form.get("rescan") === "1",
+    wayId: num(form.get("wayId")),
     photo:
       photo instanceof File && photo.size > 0 && photo.size < 6_000_000
         ? { base64: Buffer.from(await photo.arrayBuffer()).toString("base64"), mime: "image/jpeg" }

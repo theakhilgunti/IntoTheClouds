@@ -9,7 +9,7 @@ import { STEP_LABELS, type StepKey } from "@/lib/sources";
 type Mode = "photo" | "address";
 type StepState = { status: "pending" | "active" | "done" | "skipped"; detail?: string };
 const STEPS = Object.keys(STEP_LABELS) as StepKey[];
-const EXAMPLES = ["17 Schuyler Ave, Latham, NY 12110", "45 Brunswick Rd, Troy, NY 12180"];
+const EXAMPLE = "17 Schuyler Ave, Latham, NY 12110";
 
 /** Shrink a photo to <= maxSide px JPEG (keeps uploads small and fast). */
 async function shrink(file: File, maxSide: number, quality: number): Promise<Blob> {
@@ -54,11 +54,9 @@ function deviceLocation(): Promise<{ lat: number; lng: number; heading?: number 
 
 export default function LocateForm() {
   const router = useRouter();
-  const [mode, setMode] = useState<Mode>("address");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [address, setAddress] = useState("");
-  const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [steps, setSteps] = useState<Record<StepKey, StepState> | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -83,6 +81,7 @@ export default function LocateForm() {
     if (inputRef.current) inputRef.current.value = "";
   }
 
+  const mode: Mode = file ? "photo" : "address";
   const ready = mode === "photo" ? !!file : address.trim().length > 5;
 
   async function submit(e?: React.FormEvent, overrideAddress?: string) {
@@ -146,178 +145,125 @@ export default function LocateForm() {
   }
 
   return (
-    <div className="w-full max-w-xl space-y-4">
-      <form
-        onSubmit={submit}
-        className="rounded-2xl border border-white/10 bg-neutral-900/80 p-3 shadow-[0_0_80px_-20px_rgba(250,204,21,0.35)] backdrop-blur"
-      >
-        <div role="tablist" className="grid grid-cols-2 gap-1 rounded-xl bg-black/50 p-1">
-          {(["address", "photo"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              role="tab"
-              aria-selected={mode === m}
-              disabled={busy}
-              onClick={() => {
-                setMode(m);
+    <div className="w-full max-w-[440px] space-y-3 text-left">
+      {steps ? (
+        <ol className="space-y-3 border border-bp-ink/60 bg-bp-deep/80 p-5 font-data text-sm" aria-live="polite">
+          {STEPS.map((k) => {
+            const s = steps[k];
+            return (
+              <li key={k} className="flex items-start gap-3">
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
+                  {s.status === "active" ? (
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-bp-ink/30 border-t-bp-red" />
+                  ) : s.status === "done" ? (
+                    <span className="text-bp-red">✓</span>
+                  ) : s.status === "skipped" ? (
+                    <span className="text-bp-line">–</span>
+                  ) : (
+                    <span className="h-1.5 w-1.5 bg-bp-line/60" />
+                  )}
+                </span>
+                <span>
+                  <span className={s.status === "pending" ? "text-bp-line" : "text-bp-ink"}>{STEP_LABELS[k]}</span>
+                  {s.detail && <span className="block text-xs text-bp-line">{s.detail}</span>}
+                </span>
+              </li>
+            );
+          })}
+          {note && <li className="text-xs text-bp-red">{note}</li>}
+        </ol>
+      ) : (
+        <form onSubmit={submit} className="space-y-3">
+          <div className="flex bg-bp-ink text-bp">
+            <label htmlFor="addr" className="sr-only">
+              Street address of the house
+            </label>
+            <input
+              id="addr"
+              value={address}
+              onChange={(e) => {
+                setAddress(e.target.value);
                 setError(null);
               }}
-              className={`min-h-11 rounded-lg px-4 text-sm font-bold uppercase tracking-wider transition ${
-                mode === m ? "bg-yellow-400 text-black" : "text-neutral-400 hover:text-white"
-              }`}
+              placeholder={file ? "Address (optional)" : "Enter an address"}
+              autoComplete="street-address"
+              className="min-h-12 min-w-0 flex-1 bg-transparent px-4 font-data text-sm text-bp placeholder:text-bp/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bp-red"
+            />
+            <button
+              type="submit"
+              disabled={busy}
+              className="min-h-12 bg-bp-red px-6 font-data text-sm text-bp transition hover:bg-white disabled:cursor-wait disabled:opacity-70"
             >
-              {m === "photo" ? "Photo" : "Address"}
+              Scan
             </button>
-          ))}
-        </div>
+          </div>
 
-        <div className="p-3 pt-4 text-left">
-          {steps ? (
-            <ol className="flex min-h-56 flex-col justify-center gap-3" aria-live="polite">
-              {STEPS.map((k) => {
-                const s = steps[k];
-                return (
-                  <li key={k} className="flex items-start gap-3">
-                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
-                      {s.status === "active" ? (
-                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-yellow-400/30 border-t-yellow-400" />
-                      ) : s.status === "done" ? (
-                        <span className="text-yellow-400">✓</span>
-                      ) : s.status === "skipped" ? (
-                        <span className="text-neutral-500">–</span>
-                      ) : (
-                        <span className="h-1.5 w-1.5 rounded-full bg-neutral-600" />
-                      )}
-                    </span>
-                    <span>
-                      <span className={s.status === "pending" ? "text-neutral-500" : "text-white"}>{STEP_LABELS[k]}</span>
-                      {s.detail && <span className="block text-sm text-neutral-400">{s.detail}</span>}
-                    </span>
-                  </li>
-                );
-              })}
-              {note && <li className="text-sm text-yellow-300/90">{note}</li>}
-            </ol>
-          ) : mode === "photo" ? (
-            <div className="space-y-3">
-              {preview ? (
-                <div className="relative overflow-hidden rounded-xl border border-white/10">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={preview} alt="Selected house" className="h-48 w-full object-cover" />
-                  <button
-                    type="button"
-                    onClick={clearFile}
-                    className="absolute right-2 top-2 rounded-md bg-black/70 px-3 py-1 text-xs font-bold uppercase text-white hover:bg-black"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ) : (
-                <label
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setDragging(true);
-                  }}
-                  onDragLeave={() => setDragging(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setDragging(false);
-                    pickFile(e.dataTransfer.files[0]);
-                  }}
-                  className={`flex h-48 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 text-center transition ${
-                    dragging ? "border-yellow-400 bg-yellow-400/10" : "border-white/20 hover:border-yellow-400/60 hover:bg-white/[0.03]"
-                  }`}
-                >
-                  <svg aria-hidden width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-yellow-400">
-                    <path d="M3 10.5 12 3l9 7.5V21H3z" />
-                    <path d="M9 21v-6h6v6" />
-                  </svg>
-                  <span className="text-lg font-semibold text-white">Take or upload a photo of the house</span>
-                  <span className="text-sm text-neutral-400">Front of the building works best</span>
-                  <input
-                    ref={inputRef}
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    className="sr-only"
-                    onChange={(e) => pickFile(e.target.files?.[0])}
-                  />
-                </label>
-              )}
-              <input
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                placeholder="Address (optional, if the photo has no location)"
-                autoComplete="street-address"
-                className="min-h-12 w-full rounded-xl border border-white/15 bg-black/60 px-4 text-white placeholder:text-neutral-600 focus:border-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
-              />
+          <div className="flex items-center gap-3 font-data text-[11px] text-bp-line" aria-hidden>
+            <span className="h-px flex-1 bg-bp-ink/40" />
+            or
+            <span className="h-px flex-1 bg-bp-ink/40" />
+          </div>
+
+          {preview ? (
+            <div className="flex items-center gap-3 border border-bp-ink p-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={preview} alt="Selected house" className="h-12 w-16 object-cover" />
+              <span className="min-w-0 flex-1 truncate font-data text-xs">{file?.name}</span>
+              <button
+                type="button"
+                onClick={clearFile}
+                className="px-3 py-2 font-data text-xs underline underline-offset-4 hover:text-bp-red"
+              >
+                Remove
+              </button>
             </div>
           ) : (
-            <div className="flex min-h-48 flex-col justify-center gap-3">
-              <label htmlFor="addr" className="text-sm font-semibold text-neutral-300">
-                Street address of the house
-              </label>
+            <label className="flex min-h-12 cursor-pointer items-center justify-center gap-2 border border-dashed border-bp-ink font-data text-sm transition hover:bg-bp-ink/10 focus-within:ring-2 focus-within:ring-bp-red">
+              <svg aria-hidden width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M4 8h3l2-3h6l2 3h3v11H4z" />
+                <circle cx="12" cy="13" r="3.5" />
+              </svg>
+              Upload a photo
               <input
-                id="addr"
-                value={address}
-                onChange={(e) => {
-                  setAddress(e.target.value);
-                  setError(null);
-                }}
-                placeholder="17 Schuyler Ave, Latham, NY 12110"
-                autoComplete="street-address"
-                className="min-h-14 w-full rounded-xl border border-white/15 bg-black/60 px-4 text-lg text-white placeholder:text-neutral-600 focus:border-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                ref={inputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="sr-only"
+                onChange={(e) => pickFile(e.target.files?.[0])}
               />
-              <div className="flex flex-wrap items-center gap-2 text-sm text-neutral-500">
-                Try:
-                {EXAMPLES.map((ex) => (
-                  <button
-                    key={ex}
-                    type="button"
-                    onClick={() => {
-                      setAddress(ex);
-                      setError(null);
-                    }}
-                    className="rounded-full border border-white/10 px-3 py-1 text-neutral-300 hover:border-yellow-400/50 hover:text-white"
-                  >
-                    {ex.split(",").slice(0, 2).join(",")}
-                  </button>
-                ))}
-              </div>
-            </div>
+            </label>
           )}
 
           {error && (
-            <p role="alert" className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+            <p role="alert" className="border border-bp-red px-3 py-2 font-data text-xs text-bp-red">
               {error}
             </p>
           )}
 
-          <button
-            type="submit"
-            disabled={busy}
-            className="mt-4 flex min-h-14 w-full items-center justify-center gap-3 rounded-xl bg-yellow-400 text-lg font-black uppercase tracking-wider text-black transition hover:bg-yellow-300 disabled:cursor-wait disabled:opacity-70"
-          >
-            {busy ? "Scanning…" : "Generate 3D model →"}
-          </button>
-        </div>
-      </form>
+          {!file && !address && (
+            <button
+              type="button"
+              onClick={() => setAddress(EXAMPLE)}
+              className="block w-full text-center font-data text-[11px] text-bp-line underline underline-offset-4 hover:text-bp-ink"
+            >
+              Try {EXAMPLE.split(",")[0]}
+            </button>
+          )}
+        </form>
+      )}
 
       {recent.length > 0 && !busy && (
-        <div className="text-left">
-          <p className="mb-2 text-xs font-bold uppercase tracking-widest text-neutral-500">Your recent scans</p>
-          <div className="flex flex-wrap gap-2">
-            {recent.slice(0, 4).map((s) => (
-              <a
-                key={s.result.model.id}
-                href={`/model/${encodeURIComponent(s.result.model.id)}`}
-                className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-neutral-300 hover:border-yellow-400/50 hover:text-white"
-              >
-                {s.result.model.address || "Scanned house"}
-              </a>
-            ))}
-          </div>
+        <div className="flex flex-wrap justify-center gap-2 pt-1">
+          {recent.slice(0, 3).map((s) => (
+            <a
+              key={s.result.model.id}
+              href={`/model/${encodeURIComponent(s.result.model.id)}`}
+              className="border border-bp-ink/40 px-3 py-1.5 font-data text-[11px] text-bp-line hover:border-bp-ink hover:text-bp-ink"
+            >
+              {s.result.model.address || "Scanned house"}
+            </a>
+          ))}
         </div>
       )}
     </div>
