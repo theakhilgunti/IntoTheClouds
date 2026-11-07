@@ -9,7 +9,7 @@
 
 | Task ID | Claimed Files / Directories | Owner / Agent | Branch | Status | Timestamp (UTC) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| *None* | *(No active locks — all modules available)* | — | — | ⚪ Open | — |
+| `LC-01` | `project/laptop_client/README.md` | Antigravity | `agent/laptop/LC-01-windows-scan-spike` | 🟡 In Progress | 2026-11-07 22:56 UTC |
 
 ---
 
