@@ -60,7 +60,7 @@ Tick a box when the task's **Done when** list is fully met.
 
 | ✓ | ID | Task | Owner | Est. | Depends on | Phase |
 | :-: | :-- | :-- | :-- | :-- | :-- | :-- |
-| [ ] | FE-03 | Particle cloud view | Frontend | 2 h | none | 2 |
+| [ ] | FE-03 | Particle cloud view | Frontend | 2 h | small backend change (particles in telemetry_update) | 2 |
 | [ ] | FE-04 | Rig health panel | Frontend | 1.5 h | BE-04 | 2 |
 | [ ] | FE-02 | Room outline and floorplan | Frontend | 2 h | none | 3 |
 | [ ] | HW-07 | Start on boot, run unattended | Pi | 1.5 h | HW-04 | 4 |
@@ -271,8 +271,9 @@ Each card says what to build (**Steps**) and how to know it's finished (**Done w
 ## Frontend (Member C, `project/frontend/src/**`)
 
 ### FE-03: Particle cloud view
-**Est.** 2 h · **Depends on** none
+**Est.** 2 h · **Depends on** a small backend change (see below)
 Show the filter's 600 particles in the 3D view so the spread shows localization confidence. This is good live proof that the filter works.
+⚠️ **The backend does not send particles to the dashboard yet.** The `telemetry_update` message has no particle data. Ask the Backend owner to add a downsampled `particles` list (`[[x, y], ...]`) to `telemetry_update` and `init_state` in `project/backend/app/main.py` before the frontend can draw it. Details are in GitHub issue #17.
 **Done when:** the cloud appears and tightens when the rig is stationary, and `npm run build` has 0 errors.
 
 ### FE-04: Rig health panel
