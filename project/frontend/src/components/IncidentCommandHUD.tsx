@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Activity, Compass, Flame, Footprints, Mic, MicOff, Radio, RefreshCw, ShieldAlert, Wifi } from 'lucide-react';
 import { BeaconAnchor, FirefighterState, HazardPin, WifiScan } from '../types';
+import { ALL_ANCHORS, RF_LEGEND_GRADIENT, RF_MAX_DBM, RF_MIN_DBM } from '../lib/rfMap';
 
 interface HUDProps {
   connected: boolean;
@@ -10,6 +11,11 @@ interface HUDProps {
   hazards: HazardPin[];
   onAddHazard: (hazardType: 'fire' | 'collapse' | 'victim' | 'blocked', note: string) => void;
   onReset: () => void;
+  rfMapAnchorIds?: string[];
+  rfShow?: boolean;
+  rfSelected?: string;
+  onRfShowChange?: (show: boolean) => void;
+  onRfSelectedChange?: (id: string) => void;
 }
 
 export const IncidentCommandHUD: React.FC<HUDProps> = ({
@@ -20,6 +26,11 @@ export const IncidentCommandHUD: React.FC<HUDProps> = ({
   hazards,
   onAddHazard,
   onReset,
+  rfMapAnchorIds = [],
+  rfShow = true,
+  rfSelected = ALL_ANCHORS,
+  onRfShowChange,
+  onRfSelectedChange,
 }) => {
   const [isListening, setIsListening] = useState(false);
   const [speechTranscript, setSpeechTranscript] = useState('');
@@ -201,6 +212,30 @@ export const IncidentCommandHUD: React.FC<HUDProps> = ({
                 </div>
               );
             })}
+          </div>
+          <div className="mt-3 border-t border-gray-800 pt-2 text-[11px] font-mono">
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-bold text-gray-300 uppercase">Signal coverage</span>
+              <label className="flex items-center space-x-1 text-gray-400 cursor-pointer">
+                <input type="checkbox" checked={rfShow} onChange={e => onRfShowChange?.(e.target.checked)} />
+                <span>Show</span>
+              </label>
+            </div>
+            <select
+              value={rfSelected}
+              onChange={e => onRfSelectedChange?.(e.target.value)}
+              className="w-full rounded border border-gray-700 bg-gray-800 px-1 py-0.5 text-gray-200"
+            >
+              <option value={ALL_ANCHORS}>All anchors</option>
+              {rfMapAnchorIds.map(id => (
+                <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
+            <div className="mt-2 h-1.5 w-full rounded-full" style={{ background: RF_LEGEND_GRADIENT }} />
+            <div className="flex justify-between text-[10px] text-gray-400">
+              <span>{RF_MIN_DBM} dBm</span>
+              <span>{RF_MAX_DBM} dBm</span>
+            </div>
           </div>
         </div>
 

@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { ThreeCanvas } from './components/ThreeCanvas';
 import { IncidentCommandHUD } from './components/IncidentCommandHUD';
-import { BeaconAnchor, Breadcrumb, FirefighterState, HazardPin, WifiScan } from './types';
+import { BeaconAnchor, Breadcrumb, FirefighterState, HazardPin, RFMapResponse, WifiScan } from './types';
+import { ALL_ANCHORS } from './lib/rfMap';
 
 const WS_URL = 'ws://localhost:8000/ws/dashboard';
 const API_URL = 'http://localhost:8000/api';
@@ -21,6 +22,10 @@ export const App: React.FC = () => {
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
   const [recentScans, setRecentScans] = useState<WifiScan[]>([]);
   const [hazards, setHazards] = useState<HazardPin[]>([]);
+
+  const [rfMap, setRfMap] = useState<RFMapResponse | null>(null);
+  const [rfShow, setRfShow] = useState(true);
+  const [rfSelected, setRfSelected] = useState<string>(ALL_ANCHORS);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -84,6 +89,30 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(`${API_URL}/map`);
+        if (!res.ok) return;
+        const data: RFMapResponse = await res.json();
+        if (!cancelled) setRfMap(data);
+      } catch {
+        // backend not reachable yet; retry on next tick
+      }
+    };
+    load();
+    const timer = setInterval(load, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const rfMapAnchorIds = rfMap ? Object.keys(rfMap.cells).sort() : [];
+  const rfSelectedEffective =
+    rfSelected === ALL_ANCHORS || rfMapAnchorIds.includes(rfSelected) ? rfSelected : ALL_ANCHORS;
+
   const handleAddHazard = async (hazardType: 'fire' | 'collapse' | 'victim' | 'blocked', note: string) => {
     const newHazard: HazardPin = {
       id: `hazard-${Date.now()}`,
@@ -122,6 +151,9 @@ export const App: React.FC = () => {
         state={state}
         breadcrumbs={breadcrumbs}
         hazards={hazards}
+        rfMap={rfMap}
+        rfShow={rfShow}
+        rfSelected={rfSelectedEffective}
       />
       <IncidentCommandHUD
         connected={connected}
@@ -131,6 +163,11 @@ export const App: React.FC = () => {
         hazards={hazards}
         onAddHazard={handleAddHazard}
         onReset={handleReset}
+        rfMapAnchorIds={rfMapAnchorIds}
+        rfShow={rfShow}
+        rfSelected={rfSelectedEffective}
+        onRfShowChange={setRfShow}
+        onRfSelectedChange={setRfSelected}
       />
     </div>
   );
