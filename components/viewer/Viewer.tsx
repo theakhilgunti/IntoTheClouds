@@ -614,6 +614,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const [roofOn, setRoofOn] = useState(true);
   const [tool, setTool] = useState<MarkerType | null>(null);
   const [marksOpen, setMarksOpen] = useState(false);
+  const [help, setHelp] = useState<string | null>(null);
   const [markers, setMarkers] = useState<Marker[]>(model.markers);
   const assumed = model.interior?.status !== "verified";
   const wrap = useRef<HTMLDivElement>(null);
@@ -693,6 +694,30 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
       },
     ]);
   };
+
+  // Plain-English explanation shown above the toolbar on hover, focus, or tap.
+  const HELP: Record<string, string> = {
+    floor: "Show or hide this floor. Hide the upper floors to look at the one below.",
+    roof: "Show or hide the roof. Turn it off to see straight down into the top floor.",
+    explode: "Pulls the floors apart vertically so you can see every level at once. Tap again to stack them back.",
+    xray: "See-through mode: walls turn to outlines so you can spot exits (green) and stairs (yellow) through them.",
+    markers: "Open the hazard tools. Pick one, then tap a room to pin it so everyone sees it.",
+    fire: "Pin FIRE in a room. Tap the button, then tap the room.",
+    victim: "Pin a PERSON who needs rescue in a room. Tap the button, then tap the room.",
+    gas: "Pin a GAS hazard in a room. Tap the button, then tap the room.",
+    shutoff: "Pin a utility SHUT-OFF (gas, power, water). Tap the button, then tap the room.",
+  };
+  const hint = (key: string) => ({
+    onMouseEnter: () => setHelp(key),
+    onMouseLeave: () => setHelp(null),
+    onFocus: () => setHelp(key),
+    onBlur: () => setHelp(null),
+  });
+  const helpText = help
+    ? HELP[help]
+    : tool
+      ? `Tap a room to drop a ${MARKER_STYLE[tool].label.toLowerCase()} marker. Tap the button again to stop.`
+      : "Hover or tap any button to see what it does. Drag to rotate, scroll or pinch to zoom.";
 
   const btn = (active: boolean) =>
     `shrink-0 border px-2.5 py-1.5 font-data text-[11px] transition ${
@@ -788,7 +813,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         </div>
       )}
 
-      <div className="pointer-events-none absolute bottom-16 left-3 hidden flex-col gap-1.5 font-data text-[11px] text-bp-line sm:flex">
+      <div className="pointer-events-none absolute bottom-36 left-3 hidden flex-col gap-1.5 font-data text-[11px] text-bp-line sm:flex">
         <span className="flex items-center gap-2">
           <svg width="22" height="6" aria-hidden><line x1="0" y1="3" x2="22" y2="3" stroke="#eaf1ff" strokeWidth="2" /></svg>
           {assumed ? "from the map" : "from your plan"}
@@ -805,54 +830,73 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         </span>
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-3">
-        <div className="pointer-events-auto flex max-w-full gap-1.5 overflow-x-auto border border-bp-ink/60 bg-bp-deep p-1.5">
-        {levels.map((lv) => (
-          <button
-            key={lv}
-            className={btn(!hidden.has(lv))}
-            onClick={() => toggleFloor(lv)}
-            aria-pressed={!hidden.has(lv)}
-            title={hidden.has(lv) ? "Show this floor" : "Hide this floor"}
-          >
-            {model.floors.find((f) => f.level === lv)?.name}
-          </button>
-        ))}
-        {model.roof && (
-          <button className={btn(roofOn)} onClick={() => setRoofOn((v) => !v)} aria-pressed={roofOn}>
-            Roof
-          </button>
-        )}
-        <button className={btn(exploded)} onClick={() => setExploded((v) => !v)} aria-pressed={exploded}>
-          Explode
-        </button>
-        <button className={btn(xray)} onClick={() => setXray((v) => !v)} aria-pressed={xray}>
-          X-ray
-        </button>
-        <button className={btn(marksOpen || !!tool)} onClick={() => setMarksOpen((v) => !v)} aria-pressed={marksOpen}>
-          Markers
-        </button>
-        {marksOpen &&
-          (["fire", "victim", "gas", "shutoff"] as MarkerType[]).map((t) => (
-            <button
-              key={t}
-              className={btn(tool === t)}
-              style={tool === t ? { background: MARKER_STYLE[t].color, color: "#111" } : undefined}
-              onClick={() => setTool((cur) => (cur === t ? null : t))}
-              aria-pressed={tool === t}
-            >
-              {MARKER_STYLE[t].label}
-            </button>
-          ))}
+      <div className="pointer-events-none absolute inset-x-0 bottom-3 flex flex-col items-center gap-1.5 px-3">
+        <div
+          role="status"
+          aria-live="polite"
+          className={`max-w-xl border px-3 py-1.5 text-center font-data text-xs leading-snug ${
+            tool ? "border-bp-ink bg-bp-deep text-bp-ink" : "border-bp-ink/40 bg-bp-deep/90 text-bp-line"
+          }`}
+        >
+          {helpText}
+        </div>
+        <div className="pointer-events-auto flex max-w-full items-end gap-3 overflow-x-auto border border-bp-ink/60 bg-bp-deep p-1.5">
+          <div className="flex shrink-0 flex-col gap-1">
+            <span className="px-0.5 font-data text-[9px] uppercase tracking-widest text-bp-line">Floors</span>
+            <div className="flex gap-1.5">
+              {levels.map((lv) => (
+                <button
+                  key={lv}
+                  className={btn(!hidden.has(lv))}
+                  onClick={() => toggleFloor(lv)}
+                  aria-pressed={!hidden.has(lv)}
+                  aria-label={`${model.floors.find((f) => f.level === lv)?.name} floor: ${hidden.has(lv) ? "hidden, tap to show" : "shown, tap to hide"}`}
+                  {...hint("floor")}
+                >
+                  {model.floors.find((f) => f.level === lv)?.name}
+                </button>
+              ))}
+              {model.roof && (
+                <button className={btn(roofOn)} onClick={() => setRoofOn((v) => !v)} aria-pressed={roofOn} {...hint("roof")}>
+                  Roof
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-col gap-1 border-l border-bp-ink/30 pl-3">
+            <span className="px-0.5 font-data text-[9px] uppercase tracking-widest text-bp-line">View</span>
+            <div className="flex gap-1.5">
+              <button className={btn(exploded)} onClick={() => setExploded((v) => !v)} aria-pressed={exploded} {...hint("explode")}>
+                Spread floors apart
+              </button>
+              <button className={btn(xray)} onClick={() => setXray((v) => !v)} aria-pressed={xray} {...hint("xray")}>
+                See through walls
+              </button>
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-col gap-1 border-l border-bp-ink/30 pl-3">
+            <span className="px-0.5 font-data text-[9px] uppercase tracking-widest text-bp-line">Mark hazards</span>
+            <div className="flex gap-1.5">
+              <button className={btn(marksOpen || !!tool)} onClick={() => setMarksOpen((v) => !v)} aria-pressed={marksOpen} {...hint("markers")}>
+                {marksOpen ? "Hide tools" : "Add a marker"}
+              </button>
+              {marksOpen &&
+                (["fire", "victim", "gas", "shutoff"] as MarkerType[]).map((t) => (
+                  <button
+                    key={t}
+                    className={btn(tool === t)}
+                    style={tool === t ? { background: MARKER_STYLE[t].color, color: "#111" } : undefined}
+                    onClick={() => setTool((cur) => (cur === t ? null : t))}
+                    aria-pressed={tool === t}
+                    {...hint(t)}
+                  >
+                    {MARKER_STYLE[t].label}
+                  </button>
+                ))}
+            </div>
+          </div>
         </div>
       </div>
-      {tool && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-24 flex justify-center">
-          <span className="border border-bp-ink bg-bp-deep px-4 py-1.5 font-data text-sm text-bp-ink">
-            Tap a room to drop a {MARKER_STYLE[tool].label.toLowerCase()} marker
-          </span>
-        </div>
-      )}
     </div>
   );
 }
