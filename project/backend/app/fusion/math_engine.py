@@ -55,7 +55,7 @@ class ParticleFilterLocalizer:
         likelihood = np.ones(self.num_particles)
         
         for scan in wifi_scans:
-            bssid = scan.get("bssid", "").lower()
+            bssid = str(scan.get("bssid") or "").lower()
             rssi = scan.get("rssi_dbm", -100)
             if bssid in anchors:
                 anchor = anchors[bssid]
