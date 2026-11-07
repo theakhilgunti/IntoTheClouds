@@ -42,3 +42,22 @@ next-env.d.ts
 
 # local Claude Code settings
 .claude/
+
+# --- Wi-Fi / Pi tracking project (project/) ---
+# nested node_modules and build output (the rules above only match the repo root)
+node_modules/
+dist/
+.vite/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# multi-agent claim lock (see AGENTS.md)
+.agent_locks.json
+
+# Pi benchmark output
+hw03_results.json
