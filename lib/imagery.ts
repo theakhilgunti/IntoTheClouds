@@ -19,7 +19,8 @@ function exportUrl(c: LatLng, halfSize: number) {
  * so we step out to wider views until one renders.
  */
 export async function aerialImage(c: LatLng, halfSize: number): Promise<{ image: Image; halfSize: number }> {
-  const sizes = [halfSize, 60, 80, 110].filter((s, i, a) => s >= halfSize && a.indexOf(s) === i);
+  // Step outward until Esri has a cached tile; larger footprints need a wider first ask.
+  const sizes = [halfSize, 60, 80, 110, 150, 200].filter((s, i, a) => s >= halfSize * 0.95 && a.indexOf(s) === i);
   let lastErr: unknown;
   for (const size of sizes) {
     try {

@@ -10,7 +10,7 @@
  * when you stand on the street looking at the front door.
  */
 import type {
-  BuildingModel, Door, Floor, Point, Roof, RoofShape, RoomType, Stairs, Wall,
+  BuildingModel, Door, Floor, Point, Roof, RoofPlan, RoofShape, RoomType, Stairs, Wall,
 } from "@/packages/schema/building-model";
 import { minAreaRect } from "./geo";
 import { roomBays } from "./compound-geom";
@@ -307,6 +307,10 @@ export type BuildInput = {
   basement: boolean;
   garage: GarageSide;
   roof: RoofShape;
+  /** Which plan axis the ridge runs along. Defaults to the longer side. */
+  ridgeAlong?: "width" | "depth";
+  /** Inferred ridge-line / multi-wing plan in the model frame. */
+  roofPlan?: RoofPlan | null;
   /** Garage centroid in the model frame, used to put the hall and side door on the driveway side. */
   garageAt?: Point | null;
 };
@@ -327,9 +331,10 @@ export function buildHouse(input: BuildInput): BuildOutput {
   const alongU = Math.abs(f[0] * rect.u[0] + f[1] * rect.u[1]) > 0.5;
   let width = alongU ? rect.wV : rect.wU;
   let depth = alongU ? rect.wU : rect.wV;
-  if (width > 40 || depth > 40) notes.push("This building is larger than a typical house; the room layout is a rough guide only.");
-  width = Math.min(40, Math.max(5, width));
-  depth = Math.min(40, Math.max(5, depth));
+  if (width > 60 || depth > 60) notes.push("This building is larger than a typical house; the room layout is a rough guide only.");
+  // Keep the real footprint scale so large compounds still get a full shell.
+  width = Math.min(120, Math.max(5, width));
+  depth = Math.min(120, Math.max(5, depth));
 
   // Plan frame -> model frame. Plan -y is the front (toward the street).
   const xAxis: Point = [-f[1], f[0]];
@@ -384,18 +389,30 @@ export function buildHouse(input: BuildInput): BuildOutput {
     };
   });
 
-  // The roof covers the main body (the garage strip is single story).
+  // Roof eaves follow the mapped outline. An attached garage strip stays single-story (no roof over it).
   const topRooms = plan[plan.length - 1].rooms;
-  const bx0 = Math.min(...topRooms.map((r) => r.r.x0)), bx1 = Math.max(...topRooms.map((r) => r.r.x1));
-  const [rcx, rcy] = T([(bx0 + bx1) / 2, 0]);
+  const mainTop = topRooms.filter((r) => r.zone !== "garage" && r.zone !== "mud");
+  const body = mainTop.length ? mainTop : topRooms;
+  const bx0 = Math.min(...body.map((r) => r.r.x0)), bx1 = Math.max(...body.map((r) => r.r.x1));
+  const by0 = Math.min(...body.map((r) => r.r.y0)), by1 = Math.max(...body.map((r) => r.r.y1));
+  const roofPolyPlan = clipPolyToRect(fpPlan, { x0: bx0, y0: by0, x1: bx1, y1: by1 });
+  const roofPoly = (roofPolyPlan.length >= 3 ? roofPolyPlan : fpPlan).map(T);
+  const rcx = roofPoly.reduce((s, p) => s + p[0], 0) / roofPoly.length;
+  const rcy = roofPoly.reduce((s, p) => s + p[1], 0) / roofPoly.length;
   const roofW = bx1 - bx0;
+  const roofD = by1 - by0;
+  const ridgeAlong = input.ridgeAlong ?? (roofD >= roofW ? "depth" : "width");
+  const planHeight = input.roofPlan?.wings.reduce((m, w) => Math.max(m, w.height), 0) ?? 0;
   const roof: Roof = {
     shape: input.roof,
-    center: [rcx, rcy],
-    width: roofW,
-    depth,
+    center: [r4(rcx), r4(rcy)],
+    width: Math.max(1, roofW),
+    depth: Math.max(1, roofD),
     rotation: Math.atan2(xAxis[1], xAxis[0]),
-    height: RISE[input.roof](Math.min(roofW, depth)),
+    height: planHeight > 0 ? planHeight : RISE[input.roof](Math.min(roofW, roofD)),
+    polygon: roofPoly.map(([x, y]) => [r4(x), r4(y)] as Point),
+    ridgeAlong,
+    plan: input.roofPlan ?? undefined,
   };
 
   const bearing = ((Math.atan2(f[0], f[1]) * 180) / Math.PI + 360) % 360;

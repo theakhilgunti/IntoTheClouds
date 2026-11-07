@@ -102,6 +102,124 @@ export function splitAtX(poly: Pt[], ridge: number): { neg: Pt[]; pos: Pt[] } {
   };
 }
 
+/** Split a polygon by the horizontal line y = ridge. */
+export function splitAtY(poly: Pt[], ridge: number): { neg: Pt[]; pos: Pt[] } {
+  const yAt = (a: Pt, b: Pt): Pt => {
+    const t = (ridge - a[1]) / (b[1] - a[1] || 1e-12);
+    return [a[0] + t * (b[0] - a[0]), ridge];
+  };
+  return {
+    neg: dropCollinear(ccw(clipHalfPlane(poly, (p) => p[1] <= ridge + 1e-6, yAt))),
+    pos: dropCollinear(ccw(clipHalfPlane(poly, (p) => p[1] >= ridge - 1e-6, yAt))),
+  };
+}
+
+/** True when the ring bends both ways (a step, L, or courtyard notch). */
+export function isConcave(poly: Pt[]): boolean {
+  const ring = ccw(poly);
+  if (ring.length < 4) return false;
+  let sign = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    const c = ring[(i + 2) % ring.length];
+    const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+    if (Math.abs(cross) < 1e-6) continue;
+    const s = cross > 0 ? 1 : -1;
+    if (sign === 0) sign = s;
+    else if (s !== sign) return true;
+  }
+  return false;
+}
+
+/** Add vertices along long edges so pitched roofs have enough samples. */
+export function densifyPoly(poly: Pt[], maxEdge: number): Pt[] {
+  const ring = ccw(poly);
+  if (ring.length < 2 || maxEdge <= 0) return ring;
+  const out: Pt[] = [];
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    out.push(a);
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const n = Math.floor(len / maxEdge);
+    for (let k = 1; k < n; k++) {
+      const t = k / n;
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+  }
+  return out;
+}
+
+/** Push each vertex outward by `dist` meters so the eaves hang past the walls. */
+export function expandPoly(poly: Pt[], dist: number): Pt[] {
+  if (poly.length < 3 || Math.abs(dist) < 1e-6) return ccw(poly);
+  const ring = ccw(poly);
+  const out: Pt[] = [];
+  for (let i = 0; i < ring.length; i++) {
+    const prev = ring[(i - 1 + ring.length) % ring.length];
+    const cur = ring[i];
+    const next = ring[(i + 1) % ring.length];
+    const e1: Pt = [cur[0] - prev[0], cur[1] - prev[1]];
+    const e2: Pt = [next[0] - cur[0], next[1] - cur[1]];
+    const l1 = Math.hypot(e1[0], e1[1]) || 1;
+    const l2 = Math.hypot(e2[0], e2[1]) || 1;
+    // CCW ring: outward is the right-hand normal.
+    const o1: Pt = [e1[1] / l1, -e1[0] / l1];
+    const o2: Pt = [e2[1] / l2, -e2[0] / l2];
+    let ox = o1[0] + o2[0];
+    let oy = o1[1] + o2[1];
+    const ol = Math.hypot(ox, oy) || 1;
+    ox /= ol;
+    oy /= ol;
+    const dot = Math.max(-0.95, Math.min(0.95, o1[0] * o2[0] + o1[1] * o2[1]));
+    const miter = dist / Math.max(0.35, Math.sqrt((1 + dot) / 2));
+    out.push([cur[0] + ox * miter, cur[1] + oy * miter]);
+  }
+  return dropCollinear(ccw(out));
+}
+
+/**
+ * Grow the eaves without ripping concave corners.
+ * Miter offsets self-intersect on steps, so those outlines scale out from the centroid instead.
+ */
+export function expandPolySafe(poly: Pt[], dist: number): Pt[] {
+  if (poly.length < 3 || Math.abs(dist) < 1e-6) return ccw(poly);
+  if (!isConcave(poly)) {
+    const grown = expandPoly(poly, dist);
+    if (grown.length >= 3 && Math.abs(signedArea(grown)) > Math.abs(signedArea(poly)) * 0.5) return grown;
+  }
+  const ring = ccw(poly);
+  let cx = 0, cy = 0;
+  for (const p of ring) {
+    cx += p[0];
+    cy += p[1];
+  }
+  cx /= ring.length;
+  cy /= ring.length;
+  return ring.map(([x, y]) => {
+    const dx = x - cx;
+    const dy = y - cy;
+    const len = Math.hypot(dx, dy) || 1;
+    return [x + (dx / len) * dist, y + (dy / len) * dist] as Pt;
+  });
+}
+
+/** Shortest distance from a point to the edges of a ring. */
+export function distToEdges(p: Pt, ring: Pt[]): number {
+  let best = Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const l2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2));
+    best = Math.min(best, Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy)));
+  }
+  return best;
+}
+
 function pointInRing(p: Pt, ring: Pt[]): boolean {
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {

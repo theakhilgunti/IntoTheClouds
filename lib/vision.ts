@@ -9,6 +9,8 @@ import type { Image } from "./imagery";
 export const HouseFacts = z.object({
   stories: z.number().int().min(1).max(4),
   roof_shape: z.enum(["gable", "hip", "flat", "gambrel", "mansard", "other"]),
+  /** Which way the ridge runs, as seen from the street. Prefer the aerial for this. */
+  ridge_along: z.enum(["front_to_back", "side_to_side", "unknown"]).default("unknown"),
   garage: z.enum(["none", "attached_left", "attached_right", "detached", "unknown"]),
   basement: z.enum(["visible", "likely", "unlikely", "unknown"]),
   exterior_material: z.string(),
@@ -24,6 +26,12 @@ const RESPONSE_SCHEMA = {
   properties: {
     stories: { type: "INTEGER", description: "Floors above ground, not counting basement or attic" },
     roof_shape: { type: "STRING", enum: ["gable", "hip", "flat", "gambrel", "mansard", "other"] },
+    ridge_along: {
+      type: "STRING",
+      enum: ["front_to_back", "side_to_side", "unknown"],
+      description:
+        "From the aerial: front_to_back = ridge runs from the street face toward the backyard; side_to_side = ridge runs left-right parallel to the street",
+    },
     garage: {
       type: "STRING",
       enum: ["none", "attached_left", "attached_right", "detached", "unknown"],
@@ -41,7 +49,7 @@ const RESPONSE_SCHEMA = {
     },
   },
   required: [
-    "stories", "roof_shape", "garage", "basement", "exterior_material", "style",
+    "stories", "roof_shape", "ridge_along", "garage", "basement", "exterior_material", "style",
     "photo_matches_aerial", "confidence", "observations",
   ],
 };
@@ -73,8 +81,10 @@ export async function describeHouse(opts: { photo: Image | null; aerial: Image |
     text:
       "You help firefighters understand a house before they go in. Describe the house at the center of the " +
       "aerial image (and in the street photo, if given). Count floors above ground carefully: a dormer or attic " +
-      "window does not count as a full floor. Only report what the images support; use \"unknown\" when you " +
-      "cannot tell. Map data we already have:\n" + opts.facts,
+      "window does not count as a full floor. For roof_shape and ridge_along, prefer the aerial: a long dark " +
+      "rectangle with a center seam is usually a gable; a rectangle that tapers on all four sides is a hip; a " +
+      "featureless pad is flat. Only report what the images support; use \"unknown\" when you cannot tell. Map " +
+      "data we already have:\n" + opts.facts,
   });
 
   const res = await fetch(
@@ -100,6 +110,7 @@ export async function describeHouse(opts: { photo: Image | null; aerial: Image |
   raw.stories = Math.min(4, Math.max(1, Math.round(raw.stories ?? 2)));
   raw.confidence = Math.min(1, Math.max(0, raw.confidence ?? 0.5));
   raw.observations = (raw.observations ?? []).slice(0, 6);
+  if (!raw.ridge_along) raw.ridge_along = "unknown";
   return HouseFacts.parse(raw);
 }
 

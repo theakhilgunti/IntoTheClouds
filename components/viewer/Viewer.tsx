@@ -15,7 +15,7 @@ import type {
   Room,
   Wall,
 } from "@/packages/schema/building-model";
-import { clipPolyToRect, signedArea, splitAtX, type Pt } from "@/lib/outline";
+import { buildRoofPositions, type Pt } from "@/lib/roof-geom";
 // Model frame: x = east, y = north. Three.js frame: x = east, y = up, z = south.
 const toXZ = ([x, y]: Point): [number, number] => [x, -y];
 
@@ -322,6 +322,106 @@ function RoomSlab({
   );
 }
 
+/** Stack ground surfaces so large lots do not z-fight. */
+const LAYER_Y: Record<string, number> = {
+  base: -0.22,
+  yard: 0.0,
+  road: 0.05,
+  driveway: 0.07,
+  patio: 0.09,
+  pool: 0.06,
+  fence: 0.0,
+};
+
+function groundMat(color: string, hovered: boolean, opts?: { transparent?: boolean; opacity?: number; offset?: number }) {
+  return (
+    <meshStandardMaterial
+      color={color}
+      emissive={hovered ? "#ffffff" : "#000000"}
+      emissiveIntensity={hovered ? 0.25 : 0}
+      roughness={0.95}
+      transparent={opts?.transparent}
+      opacity={opts?.opacity ?? 1}
+      side={THREE.DoubleSide}
+      depthWrite={!(opts?.transparent && (opts.opacity ?? 1) < 1)}
+      polygonOffset
+      polygonOffsetFactor={opts?.offset ?? -1}
+      polygonOffsetUnits={opts?.offset ?? -1}
+    />
+  );
+}
+
+/** Garage / shed: wall ring + simple gable roof instead of a solid cheese block. */
+function OutbuildingMesh({
+  feature,
+  hovered,
+  onOver,
+  onOut,
+}: {
+  feature: CompoundFeature;
+  hovered: boolean;
+  onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
+  onOut: (id: string) => void;
+}) {
+  const wallH = Math.max(2.2, feature.height || 2.6);
+  const roofH = Math.min(2.2, Math.max(1.1, wallH * 0.35));
+  const walls = useMemo(() => {
+    const ring = feature.polygon;
+    const out: { key: string; pos: [number, number, number]; rot: number; len: number }[] = [];
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % ring.length];
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (len < 0.15) continue;
+      const [x, z] = toXZ([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+      out.push({ key: `${i}`, pos: [x, wallH / 2, z], rot: Math.atan2(b[1] - a[1], b[0] - a[0]), len });
+    }
+    return out;
+  }, [feature.polygon, wallH]);
+  const roofGeo = useMemo(() => {
+    const poly = feature.polygon as Pt[];
+    if (poly.length < 3) return null;
+    const positions = buildRoofPositions(poly, {
+      shape: "hip",
+      ridgeAlong: "depth",
+      height: roofH,
+      wings: [{ polygon: poly, height: roofH, shape: "hip" }],
+    });
+    if (positions.length < 9) return null;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geo.computeVertexNormals();
+    return geo;
+  }, [feature.polygon, roofH]);
+  const hover = (e: ThreeEvent<PointerEvent>) => {
+    e.stopPropagation();
+    onOver(e, feature.id, feature.label, SITE_NOTE[feature.source]);
+  };
+  const color = hovered ? "#cfdcf6" : SITE_COLOR[feature.kind];
+  return (
+    <group onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
+      {walls.map((w) => (
+        <mesh key={w.key} position={w.pos} rotation={[0, w.rot, 0]}>
+          <boxGeometry args={[w.len, wallH, 0.22]} />
+          <meshStandardMaterial color={color} roughness={0.9} />
+        </mesh>
+      ))}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
+        <shapeGeometry args={[new THREE.Shape(feature.polygon.map(([x, y]) => new THREE.Vector2(x, y)))]} />
+        <meshStandardMaterial color="#2a5ab8" roughness={1} />
+      </mesh>
+      {roofGeo && (
+        <group position={[0, wallH, 0]}>
+          <mesh geometry={roofGeo} raycast={noopRaycast}>
+            <meshStandardMaterial color="#1c3f86" roughness={0.9} side={THREE.DoubleSide} />
+            <Edges color="#eaf1ff" threshold={20} raycast={noopRaycast} />
+          </mesh>
+        </group>
+      )}
+    </group>
+  );
+}
+
 function SiteFeatureMesh({
   feature,
   hovered,
@@ -333,22 +433,48 @@ function SiteFeatureMesh({
   onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
   onOut: (id: string) => void;
 }) {
-  const geom = useMemo(() => {
-    const shape = new THREE.Shape(feature.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
-    if (feature.kind === "yard" || feature.kind === "trees") return new THREE.ShapeGeometry(shape);
-    const geo = new THREE.ExtrudeGeometry(shape, { depth: Math.max(0.06, feature.height), bevelEnabled: false });
-    geo.rotateX(-Math.PI / 2);
-    return geo;
-  }, [feature]);
   const center = useMemo(() => {
     const n = feature.polygon.length || 1;
     const c = feature.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]] as Point, [0, 0] as Point);
     return toXZ([c[0] / n, c[1] / n]);
   }, [feature.polygon]);
+
+  const slabY =
+    feature.kind === "yard"
+      ? LAYER_Y.yard
+      : feature.kind === "road"
+        ? LAYER_Y.road
+        : feature.kind === "driveway"
+          ? LAYER_Y.driveway
+          : feature.kind === "patio"
+            ? LAYER_Y.patio
+            : feature.kind === "pool"
+              ? LAYER_Y.pool
+              : LAYER_Y.fence;
+  const thickness =
+    feature.kind === "fence"
+      ? Math.max(0.8, feature.height)
+      : feature.kind === "yard"
+        ? 0.045
+        : feature.kind === "pool"
+          ? 0.12
+          : feature.kind === "road"
+            ? 0.07
+            : 0.055;
+
+  const slabGeo = useMemo(() => {
+    if (feature.kind === "trees" || feature.kind === "garage" || feature.kind === "shed") return null;
+    const shape = new THREE.Shape(feature.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
+    const g = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false });
+    g.rotateX(-Math.PI / 2);
+    return g;
+  }, [feature.kind, feature.polygon, feature.height, thickness]);
+
   const hover = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
     onOver(e, feature.id, feature.label, SITE_NOTE[feature.source]);
   };
+
   if (feature.kind === "trees") {
     return (
       <group position={[center[0], 0, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
@@ -363,84 +489,92 @@ function SiteFeatureMesh({
       </group>
     );
   }
-  const flat = feature.kind === "yard";
-  const lift = feature.kind === "driveway" || feature.kind === "road" || feature.kind === "patio" || feature.kind === "pool" ? 0.03 : 0;
+
+  if (feature.kind === "garage" || feature.kind === "shed") {
+    return <OutbuildingMesh feature={feature} hovered={hovered} onOver={onOver} onOut={onOut} />;
+  }
+
+  if (!slabGeo) return null;
+  const offset = feature.kind === "yard" ? -4 : feature.kind === "road" ? -3 : feature.kind === "driveway" ? -2 : -1;
   return (
-    <mesh
-      geometry={geom}
-      rotation={flat ? [-Math.PI / 2, 0, 0] : [0, 0, 0]}
-      position={[0, flat ? -0.03 : lift, 0]}
-      onPointerOver={hover}
-      onPointerOut={() => onOut(feature.id)}
-    >
-      <meshStandardMaterial
-        color={SITE_COLOR[feature.kind]}
-        emissive={hovered ? "#ffffff" : "#000000"}
-        emissiveIntensity={hovered ? 0.25 : 0}
-        roughness={0.95}
-        transparent={feature.kind === "pool"}
-        opacity={feature.kind === "pool" ? 0.9 : 1}
-        side={THREE.DoubleSide}
-      />
+    <mesh geometry={slabGeo} position={[0, slabY, 0]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
+      {groundMat(SITE_COLOR[feature.kind], hovered, {
+        transparent: feature.kind === "pool",
+        opacity: feature.kind === "pool" ? 0.88 : 1,
+        offset,
+      })}
     </mesh>
   );
 }
 
-function plateGeometry(parts: Pt[][], heightAt: (p: Pt) => number): THREE.BufferGeometry | null {
-  const positions: number[] = [];
-  for (const part of parts) {
-    if (part.length < 3 || Math.abs(signedArea(part)) < 0.2) continue;
-    let faces: number[][] = [];
-    try {
-      faces = THREE.ShapeUtils.triangulateShape(part.map((p) => new THREE.Vector2(p[0], p[1])), []);
-    } catch {
-      continue;
-    }
-    for (const face of faces) {
-      for (const idx of face) {
-        const p = part[idx];
-        if (!p) continue;
-        positions.push(p[0], heightAt(p), -p[1]);
-      }
-    }
-  }
-  if (positions.length < 9) return null;
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geo.computeVertexNormals();
-  return geo;
-}
-
-/** Roof sits on the mapped outline. The ridge runs down the middle; the eaves follow the yellow line. */
+/**
+ * Roof sits on the mapped eaves outline.
+ * Stepped / concave footprints get a hip-style falloff so the mesh does not tear.
+ */
 function RoofMesh({ roof, footprint, baseY, xray }: { roof: Roof; footprint: Point[]; baseY: number; xray: boolean }) {
   const geometry = useMemo(() => {
+    // Inferred plans are already in the model frame (east/north); mesh them in place.
+    if (roof.plan?.wings?.length) {
+      const positions = buildRoofPositions(footprint, {
+        shape: roof.shape,
+        ridgeAlong: roof.ridgeAlong ?? (roof.depth >= roof.width ? "depth" : "width"),
+        height: roof.height,
+        wings: roof.plan.wings.map((w) => ({
+          polygon: w.polygon,
+          ridge: w.ridge,
+          height: w.height,
+          shape: w.shape,
+        })),
+      });
+      if (positions.length < 9) return null;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      geo.computeVertexNormals();
+      return { geo, framed: false as const };
+    }
+
+    const ring = roof.polygon?.length ? roof.polygon : footprint;
     const cos = Math.cos(roof.rotation);
     const sin = Math.sin(roof.rotation);
-    const local = footprint.map(([x, y]) => {
+    const local: Pt[] = ring.map(([x, y]) => {
       const dx = x - roof.center[0];
       const dy = y - roof.center[1];
-      return [dx * cos + dy * sin, -dx * sin + dy * cos] as Pt;
+      return [dx * cos + dy * sin, -dx * sin + dy * cos];
     });
-    const plate = clipPolyToRect(local, {
-      x0: -roof.width / 2,
-      y0: -roof.depth / 2,
-      x1: roof.width / 2,
-      y1: roof.depth / 2,
+    const positions = buildRoofPositions(local, {
+      shape: roof.shape,
+      ridgeAlong: roof.ridgeAlong ?? (roof.depth >= roof.width ? "depth" : "width"),
+      height: roof.height,
     });
-    const h = roof.height;
-    if (roof.shape === "flat") return plateGeometry([plate], () => h);
-    const xs = plate.map((p) => p[0]);
-    const ridge = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0;
-    const { neg, pos } = splitAtX(plate, ridge);
-    return plateGeometry([neg, pos], (p) => (Math.abs(p[0] - ridge) < 0.08 ? h : 0))
-      ?? new THREE.BoxGeometry(roof.width, Math.max(0.2, h), roof.depth).translate(0, h / 2, 0);
+    if (positions.length < 9) return null;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geo.computeVertexNormals();
+    return { geo, framed: true as const };
   }, [roof, footprint]);
 
-  const [x, z] = toXZ(roof.center);
   if (!geometry) return null;
+  if (!geometry.framed) {
+    return (
+      <group position={[0, baseY, 0]}>
+        <mesh geometry={geometry.geo} raycast={noopRaycast}>
+          <meshStandardMaterial
+            color={xray ? "#9ebcff" : "#1c3f86"}
+            wireframe={xray}
+            transparent={xray}
+            opacity={xray ? 0.35 : 1}
+            roughness={0.9}
+            side={THREE.DoubleSide}
+          />
+          {!xray && <Edges color="#eaf1ff" threshold={20} raycast={noopRaycast} />}
+        </mesh>
+      </group>
+    );
+  }
+  const [x, z] = toXZ(roof.center);
   return (
     <group position={[x, baseY, z]} rotation={[0, roof.rotation, 0]}>
-      <mesh geometry={geometry} raycast={noopRaycast}>
+      <mesh geometry={geometry.geo} raycast={noopRaycast}>
         <meshStandardMaterial
           color={xray ? "#9ebcff" : "#1c3f86"}
           wireframe={xray}
@@ -539,7 +673,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const footprintLine = useMemo(
     () => [...model.footprint, model.footprint[0]].map((p) => {
       const [x, z] = toXZ(p);
-      return new THREE.Vector3(x, 0.03, z);
+      return new THREE.Vector3(x, 0.11, z);
     }),
     [model.footprint],
   );
@@ -579,9 +713,17 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         <directionalLight position={[-extent * 2, extent, -extent * 2]} intensity={0.35} />
 
         {!xray && (
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.08, 0]} raycast={noopRaycast}>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, LAYER_Y.base, 0]} raycast={noopRaycast}>
             <circleGeometry args={[extent * 3, 48]} />
-            <meshStandardMaterial color="#0d3482" transparent opacity={hidden.size || exploded ? 0.35 : 0.8} />
+            <meshStandardMaterial
+              color="#0d3482"
+              transparent
+              opacity={hidden.size || exploded ? 0.35 : 0.8}
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-8}
+              polygonOffsetUnits={-8}
+            />
           </mesh>
         )}
         <Line points={footprintLine} color="#eaf1ff" lineWidth={1.5} dashed dashSize={0.45} gapSize={0.3} transparent opacity={xray ? 0.9 : 0.75} raycast={noopRaycast} />

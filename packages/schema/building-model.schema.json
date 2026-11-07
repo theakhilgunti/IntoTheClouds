@@ -377,6 +377,141 @@
           "type": "number",
           "minimum": 0,
           "description": "Rise above the top floor's ceiling, meters"
+        },
+        "polygon": {
+          "description": "Eaves outline; when set, the roof follows this instead of a rectangle",
+          "minItems": 3,
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in meters"
+          }
+        },
+        "ridgeAlong": {
+          "description": "Axis the ridge runs along in the plan frame",
+          "type": "string",
+          "enum": [
+            "width",
+            "depth"
+          ]
+        },
+        "plan": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "flat",
+                "gable",
+                "hip",
+                "wings"
+              ]
+            },
+            "wings": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "polygon": {
+                    "minItems": 3,
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "number"
+                        }
+                      ],
+                      "items": false,
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "description": "[x, y] in meters"
+                    },
+                    "description": "Closed ring, no repeated last point"
+                  },
+                  "ridge": {
+                    "description": "Ridge segment in the model frame; omit for flat",
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "array",
+                        "prefixItems": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "number"
+                          }
+                        ],
+                        "items": false,
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "description": "[x, y] in meters"
+                      },
+                      {
+                        "type": "array",
+                        "prefixItems": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "number"
+                          }
+                        ],
+                        "items": false,
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "description": "[x, y] in meters"
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "height": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "shape": {
+                    "type": "string",
+                    "enum": [
+                      "gable",
+                      "hip",
+                      "flat"
+                    ]
+                  }
+                },
+                "required": [
+                  "polygon",
+                  "height",
+                  "shape"
+                ]
+              }
+            },
+            "source": {
+              "description": "What decided the plan, e.g. map, aerial, footprint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "wings"
+          ]
         }
       },
       "required": [

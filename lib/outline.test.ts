@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { clipPolyToRect, signedArea, splitAtX, wallsAlongOutline } from "./outline.ts";
+import { clipPolyToRect, expandPoly, signedArea, splitAtX, splitAtY, wallsAlongOutline } from "./outline.ts";
 
 const notch = [
   [0, 0], [10, 0], [10, 2], [4, 2], [4, 3], [0, 3],
@@ -44,4 +44,18 @@ test("the ridge split meets at x = 0", () => {
   assert.ok(pos.every((p) => p[0] >= -0.001));
   assert.ok(neg.some((p) => Math.abs(p[0]) < 0.001));
   assert.ok(Math.abs(Math.abs(signedArea(neg)) + Math.abs(signedArea(pos)) - 24) < 0.05);
+});
+
+test("a side-to-side ridge splits on y", () => {
+  const rect = [[-2, -3], [2, -3], [2, 3], [-2, 3]] as [number, number][];
+  const { neg, pos } = splitAtY(rect, 0);
+  assert.ok(neg.every((p) => p[1] <= 0.001));
+  assert.ok(pos.every((p) => p[1] >= -0.001));
+});
+
+test("expanding the eaves keeps the step and grows the area", () => {
+  const before = Math.abs(signedArea(notch));
+  const grown = expandPoly(notch, 0.4);
+  assert.ok(Math.abs(signedArea(grown)) > before);
+  assert.ok(grown.length >= 5);
 });

@@ -9,7 +9,7 @@
 
 | Task ID | Claimed Files / Directories | Owner / Agent | Branch | Status | Timestamp (UTC) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| *None* | *(No active locks — all modules available)* | — | — | ⚪ Open | — |
+| — | — | — | — | — | — |
 
 ---
 
@@ -29,7 +29,7 @@ To avoid collision, each member and agent has a defined territory based on the h
 ## 🚦 Task Backlog & Execution Pipeline
 
 ### 1. 🟡 In Progress (Claimed)
-*(None currently claimed. Ready to pick up next tasks!)*
+- None
 
 ---
 
@@ -83,3 +83,9 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 22:10 | Cursor | UI-03 | Checked the lot against the map, drew Simonson Avenue and the driveway to the garage, and sized rooms from how many windows fit. |
 | 22:25 | Cursor | UI-04 | Cut the walls, floors, and roof to the yellow mapped outline instead of the bounding rectangle. |
 | 22:31 | Claude-design | DS-01 | Finished task |
+| 22:35 | Cursor | UI-05 | Roof eaves follow the mapped outline; shape and ridge use OSM tags and the aerial photo when available. |
+| 22:45 | Cursor | UI-06 | Rebuilt roofs as a fan over the eaves outline so stepped and L-shaped houses no longer tear. |
+| 22:55 | Cursor | UI-07 | Infer roof plans from OSM, Esri aerial, and footprint class; mesh ridge lines and multi-wing roofs instead of a center peak. |
+| 23:00 | Cursor | UI-08 | Widened OSM/aerial reach and site filters so larger buildings keep the lot, outbuildings, parking, and street. |
+| 23:10 | Cursor | UI-09 | Layered ground to stop z-fighting, gave garages/sheds walls and roofs, and rebuilt gable meshes from ridge lines. |
+| 23:55 | Cursor | UI-10 | Game/FS-style roofs: inward-offset loft on convex hips, distance-to-eaves field on complex/L footprints, outbuildings use hip loft. |
