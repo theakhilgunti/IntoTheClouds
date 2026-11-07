@@ -317,6 +317,16 @@ export function applyFloorPlan(
   };
   const floors = [...model.floors.filter((f) => f.level !== level), floor].sort((p, q) => p.level - q.level);
 
-  const interior = summarizeInterior(floors, model.interior, notes);
+  const interior = summarizeInterior(
+    floors,
+    {
+      status: model.interior?.status ?? "estimated",
+      source: model.interior?.source,
+      reasons: model.interior?.reasons ?? [],
+      knownLevels: [...new Set([...(model.interior?.knownLevels ?? []), level])],
+      notes: model.interior?.notes ?? [],
+    },
+    notes,
+  );
   return { ok: true, model: { ...model, floors, interior }, notes, roomCount: boxes.length };
 }

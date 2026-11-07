@@ -2,6 +2,8 @@
 
 import type { SavedScan } from "@/lib/clientStore";
 import type { AttributeReport, SourceReport } from "@/lib/sources";
+import type { BuildingModel, Point } from "@/packages/schema/building-model";
+import FloorPlanPanel from "./FloorPlanPanel";
 
 const FROM_STYLE: Record<AttributeReport["from"], { label: string; cls: string }> = {
   map: { label: "Map data", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
@@ -21,11 +23,13 @@ export default function ScanReport({
   onClose,
   onRescan,
   rescanning,
+  onApplied,
 }: {
   scan: SavedScan;
   onClose: () => void;
   onRescan?: () => void;
   rescanning: boolean;
+  onApplied?: (model: BuildingModel) => void;
 }) {
   const { result } = scan;
   const s = result.summary;
@@ -137,6 +141,18 @@ export default function ScanReport({
           ))}
         </ul>
       </section>
+
+      {onApplied && (
+        <section className="mb-5">
+          <h3 className="mb-1 text-xs font-bold uppercase tracking-widest text-neutral-500">Have a real floor plan?</h3>
+          <p className="mb-2 text-sm text-neutral-400">Upload it to replace the typical rooms on one floor.</p>
+          <FloorPlanPanel
+            model={result.model}
+            streetDir={(result.summary.streetDir as Point | null | undefined) ?? null}
+            onApplied={onApplied}
+          />
+        </section>
+      )}
 
       {onRescan && (
         <button

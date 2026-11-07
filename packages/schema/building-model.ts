@@ -95,16 +95,17 @@ export const Roof = z.object({
 });
 
 /**
- * How much we actually know about the inside. "verified" = rooms come from a real source (floor plan,
- * survey, WiFi scan). "unknown" = nothing measured the interior, so the model has no rooms and the
- * house needs a scan. We never draw guessed rooms.
+ * How much we actually know about the inside.
+ * "verified" = every floor's rooms come from a real source (floor plan, survey, Wi-Fi scan).
+ * "estimated" = a typical house plan drawn inside the real outline. Not a measured scan.
+ * "unknown" = no rooms at all.
  */
 export const Interior = z.object({
-  status: z.enum(["verified", "unknown"]),
-  source: z.string().optional().describe("Where verified rooms came from, e.g. 'floor plan', 'wifi scan'"),
-  reasons: z.array(z.string()).default([]).describe("Why the interior is unknown (empty when verified)"),
+  status: z.enum(["verified", "estimated", "unknown"]),
+  source: z.string().optional().describe("Where the rooms came from, e.g. 'floor plan' or 'typical layout'"),
+  reasons: z.array(z.string()).default([]).describe("Why a measured interior is missing"),
   knownLevels: z.array(z.number().int()).default([]).describe("Floors whose rooms come from a real source"),
-  notes: z.array(z.string()).default([]).describe("Caveats on the verified part, e.g. placement unconfirmed"),
+  notes: z.array(z.string()).default([]).describe("Caveats, e.g. placement unconfirmed"),
 });
 
 export const BuildingModel = z.object({

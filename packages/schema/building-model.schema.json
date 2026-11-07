@@ -396,6 +396,7 @@
           "type": "string",
           "enum": [
             "verified",
+            "estimated",
             "unknown"
           ]
         },

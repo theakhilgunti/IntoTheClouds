@@ -2,14 +2,14 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { demoModel } from "@/lib/demo";
 import { loadScan, saveScan, type SavedScan } from "@/lib/clientStore";
 import { streamScan } from "@/lib/scanClient";
-import type { BuildingModel, Point } from "@/packages/schema/building-model";
+import type { BuildingModel } from "@/packages/schema/building-model";
 import type { ScanResult } from "@/lib/sources";
 import ScanReport from "./ScanReport";
-import FloorPlanPanel from "./FloorPlanPanel";
 import { mergeKnownFloors } from "@/lib/interior";
 
 // WebGL only runs in the browser.
@@ -26,28 +26,71 @@ type State =
   | { kind: "demo"; model: BuildingModel }
   | { kind: "scan"; scan: SavedScan };
 
+function shortAddress(address: string): string {
+  const comma = address.match(/^(\d+[a-z]?)\s*,\s*([^,]+)/i);
+  if (comma) return `${comma[1]} ${comma[2].trim()}`;
+  const parts = address.split(",").map((s) => s.trim()).filter(Boolean);
+  return parts.slice(0, 2).join(", ") || address;
+}
+
 export default function ModelScreen({ id }: { id: string }) {
+  const router = useRouter();
   const [state, setState] = useState<State>({ kind: "loading" });
   const [panel, setPanel] = useState(false);
   const [rescanning, setRescanning] = useState(false);
   const [version, setVersion] = useState(0);
+  const [wrongOpen, setWrongOpen] = useState(false);
 
   useEffect(() => {
-    if (id === "demo") return setState({ kind: "demo", model: demoModel });
+    let cancel = false;
+    const refreshIfEmpty = (scan: SavedScan) => {
+      const empty = scan.result.model.interior?.status === "unknown" && scan.result.model.floors.every((f) => f.rooms.length === 0);
+      if (!empty || !scan.query.address) return;
+      const form = new FormData();
+      form.append("address", scan.query.address);
+      form.append("rescan", "1");
+      streamScan(form, () => {})
+        .then(({ result: fresh }) => {
+          if (cancel) return;
+          const next = { ...scan, result: { ...fresh, model: mergeKnownFloors(fresh.model, scan.result.model) } };
+          saveScan(next);
+          setState({ kind: "scan", scan: next });
+          setVersion((v) => v + 1);
+        })
+        .catch(() => {});
+    };
+
+    if (id === "demo") {
+      setState({ kind: "demo", model: demoModel });
+      return;
+    }
     const local = loadScan(id);
-    if (local) return setState({ kind: "scan", scan: local });
+    if (local) {
+      setState({ kind: "scan", scan: local });
+      refreshIfEmpty(local);
+      return () => {
+        cancel = true;
+      };
+    }
     fetch(`/api/models/${encodeURIComponent(id)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((result: ScanResult | null) => {
+        if (cancel) return;
         if (!result) return setState({ kind: "missing" });
         const scan: SavedScan = { result, query: { address: result.model.address } };
         saveScan(scan);
         setState({ kind: "scan", scan });
+        refreshIfEmpty(scan);
       })
-      .catch(() => setState({ kind: "missing" }));
+      .catch(() => {
+        if (!cancel) setState({ kind: "missing" });
+      });
+    return () => {
+      cancel = true;
+    };
   }, [id]);
 
-  async function rescan() {
+  async function rescan(wayId?: number) {
     if (state.kind !== "scan") return;
     const q = state.scan.query;
     const form = new FormData();
@@ -57,14 +100,20 @@ export default function ModelScreen({ id }: { id: string }) {
       form.append("lng", String(q.lng));
     } else return;
     form.append("rescan", "1");
+    if (wayId != null) form.append("wayId", String(wayId));
     setRescanning(true);
     try {
       const { result: fresh } = await streamScan(form, () => {});
       const result = { ...fresh, model: mergeKnownFloors(fresh.model, state.scan.result.model) };
       const scan = { ...state.scan, result };
       saveScan(scan);
+      if (result.model.id !== id) {
+        router.push(`/model/${encodeURIComponent(result.model.id)}`);
+        return;
+      }
       setState({ kind: "scan", scan });
       setVersion((v) => v + 1);
+      setWrongOpen(false);
     } catch {
       /* keep the existing model */
     } finally {
@@ -114,93 +163,82 @@ export default function ModelScreen({ id }: { id: string }) {
   }
 
   const model = state.kind === "demo" ? state.model : state.scan.result.model;
-  const conf = Math.round(model.confidence * 100);
   const interior = model.interior;
-  const legacy = state.kind === "scan" && !interior; // saved before interiors were tracked: layout was guessed
+  const nearby = state.kind === "scan" ? state.scan.result.summary.nearby ?? [] : [];
+  const match = state.kind === "scan" ? state.scan.result.summary.match : undefined;
+  const interiorLine =
+    interior?.status === "verified"
+      ? "Rooms from your floor plan"
+      : interior?.status === "estimated"
+        ? "Outline from the map · rooms are a typical layout"
+        : state.kind === "demo"
+          ? "Sample house"
+          : "Outline from the map";
 
   return (
     <div className="relative h-full w-full">
       <Viewer key={`${model.id}-${version}`} model={model} />
 
-      <div className="pointer-events-none absolute inset-x-3 top-3 flex flex-col-reverse gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
-        <div className="pointer-events-auto min-w-0 flex-1 rounded-xl bg-black/80 px-4 py-3 text-white backdrop-blur sm:max-w-md sm:flex-none">
-          <Link href="/" className="text-xs font-black tracking-tight">
-            Cloud<span className="text-yellow-400">Scan</span>
-          </Link>
-          <div className="mt-1 truncate font-semibold">{model.address || `${model.lat.toFixed(5)}, ${model.lng.toFixed(5)}`}</div>
-          <div className="mt-1 flex items-center gap-2 text-xs text-neutral-400">
-            <span className="h-1.5 w-16 overflow-hidden rounded-full bg-neutral-700">
-              <span className="block h-full bg-yellow-400" style={{ width: `${conf}%` }} />
+      <div className="pointer-events-none absolute left-3 right-3 top-3 flex items-start justify-between gap-3">
+        <div className="pointer-events-auto max-w-sm rounded-lg bg-black/55 px-3 py-2 text-white backdrop-blur">
+          <div className="flex items-baseline justify-between gap-4">
+            <Link href="/" className="text-xs font-semibold tracking-tight text-neutral-300">
+              Cloud<span className="text-yellow-400">Scan</span>
+            </Link>
+            <span className="flex gap-3 text-xs text-neutral-400">
+              {state.kind === "scan" && !panel && (
+                <button onClick={() => setPanel(true)} className="hover:text-white">
+                  Details
+                </button>
+              )}
+              <button onClick={downloadModel} className="hover:text-white">
+                Save
+              </button>
+              <Link href="/" className="hover:text-white">
+                New
+              </Link>
             </span>
-            {conf}% outline confidence · {interior?.status === "verified" ? "interior verified" : interior ? "interior unknown" : state.kind === "demo" ? "demo data" : "old scan"}
           </div>
-        </div>
-        <div className="pointer-events-auto flex justify-end gap-2">
-          {state.kind === "scan" && !panel && (
-            <button
-              onClick={() => setPanel(true)}
-              className="min-h-11 whitespace-nowrap rounded-xl bg-yellow-400 px-4 text-sm font-black text-black hover:bg-yellow-300"
-            >
-              <span className="sm:hidden">Details</span>
-              <span className="hidden sm:inline">How this was built</span>
-            </button>
+          <div className="mt-0.5 truncate text-sm font-medium">{shortAddress(model.address) || `${model.lat.toFixed(5)}, ${model.lng.toFixed(5)}`}</div>
+          <div className="text-[11px] text-neutral-400">
+            {rescanning ? "Updating this house…" : interiorLine}
+            {match === "nearest" ? " · closest building, confirm it's yours" : ""}
+          </div>
+          {nearby.length > 1 && (
+            <div className="mt-1">
+              <button onClick={() => setWrongOpen((v) => !v)} className="text-[11px] text-neutral-300 underline-offset-2 hover:underline">
+                {wrongOpen ? "Hide nearby houses" : "Wrong house?"}
+              </button>
+              {wrongOpen && (
+                <div className="mt-1 flex max-w-xs flex-wrap gap-1">
+                  {nearby.map((house) => {
+                    const selected = model.id === `osm-${house.id}`;
+                    return (
+                      <button
+                        key={house.id}
+                        disabled={rescanning || selected}
+                        onClick={() => rescan(house.id)}
+                        className={`rounded-full px-2 py-0.5 text-[11px] ${selected ? "bg-white text-black" : "bg-white/10 text-neutral-200 hover:bg-white/20"}`}
+                      >
+                        {shortAddress(house.label)}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           )}
-          <Link
-            href="/"
-            className="flex min-h-11 items-center whitespace-nowrap rounded-xl bg-black/80 px-4 text-sm font-bold text-white hover:bg-black"
-          >
-            New scan
-          </Link>
         </div>
       </div>
 
-      {interior?.status === "unknown" && (
-        <div className="pointer-events-auto absolute left-3 right-3 top-32 z-10 max-h-[60vh] max-w-md overflow-y-auto rounded-xl border-2 border-red-500 bg-black/90 px-4 py-3 text-white backdrop-blur sm:top-28">
-          <div className="text-sm font-black uppercase tracking-wide text-red-400">
-            {interior.knownLevels.length ? "Interior partly known · more floors need a plan" : "Interior unknown · this house needs a scan"}
-          </div>
-          <p className="mt-1 text-xs text-neutral-300">
-            {interior.knownLevels.length ? "Floors with a plan show real rooms. We don't guess the rest." : "Only the outside is shown. We don't guess rooms."} Why:
-          </p>
-          <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-neutral-200">
-            {interior.reasons.map((r) => (
-              <li key={r}>{r}</li>
-            ))}
-          </ul>
-          {interior.notes.map((n) => (
-            <div key={n} className="mt-1 text-xs text-amber-200">• {n}</div>
-          ))}
-          {state.kind === "scan" && (
-            <FloorPlanPanel model={model} streetDir={(state.scan.result.summary.streetDir as Point | null | undefined) ?? null} onApplied={applyPlan} />
-          )}
-          {interior.knownLevels.length > 0 && (
-            <button onClick={downloadModel} className="mt-2 text-xs font-bold text-yellow-300 underline">
-              Download this model (.json) to keep it permanently
-            </button>
-          )}
-        </div>
-      )}
-      {interior?.status === "verified" && (
-        <div className="pointer-events-auto absolute left-3 top-32 z-10 max-w-md rounded-xl border border-emerald-500 bg-black/85 px-3 py-2 text-xs text-emerald-300 sm:top-28">
-          <div className="font-bold">Interior verified · {interior.source}</div>
-          {interior.notes.map((n) => (
-            <div key={n} className="mt-1 text-amber-200">• {n}</div>
-          ))}
-          <div className="mt-1 text-neutral-400">Read by AI from the plan you uploaded. Compare it with the plan.</div>
-          <button onClick={downloadModel} className="mt-1 font-bold text-yellow-300 underline">
-            Download this model (.json) to keep it permanently
-          </button>
-        </div>
-      )}
-      {legacy && (
-        <div className="pointer-events-auto absolute left-3 right-3 top-32 z-10 max-w-md rounded-xl border-2 border-amber-400 bg-black/90 px-4 py-3 text-white sm:top-28">
-          <div className="text-sm font-black uppercase tracking-wide text-amber-300">Old scan · room layout was guessed</div>
-          <p className="mt-1 text-xs text-neutral-300">Open &quot;How this was built&quot; and press Re-scan to see what is actually known.</p>
-        </div>
-      )}
-
       {state.kind === "scan" && panel && (
-        <ScanReport scan={state.scan} onClose={() => setPanel(false)} onRescan={rescan} rescanning={rescanning} />
+        <ScanReport
+          scan={state.scan}
+          onClose={() => setPanel(false)}
+          onRescan={() => rescan()}
+          rescanning={rescanning}
+          onApplied={applyPlan}
+        />
       )}
     </div>
   );

@@ -7,12 +7,21 @@ export function summarizeInterior(
   prev: BuildingModel["interior"],
   extraNotes: string[] = [],
 ): NonNullable<BuildingModel["interior"]> {
-  const knownLevels = floors.filter((f) => f.rooms.length > 0).map((f) => f.level);
-  const missing = floors.filter((f) => f.rooms.length === 0).map((f) => f.name);
+  const knownLevels = [...new Set(prev?.knownLevels ?? [])];
+  const missing = floors.filter((f) => !knownLevels.includes(f.level)).map((f) => f.name);
   const roomCount = floors.reduce((s, f) => s + f.rooms.length, 0);
   const notes = [...new Set([...(prev?.notes ?? []), ...extraNotes])];
-  if (!missing.length) {
+  if (knownLevels.length && !missing.length) {
     return { status: "verified", source: `uploaded floor plan, read by AI (${roomCount} rooms)`, knownLevels, notes, reasons: [] };
+  }
+  if (floors.some((f) => f.rooms.length > 0)) {
+    return {
+      status: "estimated",
+      source: knownLevels.length ? "uploaded floor plan, read by AI" : prev?.source,
+      knownLevels,
+      notes,
+      reasons: knownLevels.length ? [`Floor plan not provided for: ${missing.join(", ")}.`] : [],
+    };
   }
   const kept = (prev?.reasons ?? []).filter((r) => !r.startsWith("No floor plan") && !r.startsWith("Floor plan not provided"));
   return {
@@ -32,5 +41,13 @@ export function mergeKnownFloors(fresh: BuildingModel, old: BuildingModel): Buil
   if (old.id !== fresh.id || !known.length) return fresh;
   const kept = old.floors.filter((f) => known.includes(f.level) && f.rooms.length > 0);
   const floors = [...fresh.floors.filter((f) => !kept.some((k) => k.level === f.level)), ...kept].sort((a, b) => a.level - b.level);
-  return { ...fresh, floors, interior: summarizeInterior(floors, { ...fresh.interior!, notes: old.interior?.notes ?? [] }) };
+  return {
+    ...fresh,
+    floors,
+    interior: summarizeInterior(floors, {
+      ...fresh.interior!,
+      knownLevels: old.interior?.knownLevels ?? [],
+      notes: old.interior?.notes ?? [],
+    }),
+  };
 }

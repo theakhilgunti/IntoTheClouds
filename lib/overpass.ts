@@ -4,6 +4,7 @@ import {
   type LatLng,
 } from "./geo";
 import type { Point } from "@/packages/schema/building-model";
+import { normStreet, parseStreetAddress, streetsMatch } from "./address";
 
 const ENDPOINTS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
 
@@ -17,10 +18,14 @@ export type OsmBuilding = {
   area: number;
 };
 
+export type NearbyHouse = { id: number; label: string };
+
 export type OsmContext = {
   building: OsmBuilding | null;
   chosenBy: "address-tag" | "geocoder-building" | "contains-point" | "in-view-direction" | "nearest" | "none";
   buildingCount: number;
+  /** Other addressed buildings close enough that the user can switch if we picked the neighbor. */
+  nearby: NearbyHouse[];
   /** Unit vector (local frame) from the building toward the nearest road, if any road was found. */
   roadDir: Point | null;
   roadName: string | null;
@@ -90,19 +95,14 @@ export type AddressHint = {
   address?: string | null;
   /** OSM way id of the building Nominatim says holds this address. */
   wayId?: number | null;
+  /** User picked this outline. Do not override it with a different address tag. */
+  force?: boolean;
 };
 
-const STREET_WORDS: Record<string, string> = {
-  avenue: "ave", street: "st", road: "rd", drive: "dr", lane: "ln", court: "ct", boulevard: "blvd",
-  place: "pl", circle: "cir", terrace: "ter", highway: "hwy", parkway: "pkwy", north: "n", south: "s", east: "e", west: "w",
-};
-const normStreet = (s: string) =>
-  s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean).map((w) => STREET_WORDS[w] ?? w).join(" ");
-
-/** "17 SCHUYLER AVE, LATHAM, NY" -> { num: "17", street: "schuyler ave" } */
-function parseAddress(a?: string | null): { num: string; street: string } | null {
-  const m = a?.split(",")[0].trim().match(/^(\d+[a-z]?)\s+(.+)$/i);
-  return m ? { num: m[1].toLowerCase(), street: normStreet(m[2]) } : null;
+function houseLabel(b: OsmBuilding): string {
+  const num = b.tags["addr:housenumber"];
+  const street = b.tags["addr:street"];
+  return num && street ? `${num} ${street}` : `Building ${b.id}`;
 }
 
 /**
@@ -137,18 +137,27 @@ out tags geom;`;
 
   let building: OsmBuilding | null = null;
   let chosenBy: OsmContext["chosenBy"] = "none";
-  const want = parseAddress(hint?.address);
+  const want = parseStreetAddress(hint?.address);
   const tagged = want
     ? buildings.find((b) => {
         const n = b.tags["addr:housenumber"]?.toLowerCase();
         const st = b.tags["addr:street"];
-        return n === want.num && !!st && normStreet(st) === want.street;
+        return n === want.num && !!st && streetsMatch(normStreet(st), want.street);
       })
     : undefined;
+  const sameNumber = want
+    ? buildings.filter((b) => b.tags["addr:housenumber"]?.toLowerCase() === want.num)
+    : [];
   const byWay = hint?.wayId ? buildings.find((b) => b.id === hint.wayId) : undefined;
   const inside = pool.find((b) => pointInPolygon(here, b.ring));
-  if (tagged) {
+  if (hint?.force && byWay) {
+    building = byWay;
+    chosenBy = "geocoder-building";
+  } else if (tagged) {
     building = tagged;
+    chosenBy = "address-tag";
+  } else if (sameNumber.length === 1) {
+    building = sameNumber[0];
     chosenBy = "address-tag";
   } else if (byWay) {
     building = byWay;
@@ -195,5 +204,15 @@ out tags geom;`;
     }
   }
 
-  return { building, chosenBy, buildingCount: buildings.length, roadDir, roadName, roadDistance };
+  const nearby = buildings
+    .filter((b) => b.tags["addr:housenumber"] && b.area > 25 && !NON_HOUSE.has(b.tags.building) && distToRing(here, b.ring) < 70)
+    .map((b) => ({ id: b.id, label: houseLabel(b), d: distToRing(here, b.ring) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 6)
+    .map(({ id, label }) => ({ id, label }));
+  if (building && !nearby.some((n) => n.id === building!.id) && building.tags["addr:housenumber"]) {
+    nearby.unshift({ id: building.id, label: houseLabel(building) });
+  }
+
+  return { building, chosenBy, buildingCount: buildings.length, nearby, roadDir, roadName, roadDistance };
 }

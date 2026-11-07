@@ -21,6 +21,8 @@ export type ScanInput = {
   heading?: number | null;
   photo?: Image | null;
   rescan?: boolean;
+  /** OSM way to use when the user says we drew the house next door. */
+  wayId?: number;
 };
 
 /** An error whose message is safe and useful to show the user. */
@@ -30,6 +32,14 @@ const OSM_ROOF: Record<string, RoofShape> = {
   gabled: "gable", "half-hipped": "hip", hipped: "hip", pyramidal: "hip", flat: "flat", skillion: "flat",
   gambrel: "gambrel", mansard: "mansard", saltbox: "gable", dome: "other", round: "other",
 };
+/** Residential height includes the roof, so a 9 m "height" is usually two floors, not three. */
+function storiesFromHeight(meters: number): number {
+  if (meters < 4.5) return 1;
+  if (meters < 11) return 2;
+  if (meters < 14) return 3;
+  return Math.min(5, Math.round(meters / 3.2));
+}
+
 const NOT_A_HOUSE = new Set([
   "apartments", "commercial", "retail", "industrial", "office", "school", "church", "university",
   "hospital", "warehouse", "hotel", "civic", "public", "dormitory",
@@ -45,11 +55,13 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   // 1. Where is the house?
   step("locate", "active");
   let origin: LatLng;
+  let geocodedWay: number | null = null;
   let address = input.address?.trim() ?? "";
   if (address) {
     const g = await geocode(address, sources);
     if (!g) throw new ScanError("We couldn't find that address. Check the spelling and include the city and state.");
     origin = g;
+    geocodedWay = g.wayId ?? null;
     address = g.matched;
     step("locate", "done", g.matched);
   } else if (input.lat != null && input.lng != null) {
@@ -68,8 +80,8 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   step("outline", "active");
   let osm: OsmContext | null = null;
   try {
-    const wayId = pinnedWayId(address) ?? (address ? await nominatimBuildingId(input.address ?? address) : null);
-    osm = await lookupBuilding(origin, input.heading, { address, wayId });
+    const wayId = input.wayId ?? pinnedWayId(address) ?? geocodedWay ?? (address ? await nominatimBuildingId(input.address ?? address) : null);
+    osm = await lookupBuilding(origin, input.heading, { address, wayId, force: input.wayId != null });
   } catch (e) {
     sources.push({ id: "osm", name: "OpenStreetMap buildings", status: "failed", detail: `Map server didn't respond (${String(e)}).` });
   }
@@ -120,7 +132,8 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   // Saved scan? Then we're done, no imagery or AI calls needed.
   if (!input.rescan) {
     const saved = await store.get(id);
-    if (saved) {
+    // Empty shells from before interiors were drawn again should be rebuilt.
+    if (saved && saved.model.interior?.status !== "unknown") {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
       return;
@@ -193,7 +206,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     stories = osmLevels;
     attributes.push({ field: "Floors above ground", value: String(stories), from: "map", note: "OpenStreetMap building:levels" });
   } else if (osmHeight > 2) {
-    stories = Math.max(1, Math.round(osmHeight / 3));
+    stories = storiesFromHeight(osmHeight);
     attributes.push({ field: "Floors above ground", value: String(stories), from: "map", note: `From mapped height ${osmHeight} m` });
   } else if (sure) {
     stories = sure.stories;
@@ -233,10 +246,8 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   }
 
   let basement = center.lat > 37;
-  let basementKnown = false;
   if (sure && (sure.basement === "visible" || sure.basement === "likely")) {
     basement = true;
-    basementKnown = true;
     attributes.push({ field: "Basement", value: "Yes", from: "photos", note: sure.basement === "visible" ? "Visible in photo" : "Likely from the photos" });
   } else if (sure && sure.basement === "unlikely") {
     basement = false;
@@ -270,33 +281,29 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     footprint,
     streetDir,
     stories,
-    basement: verified ? basement : basementKnown,
+    basement,
     garage,
     roof,
   });
 
-  // Nothing in public map data or photos measures the inside. Unless a verified layout is on file,
-  // keep only the real outside (exterior walls + roof) and say plainly that the interior is unknown.
-  const reasons: string[] = [];
   if (verified) {
     built.model = { ...verified, address: verified.address || address, markers: [] };
-  } else {
-    reasons.push("No floor plan, survey or interior scan is on file for this building. Maps and satellite photos only show the outside.");
-    if (!footprint) reasons.push("No building outline is mapped at this address, so even the size and shape are unknown.");
-    else if (osm?.chosenBy === "nearest") reasons.push("We couldn't confirm which mapped building is this address, so this may be a neighbor.");
-    if (attributes.find((a) => a.field === "Floors above ground")?.from === "estimated") {
-      reasons.push("The number of floors could not be confirmed from the map or photos.");
+  } else if (input.wayId && b) {
+    const tagged = [b.tags["addr:housenumber"], b.tags["addr:street"]].filter(Boolean).join(" ");
+    if (tagged) {
+      address = tagged;
+      built.model.address = tagged;
     }
-    if (b && NOT_A_HOUSE.has(b.tags.building)) {
-      reasons.push(`This is mapped as "${b.tags.building}", which is not a typical house, so it needs a real scan.`);
-    }
-    built.model.floors = built.model.floors
-      .filter((f) => f.level >= 0 || basementKnown)
-      .map((f) => ({ ...f, rooms: [], doors: [], stairs: [], walls: f.walls.filter((w) => w.exterior) }));
-    built.model.interior = { status: "unknown", reasons, knownLevels: [], notes: [] };
   }
   if (!verified) {
-    for (let i = attributes.length - 1; i >= 0; i--) if (attributes[i].field === "Basement" && attributes[i].from === "estimated") attributes.splice(i, 1);
+    built.model.interior = {
+      status: "estimated",
+      source: "typical layout inside the mapped outline",
+      reasons: [],
+      knownLevels: [],
+      notes: ["Rooms follow a common house plan. They are not a measured scan of this house."],
+    };
+    warnings.push(...built.notes);
   } else {
     warnings.push(...built.notes);
   }
@@ -321,14 +328,14 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   attributes.push(
     verified
       ? { field: "Interior", value: "Verified", from: "map", note: `Source: ${verified.interior?.source}` }
-      : { field: "Interior", value: "Unknown — needs a scan", from: "estimated", note: reasons[0] },
+      : { field: "Interior", value: "Typical layout", from: "estimated", note: "A common room plan inside the real outline. Not a measured scan." },
   );
   sources.push(
     verified
       ? { id: "layout", name: "Verified interior", status: "used", detail: `Real room layout from: ${verified.interior?.source}.` }
       : {
-          id: "layout", name: "Interior layout", status: "skipped",
-          detail: "Not determined. No floor plan or scan exists for this building, and we do not guess rooms.",
+          id: "layout", name: "Interior layout", status: "used",
+          detail: "Typical room plan drawn inside the mapped outline. Not a measured scan.",
         },
   );
   step("build", "done");
@@ -339,7 +346,11 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     attributes,
     warnings,
     images: aerial ? [{ label: "Aerial view · Esri World Imagery", url: `data:${aerial.mime};base64,${aerial.base64}` }] : [],
-    summary: { width: built.width, depth: built.depth, area: Math.round(area), facing: built.facing, stories, streetDir },
+    summary: {
+      width: built.width, depth: built.depth, area: Math.round(area), facing: built.facing, stories, streetDir,
+      nearby: osm?.nearby ?? [],
+      match: osm?.chosenBy === "nearest" || osm?.chosenBy === "in-view-direction" ? "nearest" : osm?.chosenBy === "contains-point" ? "point" : "address",
+    },
     createdAt: new Date().toISOString(),
   };
   // Don't save scans where the map server was down; the next try should get the real outline.

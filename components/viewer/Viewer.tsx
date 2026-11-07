@@ -21,7 +21,12 @@ function LabelSprite({
   text,
   color,
   textColor = "#111111",
-  scale = [1.8, 0.45, 1] as [number, number, number],
+  scale = [1.8, 0.45, 1],
+}: {
+  text: string;
+  color: string;
+  textColor?: string;
+  scale?: [number, number, number];
 }) {
   const texture = useMemo(() => {
     const canvas = document.createElement("canvas");
@@ -277,6 +282,7 @@ export default function Viewer({ model }: { model: BuildingModel }) {
   const [xray, setXray] = useState(false);
   const [roofOn, setRoofOn] = useState(true);
   const [tool, setTool] = useState<MarkerType | null>(null);
+  const [marksOpen, setMarksOpen] = useState(false);
   const [markers, setMarkers] = useState<Marker[]>(model.markers);
 
   const toggleFloor = (lv: number) =>
@@ -332,8 +338,8 @@ export default function Viewer({ model }: { model: BuildingModel }) {
   };
 
   const btn = (active: boolean) =>
-    `min-h-11 min-w-11 rounded-lg px-3 text-xs font-bold uppercase tracking-wide transition sm:text-sm ${
-      active ? "bg-yellow-400 text-black" : "bg-neutral-800 text-neutral-200 hover:bg-neutral-700"
+    `shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium transition ${
+      active ? "bg-white text-black" : "bg-black/55 text-neutral-300 hover:bg-black/75 hover:text-white"
     }`;
 
   return (
@@ -380,7 +386,8 @@ export default function Viewer({ model }: { model: BuildingModel }) {
         <OrbitControls makeDefault target={target} maxPolarAngle={Math.PI * 0.49} minDistance={4} maxDistance={extent * 8} />
       </Canvas>
 
-      <div className="absolute inset-x-0 bottom-0 flex flex-wrap justify-center gap-2 bg-black/80 p-3 backdrop-blur">
+      <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-3">
+        <div className="pointer-events-auto flex max-w-full gap-1 overflow-x-auto rounded-full bg-black/40 p-1 backdrop-blur">
         {levels.map((lv) => (
           <button
             key={lv}
@@ -397,25 +404,28 @@ export default function Viewer({ model }: { model: BuildingModel }) {
             Roof
           </button>
         )}
-        <span className="mx-1 hidden w-px bg-neutral-700 sm:block" />
         <button className={btn(exploded)} onClick={() => setExploded((v) => !v)} aria-pressed={exploded}>
           Explode
         </button>
         <button className={btn(xray)} onClick={() => setXray((v) => !v)} aria-pressed={xray}>
           X-ray
         </button>
-        <span className="mx-1 hidden w-px bg-neutral-700 sm:block" />
-        {(["fire", "victim", "gas", "shutoff"] as MarkerType[]).map((t) => (
-          <button
-            key={t}
-            className={btn(tool === t)}
-            style={tool === t ? { background: MARKER_STYLE[t].color } : undefined}
-            onClick={() => setTool((cur) => (cur === t ? null : t))}
-            aria-pressed={tool === t}
-          >
-            + {MARKER_STYLE[t].label}
-          </button>
-        ))}
+        <button className={btn(marksOpen || !!tool)} onClick={() => setMarksOpen((v) => !v)} aria-pressed={marksOpen}>
+          Markers
+        </button>
+        {marksOpen &&
+          (["fire", "victim", "gas", "shutoff"] as MarkerType[]).map((t) => (
+            <button
+              key={t}
+              className={btn(tool === t)}
+              style={tool === t ? { background: MARKER_STYLE[t].color, color: "#111" } : undefined}
+              onClick={() => setTool((cur) => (cur === t ? null : t))}
+              aria-pressed={tool === t}
+            >
+              {MARKER_STYLE[t].label}
+            </button>
+          ))}
+        </div>
       </div>
       {tool && (
         <div className="pointer-events-none absolute inset-x-0 bottom-24 flex justify-center">

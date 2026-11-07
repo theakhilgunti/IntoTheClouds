@@ -75,3 +75,4 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 19:32 | Cursor | ST-01 | Saved houses and finished walks in MongoDB via /api/models and /api/explorations. |
 | 20:40 | Cursor | ST-02 | Scanner walks are the only houses written to the buildings collection. |
 | 20:45 | Cursor | FE-04 | Replaced 3D HTML labels that crashed React when a scanner house loaded. |
+| 21:15 | Cursor | UI-01 | Address match uses the house number, not the closest outline; typical interiors are drawn; the model page no longer covers the house. |
