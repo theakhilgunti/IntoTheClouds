@@ -60,10 +60,10 @@ Tick a box when the task's **Done when** list is fully met.
 | ✓ | ID | Task | Owner | Est. | Depends on | Phase |
 | :-: | :-- | :-- | :-- | :-- | :-- | :-- |
 | [ ] | HW-05 | Set up the 3 phone anchors | Laptop | 1 h | none | 0 |
-| [ ] | LC-01 | Run the Windows Wi-Fi + Bluetooth scan spike (scripts are on branch `agent/laptop/LC-01-windows-scan-spike`, not merged yet) | Laptop | 1 h | none | 1 |
+| [ ] | LC-01 | Run the Windows Wi-Fi + Bluetooth scan spike (scripts are in `project/laptop_client/`; needs a run on the Windows laptop) | Laptop | 1 h | none | 1 |
 | [ ] | LC-02 | Laptop scanner (Wi-Fi + Bluetooth) posting to the backend | Laptop | 3 h | LC-01, BE-07 | 1 |
 | [x] | BE-07 | Identify anchors by BSSID or Bluetooth name (merged) | Backend | done | none | 1 |
-| [ ] | BE-06 | Random-walk motion model when there are no steps (branch `agent/backend/BE-06-random-walk-motion`, not merged yet) | Backend | 1.5 h | none | 1 |
+| [x] | BE-06 | Random-walk motion model when there are no steps (merged) | Backend | 1.5 h | none | 1 |
 | [ ] | BE-04 | Validate incoming telemetry | Backend | 1.5 h | none | 1 |
 | [ ] | BE-05 | Read settings from `.env`, harden the filter | Backend | 2 h | none | 2 |
 | [ ] | IN-01 | Walking test, end to end | Demo | 1-2 h | LC-02, BE-06 | 2 |
@@ -158,7 +158,7 @@ Each card says what to build (**Steps**) and how to know it's finished (**Done w
 - The laptop sees all three anchors from the middle of the room.
 
 ### LC-01: Run the Windows Wi-Fi + Bluetooth scan spike
-**Est.** 1 h · **Depends on** none · GitHub issue #28 · Scripts are in `project/laptop_client/` on branch `agent/laptop/LC-01-windows-scan-spike` (until merged to `main`)
+**Est.** 1 h · **Depends on** none · GitHub issue #28 · Scripts are in `project/laptop_client/` (merged; needs a run on the Windows laptop)
 **Steps**
 1. Pull that branch. Follow `project/laptop_client/README.md`: set up the 3 phone hotspots (and optionally Bluetooth beacons with the same names).
 2. Run `win_scan_benchmark.py` and `ble_scan_benchmark.py` at 1 m, 3 m and 6 m from one phone.
@@ -199,7 +199,7 @@ Turn the phone readings into a step event and a heading (backend heading: 0 = +x
 ## Backend (Member A, `project/backend/**`)
 
 ### BE-06: Random-walk motion model when there are no steps
-**Est.** 1.5 h · **Depends on** none · GitHub issue #30 · Branch `agent/backend/BE-06-random-walk-motion` (not merged yet)
+**Est.** 1.5 h · **Depends on** none · GitHub issue #30 · **Done and merged** (`diffuse()` in `project/backend/app/fusion/math_engine.py`)
 With no steps or heading (the laptop has no motion sensor), the particles never move and the filter can lock up. Add a `diffuse(sigma_m=0.3)` method in `math_engine.py` and call it in `/ws/telemetry` when `step_detected` is false.
 **Done when:** particles keep spreading slightly with no steps, the estimate converges near a fixed true position in a test, and `pytest` passes.
 
