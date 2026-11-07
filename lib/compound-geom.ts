@@ -1,7 +1,18 @@
 /** Lot, outbuilding, and aerial-box geometry. No app imports, so node:test can load it. */
 export type Point = [number, number];
 
-export type CompoundKind = "yard" | "garage" | "shed" | "driveway" | "patio" | "pool" | "fence" | "trees" | "road";
+export type CompoundKind =
+  | "yard"
+  | "garage"
+  | "shed"
+  | "driveway"
+  | "patio"
+  | "pool"
+  | "fence"
+  | "trees"
+  | "road"
+  | "signal"
+  | "hydrant";
 
 export type SiteFeature = {
   id: string;
@@ -38,6 +49,8 @@ const HEIGHT: Record<CompoundKind, number> = {
   fence: 1.05,
   trees: 4,
   road: 0.06,
+  signal: 3.2,
+  hydrant: 0.85,
 };
 
 const LABEL: Record<CompoundKind, string> = {
@@ -50,6 +63,8 @@ const LABEL: Record<CompoundKind, string> = {
   fence: "Fence",
   trees: "Trees",
   road: "Street",
+  signal: "Traffic light",
+  hydrant: "Fire hydrant",
 };
 
 function dist(a: Point, b: Point) {
@@ -108,7 +123,7 @@ export function boxToPolygon(
   return poly;
 }
 
-function ribbon(a: Point, b: Point, width: number, maxLen = 200): Point[] | null {
+function ribbon(a: Point, b: Point, width: number, maxLen = 320): Point[] | null {
   const dx = b[0] - a[0];
   const dy = b[1] - a[1];
   const len = Math.hypot(dx, dy);
@@ -125,9 +140,9 @@ function ribbon(a: Point, b: Point, width: number, maxLen = 200): Point[] | null
 
 /** How far from the main building the compound search should reach, in meters. */
 export function compoundReach(mainRing: Point[]): number {
-  if (mainRing.length < 3) return 40;
+  if (mainRing.length < 3) return 55;
   const extent = Math.max(...mainRing.map(([x, y]) => Math.hypot(x, y)), 8);
-  return Math.min(200, Math.max(40, extent * 3.2));
+  return Math.min(220, Math.max(55, extent * 3.6));
 }
 
 function ringExtent(ring: Point[]): number {
@@ -302,6 +317,63 @@ export function assembleCompound(site: {
   return { features: features.slice(0, 120) };
 }
 
+/**
+ * Cross-check mapped site features against aerial / satellite cues (Esri JPEG + Gemini boxes).
+ * Keeps OSM when aerial agrees or is silent; drops map outbuildings contradicted by clear aerial
+ * evidence; fills gaps from aerial when the map omitted them.
+ */
+export function crossVerifySiteFeatures(opts: {
+  features: SiteFeature[];
+  aerialCues: { kind: CompoundKind; label?: string; polygon: Point[]; confidence?: number }[];
+  /** Gemini house-level garage reading, when available. */
+  geminiGarage?: "none" | "attached_left" | "attached_right" | "detached" | "unknown";
+}): SiteFeature[] {
+  const out = [...opts.features];
+  const cues = opts.aerialCues.filter((c) => c.polygon.length >= 3);
+  const cueNear = (kind: CompoundKind, p: Point, maxD: number) =>
+    cues.some((c) => c.kind === kind && dist(ringCentroid(c.polygon), p) < maxD);
+
+  // Drop mapped garages/sheds that aerial clearly contradicts.
+  const filtered = out.filter((f) => {
+    if (f.kind !== "garage" && f.kind !== "shed") return true;
+    if (f.source === "aerial") return true;
+    const c = ringCentroid(f.polygon);
+    const aerialSeesOutbuilding = cues.some((q) => (q.kind === "garage" || q.kind === "shed") && (q.confidence ?? 0.5) >= 0.4);
+    if (!aerialSeesOutbuilding) {
+      // No aerial outbuilding signal — keep OSM, unless Gemini says none and this is a weak far shed.
+      if (opts.geminiGarage === "none" && f.kind === "shed") return false;
+      return true;
+    }
+    // Aerial has outbuildings somewhere — keep this one only if a cue sits nearby.
+    return cueNear("garage", c, 10) || cueNear("shed", c, 10);
+  });
+
+  // Add aerial cues the map missed.
+  let addN = 0;
+  for (const cue of cues) {
+    if (cue.kind === "yard" || cue.kind === "fence" || cue.kind === "road" || cue.kind === "signal" || cue.kind === "hydrant") continue;
+    if ((cue.confidence ?? 0.5) < 0.4) continue;
+    const c = ringCentroid(cue.polygon);
+    const dup = filtered.some(
+      (f) =>
+        (f.kind === cue.kind || ((f.kind === "garage" || f.kind === "shed") && (cue.kind === "garage" || cue.kind === "shed"))) &&
+        dist(ringCentroid(f.polygon), c) < 8,
+    );
+    if (dup) continue;
+    if (opts.geminiGarage === "none" && (cue.kind === "garage" || cue.kind === "shed")) continue;
+    filtered.push({
+      id: `verify-aerial-${addN++}`,
+      kind: cue.kind,
+      label: cue.label?.trim() || LABEL[cue.kind],
+      polygon: cue.polygon,
+      height: HEIGHT[cue.kind],
+      source: "aerial",
+    });
+  }
+
+  return filtered.slice(0, 140);
+}
+
 /** How many rooms fit along the depth. One bay is about one window on the long side. */
 export function roomBays(depth: number): number {
   return Math.max(2, Math.min(4, Math.round(depth / 4)));
@@ -341,49 +413,174 @@ function nearestOn(p: Point, a: Point, b: Point): { at: Point; d: number } {
   return { at, d: dist(p, at) };
 }
 
+/** Circle–segment hits (0..1 params), sorted. */
+function circleHits(a: Point, b: Point, origin: Point, radius: number): number[] {
+  const dx = b[0] - a[0],
+    dy = b[1] - a[1];
+  const ox = a[0] - origin[0],
+    oy = a[1] - origin[1];
+  const A = dx * dx + dy * dy || 1;
+  const B = 2 * (ox * dx + oy * dy);
+  const C = ox * ox + oy * oy - radius * radius;
+  const disc = B * B - 4 * A * C;
+  if (disc < 0) return [];
+  const s = Math.sqrt(disc);
+  return [(-B - s) / (2 * A), (-B + s) / (2 * A)].filter((t) => t >= 0 && t <= 1).sort((x, y) => x - y);
+}
+
+/** Keep a long stretch of a polyline around the house (full 360 neighborhood). */
+function clipRoadNear(pts: Point[], origin: Point, radius: number): Point[] {
+  if (pts.length < 2) return [];
+  const inside = (p: Point) => dist(p, origin) <= radius;
+  const out: Point[] = [];
+  const pushUnique = (p: Point) => {
+    const last = out[out.length - 1];
+    if (!last || dist(last, p) > 0.35) out.push(p);
+  };
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const ain = inside(a);
+    const bin = inside(b);
+    const hits = circleHits(a, b, origin, radius);
+    if (ain) pushUnique(a);
+    for (const t of hits) pushUnique([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    if (bin) pushUnique(b);
+  }
+  return out;
+}
+
+function segIntersect(a: Point, b: Point, c: Point, d: Point): Point | null {
+  const dx = b[0] - a[0],
+    dy = b[1] - a[1];
+  const ex = d[0] - c[0],
+    ey = d[1] - c[1];
+  const det = dx * ey - dy * ex;
+  if (Math.abs(det) < 1e-8) return null;
+  const t = ((c[0] - a[0]) * ey - (c[1] - a[1]) * ex) / det;
+  const u = ((c[0] - a[0]) * dy - (c[1] - a[1]) * dx) / det;
+  if (t < 0.02 || t > 0.98 || u < 0.02 || u > 0.98) return null;
+  return [a[0] + dx * t, a[1] + dy * t];
+}
+
 /**
- * The street in front of the house, and a driveway from that street to the garage
- * or to the front door. Coordinates are already in the model frame.
+ * Long street ribbons in a wide radius (main + connecting roads), driveway to the
+ * garage/front, and traffic lights where mapped roads cross.
  */
 export function accessFeatures(opts: {
   footprint: Point[];
   streetDir: Point | null;
   roads: { name: string | null; pts: Point[] }[];
   garage: Point[] | null;
+  /** Fire hydrant positions in the model frame (meters). */
+  hydrants?: Point[];
 }): SiteFeature[] {
   const here: Point = ringCentroid(opts.footprint);
   const reach = compoundReach(opts.footprint);
-  const roadMax = Math.max(40, reach * 1.1);
-  const roadHalf = Math.min(60, Math.max(18, reach * 0.45));
-  let best: { a: Point; b: Point; name: string | null; at: Point; d: number } | null = null;
-  for (const road of opts.roads) {
-    for (let i = 0; i < road.pts.length - 1; i++) {
-      const hit = nearestOn(here, road.pts[i], road.pts[i + 1]);
-      if (!best || hit.d < best.d) best = { a: road.pts[i], b: road.pts[i + 1], name: road.name, at: hit.at, d: hit.d };
-    }
-  }
-  if (!best || best.d > roadMax) return [];
-
-  const dx = best.b[0] - best.a[0];
-  const dy = best.b[1] - best.a[1];
-  const len = Math.hypot(dx, dy) || 1;
-  const ux = dx / len;
-  const uy = dy / len;
-  const back = Math.min(roadHalf, dist(best.a, best.at));
-  const fwd = Math.min(roadHalf, dist(best.b, best.at));
-  const roadA: Point = [best.at[0] - ux * back, best.at[1] - uy * back];
-  const roadB: Point = [best.at[0] + ux * fwd, best.at[1] + uy * fwd];
+  const keepR = Math.max(70, Math.min(140, reach * 1.15));
+  const roadMax = Math.max(55, reach * 1.25);
+  const width = Math.min(12, Math.max(7.2, ringExtent(opts.footprint) * 0.15));
   const out: SiteFeature[] = [];
-  const roadPoly = ribbon(roadA, roadB, Math.min(12, Math.max(7.2, ringExtent(opts.footprint) * 0.15)));
-  if (roadPoly) {
+
+  const hydrantR = Math.max(90, keepR * 1.15);
+  const nearestHydrants = [...(opts.hydrants ?? [])]
+    .map((p) => ({ p, d: dist(here, p) }))
+    .filter((h) => h.d < hydrantR)
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 6);
+  nearestHydrants.forEach((h, i) => {
+    const s = 0.28;
     out.push({
-      id: "road",
-      kind: "road",
-      label: best.name || "Street",
-      polygon: roadPoly,
-      height: HEIGHT.road,
+      id: `hydrant-${i}`,
+      kind: "hydrant",
+      label: i === 0 ? "Nearest hydrant" : "Fire hydrant",
+      polygon: [
+        [h.p[0] - s, h.p[1] - s],
+        [h.p[0] + s, h.p[1] - s],
+        [h.p[0] + s, h.p[1] + s],
+        [h.p[0] - s, h.p[1] + s],
+      ],
+      height: HEIGHT.hydrant,
       source: "map",
     });
+  });
+
+  type Seg = { a: Point; b: Point; name: string | null };
+  const segs: Seg[] = [];
+  let roadIdx = 0;
+  for (const road of opts.roads) {
+    const clipped = clipRoadNear(road.pts, here, keepR);
+    if (clipped.length < 2) continue;
+    // Prefer lengthy continuous ribbons — merge consecutive short edges when nearly colinear.
+    let runStart = clipped[0];
+    for (let i = 0; i < clipped.length - 1; i++) {
+      const a = clipped[i];
+      const b = clipped[i + 1];
+      if (dist(a, b) < 0.5) continue;
+      const next = clipped[i + 2];
+      const continueRun =
+        next &&
+        (() => {
+          const d0: Point = [b[0] - a[0], b[1] - a[1]];
+          const d1: Point = [next[0] - b[0], next[1] - b[1]];
+          const l0 = Math.hypot(d0[0], d0[1]) || 1;
+          const l1 = Math.hypot(d1[0], d1[1]) || 1;
+          return (d0[0] / l0) * (d1[0] / l1) + (d0[1] / l0) * (d1[1] / l1) > 0.97;
+        })();
+      if (continueRun) continue;
+      const poly = ribbon(runStart, b, width);
+      const nearHouse = nearestOn(here, runStart, b).d < keepR * 1.05;
+      if (poly && nearHouse) {
+        out.push({
+          id: `road-${roadIdx++}`,
+          kind: "road",
+          label: road.name || "Street",
+          polygon: poly,
+          height: HEIGHT.road,
+          source: "map",
+        });
+        segs.push({ a: runStart, b, name: road.name });
+      }
+      runStart = b;
+    }
+  }
+
+  // Nearest segment for driveway mouth.
+  let best: { a: Point; b: Point; name: string | null; at: Point; d: number } | null = null;
+  for (const s of segs) {
+    const hit = nearestOn(here, s.a, s.b);
+    if (!best || hit.d < best.d) best = { a: s.a, b: s.b, name: s.name, at: hit.at, d: hit.d };
+  }
+  if (!best || best.d > roadMax) {
+    // Still keep any road ribbons we already built; no driveway if nothing is close.
+    return out;
+  }
+
+  // Traffic lights at road crossings near the house.
+  let signalN = 0;
+  for (let i = 0; i < segs.length; i++) {
+    for (let j = i + 1; j < segs.length; j++) {
+      const hit = segIntersect(segs[i].a, segs[i].b, segs[j].a, segs[j].b);
+      if (!hit || dist(hit, here) > keepR * 0.95) continue;
+      // Skip near-duplicates.
+      if (out.some((f) => f.kind === "signal" && dist(ringCentroid(f.polygon), hit) < 8)) continue;
+      const s = 0.55;
+      out.push({
+        id: `signal-${signalN++}`,
+        kind: "signal",
+        label: "Traffic light",
+        polygon: [
+          [hit[0] - s, hit[1] - s],
+          [hit[0] + s, hit[1] - s],
+          [hit[0] + s, hit[1] + s],
+          [hit[0] - s, hit[1] + s],
+        ],
+        height: HEIGHT.signal,
+        source: "map",
+      });
+      if (signalN >= 4) break;
+    }
+    if (signalN >= 4) break;
   }
 
   let dir = opts.streetDir;
@@ -413,11 +610,11 @@ export function accessFeatures(opts: {
     const along = (g[0] - origin[0]) * -dir[0] + (g[1] - origin[1]) * -dir[1];
     const end: Point = [origin[0] - dir[0] * along, origin[1] - dir[1] * along];
     const mouthTarget: Point = [origin[0] + dir[0] * (halfFront + 1), origin[1] + dir[1] * (halfFront + 1)];
-    const mouth = nearestOn(mouthTarget, roadA, roadB).at;
+    const mouth = nearestOn(mouthTarget, best.a, best.b).at;
     drive = ribbon(mouth, end, 2.8);
   } else {
     const front: Point = [here[0] + dir[0] * (halfFront + 0.6), here[1] + dir[1] * (halfFront + 0.6)];
-    const mouth = nearestOn(front, roadA, roadB).at;
+    const mouth = nearestOn(front, best.a, best.b).at;
     drive = ribbon(front, mouth, 3);
   }
   if (drive) {

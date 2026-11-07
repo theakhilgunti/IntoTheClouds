@@ -91,6 +91,8 @@ const SITE_COLOR: Record<CompoundFeature["kind"], string> = {
   fence: "#9ebcff",
   trees: "#2f6bd0",
   road: "#0a2a68",
+  signal: "#facc15",
+  hydrant: "#dc2626",
 };
 
 const SITE_NOTE: Record<CompoundFeature["source"], string> = {
@@ -471,7 +473,7 @@ function SiteFeatureMesh({
             : 0.055;
 
   const slabGeo = useMemo(() => {
-    if (feature.kind === "trees" || feature.kind === "garage" || feature.kind === "shed") return null;
+    if (feature.kind === "trees" || feature.kind === "garage" || feature.kind === "shed" || feature.kind === "hydrant" || feature.kind === "signal") return null;
     const shape = new THREE.Shape(feature.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
     const g = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false });
     g.rotateX(-Math.PI / 2);
@@ -493,6 +495,63 @@ function SiteFeatureMesh({
         <mesh position={[0, 2.8, 0]}>
           <coneGeometry args={[1.3, 2.4, 7]} />
           <meshStandardMaterial color={hovered ? "#6fa0ff" : SITE_COLOR.trees} />
+        </mesh>
+      </group>
+    );
+  }
+
+  if (feature.kind === "signal") {
+    return (
+      <group position={[center[0], 0, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
+        <mesh position={[0, 1.6, 0]}>
+          <cylinderGeometry args={[0.08, 0.1, 3.2, 8]} />
+          <meshStandardMaterial color="#1a1a1a" metalness={0.4} roughness={0.55} />
+        </mesh>
+        <mesh position={[0, 3.35, 0]}>
+          <boxGeometry args={[0.35, 0.85, 0.28]} />
+          <meshStandardMaterial color="#111827" roughness={0.7} />
+        </mesh>
+        {([0.25, 0, -0.25] as const).map((y, i) => (
+          <mesh key={i} position={[0.2, 3.35 + y, 0]}>
+            <sphereGeometry args={[0.09, 10, 10]} />
+            <meshStandardMaterial
+              color={i === 0 ? "#ef4444" : i === 1 ? "#facc15" : "#22c55e"}
+              emissive={i === 0 ? "#ef4444" : i === 1 ? "#facc15" : "#22c55e"}
+              emissiveIntensity={hovered ? 1.2 : 0.65}
+            />
+          </mesh>
+        ))}
+      </group>
+    );
+  }
+
+  if (feature.kind === "hydrant") {
+    const red = hovered ? "#f87171" : SITE_COLOR.hydrant;
+    return (
+      <group position={[center[0], 0, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
+        <mesh position={[0, 0.08, 0]}>
+          <cylinderGeometry args={[0.22, 0.26, 0.16, 10]} />
+          <meshStandardMaterial color="#1f2937" metalness={0.35} roughness={0.55} />
+        </mesh>
+        <mesh position={[0, 0.42, 0]}>
+          <cylinderGeometry args={[0.16, 0.18, 0.55, 10]} />
+          <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} />
+        </mesh>
+        <mesh position={[0.2, 0.48, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <cylinderGeometry args={[0.06, 0.07, 0.18, 8]} />
+          <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} />
+        </mesh>
+        <mesh position={[-0.2, 0.48, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <cylinderGeometry args={[0.06, 0.07, 0.18, 8]} />
+          <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} />
+        </mesh>
+        <mesh position={[0, 0.48, 0.2]} rotation={[Math.PI / 2, 0, 0]}>
+          <cylinderGeometry args={[0.055, 0.065, 0.16, 8]} />
+          <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} />
+        </mesh>
+        <mesh position={[0, 0.78, 0]}>
+          <cylinderGeometry args={[0.09, 0.11, 0.16, 8]} />
+          <meshStandardMaterial color="#f8fafc" metalness={0.4} roughness={0.4} />
         </mesh>
       </group>
     );
@@ -613,6 +672,71 @@ function MarkerPin({ marker }: { marker: Marker }) {
   );
 }
 
+/** Wrap angle to [-π, π]. */
+function wrapPi(a: number) {
+  let x = a;
+  while (x > Math.PI) x -= Math.PI * 2;
+  while (x < -Math.PI) x += Math.PI * 2;
+  return x;
+}
+
+/**
+ * Orbit azimuth for the street-facing front of the house.
+ * Model frame: +x east, +y north. Three.js: +x east, +z = south (−plan y).
+ * Camera on the street looks toward the house → azimuth = atan2(streetEast, streetSouth).
+ */
+function streetFrontYaw(model: BuildingModel): number {
+  const roads = model.compound?.features.filter((f) => f.kind === "road") ?? [];
+  if (roads.length) {
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (const r of roads) {
+      for (const [x, y] of r.polygon) {
+        sx += x;
+        sy += y;
+        n++;
+      }
+    }
+    if (n > 0) {
+      const east = sx / n;
+      const north = sy / n;
+      const len = Math.hypot(east, north) || 1;
+      // Direction from house toward the street (camera sits there).
+      return Math.atan2(east / len, -north / len);
+    }
+  }
+  // Fallback: exterior ground-floor door farthest from the footprint centroid along its outward normal.
+  const floor0 = model.floors.find((f) => f.level === 0);
+  if (floor0) {
+    const fp = model.footprint;
+    const cx = fp.reduce((s, p) => s + p[0], 0) / (fp.length || 1);
+    const cy = fp.reduce((s, p) => s + p[1], 0) / (fp.length || 1);
+    let best: { east: number; north: number; score: number } | null = null;
+    for (const door of floor0.doors) {
+      const wall = floor0.walls.find((w) => w.id === door.wallId);
+      if (!wall?.exterior) continue;
+      const mx = (wall.a[0] + wall.b[0]) / 2;
+      const my = (wall.a[1] + wall.b[1]) / 2;
+      const dx = wall.b[0] - wall.a[0];
+      const dy = wall.b[1] - wall.a[1];
+      const len = Math.hypot(dx, dy) || 1;
+      // Outward-ish normal (left of wall dir); flip if it points inward.
+      let nx = -dy / len;
+      let ny = dx / len;
+      if ((mx - cx) * nx + (my - cy) * ny < 0) {
+        nx = -nx;
+        ny = -ny;
+      }
+      const score = Math.hypot(mx - cx, my - cy);
+      if (!best || score > best.score) best = { east: nx, north: ny, score };
+    }
+    if (best) return Math.atan2(best.east, -best.north);
+  }
+  // Layout convention when no street is known: front is plan −y → Three +Z → yaw 0.
+  return 0;
+}
+
 export default function Viewer({ model, onReady }: { model: BuildingModel; onReady?: () => void }) {
   const levels = model.floors.map((f) => f.level);
   const topLevel = Math.max(...levels);
@@ -627,8 +751,14 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const assumed = model.interior?.status !== "verified";
   const wrap = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<OrbitControlsImpl>(null);
-  const [orbitYaw, setOrbitYaw] = useState(0.85);
-  const [orbitPitch, setOrbitPitch] = useState(1.05);
+  // Rotate slider 0 = street-facing front. Tilt 1 = highest (top-down).
+  const MIN_POLAR = 0.16;
+  const MAX_POLAR = Math.PI * 0.48;
+  const polarFromTilt = (t: number) => MAX_POLAR - Math.min(1, Math.max(0, t)) * (MAX_POLAR - MIN_POLAR);
+  const tiltFromPolar = (p: number) => (MAX_POLAR - p) / (MAX_POLAR - MIN_POLAR);
+  const frontYaw = useMemo(() => streetFrontYaw(model), [model]);
+  const [orbitYaw, setOrbitYaw] = useState(0);
+  const [tiltAmt, setTiltAmt] = useState(0.42);
   const applyingOrbit = useRef(false);
   const [tip, setTip] = useState<{ id: string; title: string; detail: string; x: number; y: number } | null>(null);
 
@@ -676,10 +806,12 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
     // Portrait screens see less width, so back the camera off further.
     const portrait = typeof window !== "undefined" && window.innerHeight > window.innerWidth;
     const d = Math.min((ext * 2.0 + height) * (portrait ? 1.45 : 1), ext * 3.2 + 18);
-    const maxD = Math.min(Math.max(ext * 3.4, d * 1.35), 140);
+    const maxD = Math.min(Math.max(ext * 4.2, d * 1.45), 180);
     const minD = Math.max(2.5, Math.min(6, ext * 0.15));
+    // Start on the street-facing side (front of the house).
+    const fy = streetFrontYaw(model);
     return {
-      camPos: [d * 0.75, d * 0.55, d * 0.85] as [number, number, number],
+      camPos: [Math.sin(fy) * d * 0.95, d * 0.52, Math.cos(fy) * d * 0.95] as [number, number, number],
       target: [0, height * 0.35, 0] as [number, number, number],
       extent: ext,
       minDist: minD,
@@ -692,11 +824,11 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
     const c = controlsRef.current;
     if (!c) return;
     applyingOrbit.current = true;
-    c.setAzimuthalAngle(orbitYaw);
-    c.setPolarAngle(orbitPitch);
+    c.setAzimuthalAngle(frontYaw + orbitYaw);
+    c.setPolarAngle(polarFromTilt(tiltAmt));
     c.update();
     applyingOrbit.current = false;
-  }, [orbitYaw, orbitPitch]);
+  }, [orbitYaw, tiltAmt, frontYaw]);
 
   // three-stdlib: dollyIn multiplies scale (use <1 to move closer); dollyOut divides.
   const zoomIn = () => {
@@ -781,7 +913,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
 
         {!xray && (
           <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, LAYER_Y.base, 0]} raycast={noopRaycast}>
-            <circleGeometry args={[Math.min(extent * 2.2, extent + 28), 48]} />
+            <circleGeometry args={[Math.max(90, Math.min(160, extent * 5.5)), 64]} />
             <meshStandardMaterial
               color="#0d3482"
               transparent
@@ -836,26 +968,27 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         )}
 
         <gridHelper
-          args={[Math.min(extent * 4, 120), Math.max(12, Math.round(Math.min(extent * 2, 60))), "#4a78d0", "#2a55b0"]}
+          args={[Math.min(extent * 6, 200), Math.max(16, Math.round(Math.min(extent * 3, 80))), "#4a78d0", "#2a55b0"]}
           position={[0, -2.7, 0]}
         />
         <OrbitControls
           ref={controlsRef}
           makeDefault
           target={target}
-          maxPolarAngle={Math.PI * 0.48}
-          minPolarAngle={0.18}
+          maxPolarAngle={MAX_POLAR}
+          minPolarAngle={MIN_POLAR}
           minDistance={minDist}
           maxDistance={maxDist}
-          rotateSpeed={2.2}
-          zoomSpeed={1.2}
-          panSpeed={1.1}
+          enableDamping={false}
+          rotateSpeed={4.2}
+          zoomSpeed={1.35}
+          panSpeed={1.4}
           onStart={() => setTip(null)}
           onChange={() => {
             const c = controlsRef.current;
             if (!c || applyingOrbit.current) return;
-            setOrbitYaw(c.getAzimuthalAngle());
-            setOrbitPitch(c.getPolarAngle());
+            setOrbitYaw(wrapPi(c.getAzimuthalAngle() - frontYaw));
+            setTiltAmt(Math.min(1, Math.max(0, tiltFromPolar(c.getPolarAngle()))));
           }}
         />
       </Canvas>
@@ -890,20 +1023,22 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
               value={orbitYaw}
               onChange={(e) => setOrbitYaw(Number(e.target.value))}
               className="h-1.5 w-24 cursor-pointer accent-bp-ink sm:w-32"
-              aria-label="Rotate view"
+              aria-label="Rotate view (0 faces the street front)"
+              title="0° = front of the house (street side)"
             />
           </label>
           <label className="flex items-center gap-2 font-data text-[11px] text-bp-line">
             Tilt
             <input
               type="range"
-              min={0.2}
-              max={Math.PI * 0.48}
+              min={0}
+              max={1}
               step={0.01}
-              value={orbitPitch}
-              onChange={(e) => setOrbitPitch(Number(e.target.value))}
+              value={tiltAmt}
+              onChange={(e) => setTiltAmt(Number(e.target.value))}
               className="h-1.5 w-24 cursor-pointer accent-bp-ink sm:w-28"
-              aria-label="Tilt view"
+              aria-label="Tilt view (max is top-down)"
+              title="Max = highest top-down view"
             />
           </label>
         </div>

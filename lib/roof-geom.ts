@@ -274,11 +274,10 @@ function defaultRidge(poly: Pt[], along: "width" | "depth" | "auto"): [Pt, Pt] {
       ];
 }
 
-/** Gable: ridge edge + slope quads from each wall half. */
+/** Gable: ridge edge + slope quads from each wall half (any convex wing, incl. L arms). */
 export function meshGablePiece(poly: Pt[], ridge: [Pt, Pt] | undefined, height: number, out: number[], overhang = 0.3) {
   const walls = simplifyRing(poly);
-  // Clean 4-corner rectangles get classic gables; everything else gets a hip piece.
-  if (walls.length !== 4 || isConcave(walls)) {
+  if (walls.length < 4 || isConcave(walls)) {
     meshHipPiece(poly, height, out, overhang);
     return;
   }
@@ -287,7 +286,7 @@ export function meshGablePiece(poly: Pt[], ridge: [Pt, Pt] | undefined, height: 
   const peak = Math.max(0.3, height);
   meshDeck(eaves, 0.05, out);
 
-  const r = ridge && dist(ridge[0], ridge[1]) > 0.3 ? ridge : defaultRidge(eaves, "auto");
+  const r = ridge && dist(ridge[0], ridge[1]) > 0.25 ? ridge : defaultRidge(eaves, "auto");
   const { left, right } = splitByRidge(eaves, r[0], r[1]);
 
   for (const half of [left, right]) {
@@ -317,12 +316,17 @@ function meshWing(wing: RoofWingMesh, out: number[]) {
     meshFlatPiece(wing.polygon, h, out);
     return;
   }
-  // Prefer hip for anything that isn't a clean elongated bar — Bloxburg auto does this too.
   const ring = simplifyRing(wing.polygon);
   const box = bbox(ring);
   const aspect = Math.max(box.w, box.d) / Math.max(0.5, Math.min(box.w, box.d));
-  const cleanGable = wing.shape === "gable" && ring.length === 4 && !isConcave(ring) && aspect >= 1.25 && wing.ridge;
-  if (cleanGable) {
+  // Gables for elongated convex wings (incl. L arms that join at a T-ridge).
+  const useGable =
+    wing.shape === "gable" &&
+    !!wing.ridge &&
+    !isConcave(ring) &&
+    ring.length >= 4 &&
+    (aspect >= 1.15 || dist(wing.ridge[0], wing.ridge[1]) > 2);
+  if (useGable) {
     meshGablePiece(wing.polygon, wing.ridge, h, out);
     return;
   }

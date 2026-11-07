@@ -1,4 +1,4 @@
-/** Free aerial imagery (Esri World Imagery). Attribution: Esri, Maxar, Earthstar Geographics. */
+/** Satellite / aerial imagery. Esri World Imagery by default; optional Google Maps Static when keyed. */
 import type { LatLng } from "./geo";
 
 export type Image = { base64: string; mime: "image/jpeg" | "image/png" | "image/webp" };
@@ -11,6 +11,37 @@ function exportUrl(c: LatLng, halfSize: number) {
     "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export" +
     `?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=640,640&format=jpg&f=image`
   );
+}
+
+/** Rough zoom so Google Static covers ~halfSize meters from center to edge. */
+function zoomForHalfSize(halfSize: number): number {
+  // At mid-latitudes, zoom 19 ≈ 40 m half-width; zoom 18 ≈ 80 m; zoom 17 ≈ 160 m.
+  if (halfSize <= 45) return 19;
+  if (halfSize <= 90) return 18;
+  if (halfSize <= 160) return 17;
+  return 16;
+}
+
+/**
+ * Google Maps Static satellite (optional). Set GOOGLE_MAPS_API_KEY to cross-check Esri.
+ * Returns null when the key is missing or the request fails.
+ */
+export async function googleSatelliteImage(c: LatLng, halfSize: number): Promise<Image | null> {
+  const key = process.env.GOOGLE_MAPS_API_KEY;
+  if (!key) return null;
+  const zoom = zoomForHalfSize(halfSize);
+  const url =
+    "https://maps.googleapis.com/maps/api/staticmap" +
+    `?center=${c.lat},${c.lng}&zoom=${zoom}&size=640x640&maptype=satellite&key=${encodeURIComponent(key)}`;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 2000) return null;
+    return { base64: buf.toString("base64"), mime: "image/jpeg" };
+  } catch {
+    return null;
+  }
 }
 
 /**

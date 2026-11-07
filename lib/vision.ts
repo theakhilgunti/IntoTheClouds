@@ -148,32 +148,43 @@ const SITE_SCHEMA = {
   required: ["features"],
 };
 
-/** Boxes around things next to the house in a north-up aerial photo. Empty when nothing is clear. */
-export async function describeSite(aerial: Image): Promise<AerialBox[]> {
+/**
+ * Boxes around things next to the house in north-up satellite imagery.
+ * Pass a second shot (e.g. Google Maps Static) when available so Gemini can cross-check.
+ */
+export async function describeSite(aerial: Image, crossCheck?: Image | null): Promise<AerialBox[]> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return [];
+  const parts: Array<Record<string, unknown>> = [
+    {
+      text:
+        "Satellite / aerial view like Google Maps. North is up. The house is at the center. Do not box the house itself.",
+    },
+    { inlineData: { mimeType: aerial.mime, data: aerial.base64 } },
+  ];
+  if (crossCheck) {
+    parts.push({
+      text: "Second satellite image of the same place (Google Maps or alternate source). Only mark features visible in BOTH images when they disagree.",
+    });
+    parts.push({ inlineData: { mimeType: crossCheck.mime, data: crossCheck.base64 } });
+  }
+  parts.push({
+    text:
+      "Cross-verify structures you would see on a satellite map around that house: detached garage, shed, driveway, patio or deck, swimming pool, and a distinct clump of trees. " +
+      "Prefer features confirmed by paving tone, shadow, and roof rectangles — not guesses. " +
+      "Coordinates are 0 to 1000. x grows to the right (east). y grows downward (south). Boxes should be tight. " +
+      "If you are not sure a feature is there, leave it out. Do not mark fences or the street itself. Return an empty list when the photo is unclear.",
+  });
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel()}:generateContent`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
-        contents: [{
-          role: "user",
-          parts: [
-            { text: "Aerial photo. North is up. The house is at the center. Do not box the house itself." },
-            { inlineData: { mimeType: aerial.mime, data: aerial.base64 } },
-            {
-              text:
-                "Mark only features you can actually see around that house: detached garage, shed, driveway, patio or deck, swimming pool, and a distinct clump of trees. " +
-                "Coordinates are 0 to 1000. x grows to the right (east). y grows downward (south). Boxes should be tight. " +
-                "If you are not sure a feature is there, leave it out. Do not mark fences. Return an empty list when the photo is unclear.",
-            },
-          ],
-        }],
+        contents: [{ role: "user", parts }],
         generationConfig: { responseMimeType: "application/json", responseSchema: SITE_SCHEMA, temperature: 0.1 },
       }),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(35000),
     },
   );
   if (!res.ok) throw new Error(`Gemini HTTP ${res.status}`);

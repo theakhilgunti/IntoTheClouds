@@ -93,5 +93,14 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 00:25 | Cursor | UI-12 | Bloxburg-style edge/vertex roof pieces; capped zoom + smaller ground; top zoom buttons and rotate/tilt sliders. |
 | 00:45 | Cursor | UI-13 | Pulled blueprint UI; kept camera HUD; roofs use edge-matched hip/gable with preserved vertex insets; fog no longer whites out zoom. |
 | 00:50 | Cursor | UI-14 | Fixed inverted +/- zoom; raised OrbitControls rotateSpeed for faster drag orbit. |
+| 01:05 | Cursor | UI-15 | Wider 360 ground; long roads + connectors + traffic lights; L roofs with tall wing through / short T-join. |
+| 01:20 | Cursor | UI-16 | Faster orbit (no damping); OSM site features cross-checked with Esri JPEG + Gemini + optional Google Static sat. |
+| 01:30 | Cursor | UI-17 | Softer rotateSpeed; rotate 0° = house front; tilt max = top-down. |
+| 01:35 | Cursor | UI-18 | Rotate 0° aligns to street-facing front (from roads / front door). |
 | 23:15 | Cursor | UI-14 | Finished task |
 | 23:17 | Claude | UI-hotbar | Finished task |
+| 23:24 | Cursor | UI-15 | Finished task |
+| 23:28 | Cursor | UI-16 | Finished task |
+| 23:29 | Cursor | UI-17 | Finished task |
+| 23:32 | Cursor | UI-18 | Finished task |
+| 23:38 | Cursor | UI-19 | OSM nearest fire hydrants in compound + red 3D hydrant markers. |
