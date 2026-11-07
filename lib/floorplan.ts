@@ -109,7 +109,7 @@ export async function readFloorPlan(image: Image, levelName: string): Promise<Pl
 // ---------------------------------------------------------------- geometry
 
 type Box = { name: string; type: (typeof ROOM_TYPES)[number]; x0: number; y0: number; x1: number; y1: number };
-const TOL = 12; // 1.2% of the plan: edges closer than this are the same wall
+const TOL = 28; // 2.8% of the plan: edges closer than this are the same wall (AI boxes sit slightly inside the drawn walls)
 const FLOOR_NAMES: Record<number, string> = { [-1]: "Basement", 0: "1st Floor", 1: "2nd Floor", 2: "3rd Floor" };
 
 function snapAxis(values: number[]): Map<number, number> {
@@ -123,7 +123,7 @@ function snapAxis(values: number[]): Map<number, number> {
     group = [];
   };
   for (const v of sorted) {
-    if (group.length && v - group[group.length - 1] > TOL) flush();
+    if (group.length && v - group[0] > TOL) flush();
     group.push(v);
   }
   flush();
