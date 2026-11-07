@@ -94,6 +94,17 @@ export const Roof = z.object({
   height: z.number().nonnegative().describe("Rise above the top floor's ceiling, meters"),
 });
 
+/**
+ * How much we actually know about the inside. "verified" = rooms come from a real source (floor plan,
+ * survey, WiFi scan). "unknown" = nothing measured the interior, so the model has no rooms and the
+ * house needs a scan. We never draw guessed rooms.
+ */
+export const Interior = z.object({
+  status: z.enum(["verified", "unknown"]),
+  source: z.string().optional().describe("Where verified rooms came from, e.g. 'floor plan', 'wifi scan'"),
+  reasons: z.array(z.string()).default([]).describe("Why the interior is unknown (empty when verified)"),
+});
+
 export const BuildingModel = z.object({
   id: z.string(),
   source: z.enum(["photo", "address", "wifi", "upload", "demo"]),
@@ -105,8 +116,10 @@ export const BuildingModel = z.object({
   floors: z.array(Floor).min(1),
   markers: z.array(Marker).default([]),
   roof: Roof.optional(),
+  interior: Interior.optional().describe("Absent on old scans and the demo house"),
 });
 
+export type Interior = z.infer<typeof Interior>;
 export type RoofShape = z.infer<typeof RoofShape>;
 export type Roof = z.infer<typeof Roof>;
 

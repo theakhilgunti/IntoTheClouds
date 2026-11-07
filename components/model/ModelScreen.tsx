@@ -86,6 +86,8 @@ export default function ModelScreen({ id }: { id: string }) {
 
   const model = state.kind === "demo" ? state.model : state.scan.result.model;
   const conf = Math.round(model.confidence * 100);
+  const interior = model.interior;
+  const legacy = state.kind === "scan" && !interior; // saved before interiors were tracked: layout was guessed
 
   return (
     <div className="relative h-full w-full">
@@ -101,7 +103,7 @@ export default function ModelScreen({ id }: { id: string }) {
             <span className="h-1.5 w-16 overflow-hidden rounded-full bg-neutral-700">
               <span className="block h-full bg-yellow-400" style={{ width: `${conf}%` }} />
             </span>
-            {conf}% confidence · estimated interior
+            {conf}% outline confidence · {interior?.status === "verified" ? "interior verified" : interior ? "interior unknown" : state.kind === "demo" ? "demo data" : "old scan"}
           </div>
         </div>
         <div className="pointer-events-auto flex justify-end gap-2">
@@ -122,6 +124,29 @@ export default function ModelScreen({ id }: { id: string }) {
           </Link>
         </div>
       </div>
+
+      {interior?.status === "unknown" && (
+        <div className="pointer-events-auto absolute left-3 right-3 top-32 z-10 max-w-md rounded-xl border-2 border-red-500 bg-black/90 px-4 py-3 text-white backdrop-blur sm:top-28">
+          <div className="text-sm font-black uppercase tracking-wide text-red-400">Interior unknown · this house needs a scan</div>
+          <p className="mt-1 text-xs text-neutral-300">Only the outside is shown. We don&apos;t guess rooms. Why:</p>
+          <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-neutral-200">
+            {interior.reasons.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {interior?.status === "verified" && (
+        <div className="pointer-events-none absolute left-3 top-32 z-10 rounded-xl border border-emerald-500 bg-black/85 px-3 py-2 text-xs font-bold text-emerald-300 sm:top-28">
+          Interior verified · {interior.source}
+        </div>
+      )}
+      {legacy && (
+        <div className="pointer-events-auto absolute left-3 right-3 top-32 z-10 max-w-md rounded-xl border-2 border-amber-400 bg-black/90 px-4 py-3 text-white sm:top-28">
+          <div className="text-sm font-black uppercase tracking-wide text-amber-300">Old scan · room layout was guessed</div>
+          <p className="mt-1 text-xs text-neutral-300">Open &quot;How this was built&quot; and press Re-scan to see what is actually known.</p>
+        </div>
+      )}
 
       {state.kind === "scan" && panel && (
         <ScanReport scan={state.scan} onClose={() => setPanel(false)} onRescan={rescan} rescanning={rescanning} />

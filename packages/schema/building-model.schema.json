@@ -387,6 +387,34 @@
         "rotation",
         "height"
       ]
+    },
+    "interior": {
+      "description": "Absent on old scans and the demo house",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "unknown"
+          ]
+        },
+        "source": {
+          "description": "Where verified rooms came from, e.g. 'floor plan', 'wifi scan'",
+          "type": "string"
+        },
+        "reasons": {
+          "default": [],
+          "description": "Why the interior is unknown (empty when verified)",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "status"
+      ]
     }
   },
   "required": [

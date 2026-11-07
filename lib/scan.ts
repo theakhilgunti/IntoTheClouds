@@ -6,6 +6,7 @@ import { fromLocal, polygonArea, polygonCentroid, type LatLng } from "./geo";
 import { geocode, nominatimBuildingId } from "./geocode";
 import { lookupBuilding, type OsmContext } from "./overpass";
 import { pinnedWayId } from "./pins";
+import { verifiedInterior } from "./interiors";
 import { aerialImage, type Image } from "./imagery";
 import { describeHouse, geminiAvailable, geminiModel, type HouseFacts } from "./vision";
 import { buildHouse, type GarageSide } from "./layout";
@@ -232,8 +233,10 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   }
 
   let basement = center.lat > 37;
+  let basementKnown = false;
   if (sure && (sure.basement === "visible" || sure.basement === "likely")) {
     basement = true;
+    basementKnown = true;
     attributes.push({ field: "Basement", value: "Yes", from: "photos", note: sure.basement === "visible" ? "Visible in photo" : "Likely from the photos" });
   } else if (sure && sure.basement === "unlikely") {
     basement = false;
@@ -256,6 +259,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   if (facts) confidence += 0.15 * facts.confidence;
   confidence = Math.min(0.9, confidence);
 
+  const verified = verifiedInterior(id);
   const built = buildHouse({
     id,
     source: input.address ? "address" : "photo",
@@ -266,11 +270,36 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     footprint,
     streetDir,
     stories,
-    basement,
+    basement: verified ? basement : basementKnown,
     garage,
     roof,
   });
-  warnings.push(...built.notes);
+
+  // Nothing in public map data or photos measures the inside. Unless a verified layout is on file,
+  // keep only the real outside (exterior walls + roof) and say plainly that the interior is unknown.
+  const reasons: string[] = [];
+  if (verified) {
+    built.model = { ...verified, address: verified.address || address, markers: [] };
+  } else {
+    reasons.push("No floor plan, survey or interior scan is on file for this building. Maps and satellite photos only show the outside.");
+    if (!footprint) reasons.push("No building outline is mapped at this address, so even the size and shape are unknown.");
+    else if (osm?.chosenBy === "nearest") reasons.push("We couldn't confirm which mapped building is this address, so this may be a neighbor.");
+    if (attributes.find((a) => a.field === "Floors above ground")?.from === "estimated") {
+      reasons.push("The number of floors could not be confirmed from the map or photos.");
+    }
+    if (b && NOT_A_HOUSE.has(b.tags.building)) {
+      reasons.push(`This is mapped as "${b.tags.building}", which is not a typical house, so it needs a real scan.`);
+    }
+    built.model.floors = built.model.floors
+      .filter((f) => f.level >= 0 || basementKnown)
+      .map((f) => ({ ...f, rooms: [], doors: [], stairs: [], walls: f.walls.filter((w) => w.exterior) }));
+    built.model.interior = { status: "unknown", reasons };
+  }
+  if (!verified) {
+    for (let i = attributes.length - 1; i >= 0; i--) if (attributes[i].field === "Basement" && attributes[i].from === "estimated") attributes.splice(i, 1);
+  } else {
+    warnings.push(...built.notes);
+  }
 
   attributes.unshift(
     {
@@ -289,14 +318,19 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       { field: "Style", value: facts.style, from: "photos" },
     );
   }
-  attributes.push({
-    field: "Room layout", value: "Typical plan for this size", from: "estimated",
-    note: "No public source has interior floor plans",
-  });
-  sources.push({
-    id: "layout", name: "CloudScan layout engine", status: "used",
-    detail: `Placed a typical ${stories}-story plan inside the ${footprint ? "real" : "estimated"} footprint, front door toward the street.`,
-  });
+  attributes.push(
+    verified
+      ? { field: "Interior", value: "Verified", from: "map", note: `Source: ${verified.interior?.source}` }
+      : { field: "Interior", value: "Unknown — needs a scan", from: "estimated", note: reasons[0] },
+  );
+  sources.push(
+    verified
+      ? { id: "layout", name: "Verified interior", status: "used", detail: `Real room layout from: ${verified.interior?.source}.` }
+      : {
+          id: "layout", name: "Interior layout", status: "skipped",
+          detail: "Not determined. No floor plan or scan exists for this building, and we do not guess rooms.",
+        },
+  );
   step("build", "done");
 
   const result: ScanResult = {
