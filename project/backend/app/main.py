@@ -124,6 +124,10 @@ async def telemetry_endpoint(websocket: WebSocket):
                     step_length_m=pdr.get("step_length_m", 0.75),
                     heading_deg=pdr.get("heading_deg", 0.0),
                 )
+                # No step => no motion sensor (or standing still): spread particles slightly so
+                # the filter keeps tracking from signal readings alone (BE-06).
+                if wifi_scans and not pdr.get("step_detected", False):
+                    localizer.diffuse()
                 localizer.update_rssi(wifi_scans, anchors)
 
                 # Get updated state

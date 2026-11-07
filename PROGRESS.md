@@ -68,3 +68,4 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 18:34 | Claude Code | DOC-04 | Rewrote WORK_ORDERS.md: usage steps, priority boards, uniform task cards |
 | 18:43 | Claude Code | DOC-05 | Excluded project/ from root tsconfig and eslint so the CloudScan (Vercel) build ignores the Pi/Vite project |
 | 19:03 | Claude Code | DOC-06 | FE-03 now lists the missing backend dependency (particles are not sent to the dashboard); GitHub issues 2-26 expanded with detailed steps |
+| 20:33 | Claude Code | BE-06 | Added ParticleFilterLocalizer.diffuse() random-walk model, used when scans arrive with no step; 3 new tests (8 pass) |
