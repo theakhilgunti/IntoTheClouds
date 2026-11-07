@@ -142,5 +142,6 @@ export function colonialTemplate(opts: {
     footprint: rect({ x0: -hx, y0: -hy, x1: hx, y1: hy }),
     floors,
     markers: [],
+    roof: { shape: "gable", center: [0, 0], width: w, depth: d, rotation: 0, height: 2.6 },
   };
 }

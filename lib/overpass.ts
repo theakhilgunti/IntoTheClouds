@@ -1,0 +1,164 @@
+/** OpenStreetMap Overpass: building outlines + tags and nearby roads around a point. */
+import {
+  angleDiff, bearing, dist, distToRing, fromLocal, nearestOnSegment, pointInPolygon, polygonArea, polygonCentroid, toLocal,
+  type LatLng,
+} from "./geo";
+import type { Point } from "@/packages/schema/building-model";
+
+const ENDPOINTS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+
+type OsmWay = { id: number; tags?: Record<string, string>; geometry?: { lat: number; lon: number }[] };
+
+export type OsmBuilding = {
+  id: number;
+  tags: Record<string, string>;
+  /** Outline in meters relative to the search origin. */
+  ring: Point[];
+  area: number;
+};
+
+export type OsmContext = {
+  building: OsmBuilding | null;
+  chosenBy: "contains-point" | "in-view-direction" | "nearest" | "none";
+  buildingCount: number;
+  /** Unit vector (local frame) from the building toward the nearest road, if any road was found. */
+  roadDir: Point | null;
+  roadName: string | null;
+  roadDistance: number | null;
+};
+
+const NON_HOUSE = new Set(["garage", "garages", "shed", "roof", "carport", "service", "hut", "cabin", "greenhouse", "barn"]);
+
+const UA = "CloudScan-HackRPI/0.1 (hackathon project)";
+const ROADS = /^(residential|service|tertiary|secondary|primary|unclassified|living_street|trunk)$/;
+
+/** Main OpenStreetMap API: everything in a small box around the point. Fast and reliable for tiny areas. */
+async function fromOsmApi(o: LatLng, radius: number): Promise<OsmWay[]> {
+  const dLat = radius / 111320;
+  const dLng = radius / (111320 * Math.cos((o.lat * Math.PI) / 180));
+  const bbox = [o.lng - dLng, o.lat - dLat, o.lng + dLng, o.lat + dLat].map((n) => n.toFixed(6)).join(",");
+  const res = await fetch(`https://api.openstreetmap.org/api/0.6/map.json?bbox=${bbox}`, {
+    headers: { "User-Agent": UA },
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!res.ok) throw new Error(`OSM API HTTP ${res.status}`);
+  const j = await res.json();
+  const nodes = new Map<number, { lat: number; lon: number }>();
+  for (const e of j.elements) if (e.type === "node") nodes.set(e.id, { lat: e.lat, lon: e.lon });
+  const ways: OsmWay[] = [];
+  for (const e of j.elements) {
+    if (e.type !== "way" || !e.tags) continue;
+    if (!e.tags.building && !(e.tags.highway && ROADS.test(e.tags.highway))) continue;
+    const geometry = (e.nodes as number[]).map((id) => nodes.get(id)).filter(Boolean) as { lat: number; lon: number }[];
+    ways.push({ id: e.id, tags: e.tags, geometry });
+  }
+  return ways;
+}
+
+/** Try the main OSM API first, then the Overpass mirrors. */
+async function fetchWays(origin: LatLng, overpassQuery: string): Promise<OsmWay[]> {
+  try {
+    return await fromOsmApi(origin, 80);
+  } catch (e) {
+    console.warn("OSM API failed, trying Overpass", e);
+    return runQuery(overpassQuery);
+  }
+}
+
+async function runQuery(query: string): Promise<OsmWay[]> {
+  let lastErr: unknown;
+  for (const url of ENDPOINTS) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        body: "data=" + encodeURIComponent(query),
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = await res.json();
+      return j.elements as OsmWay[];
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Find the house at `origin`. If `heading` (compass degrees the camera faced) is given and the point
+ * is not inside any outline, prefer buildings in that direction.
+ */
+export async function lookupBuilding(origin: LatLng, heading?: number | null): Promise<OsmContext> {
+  const q = `[out:json][timeout:20];
+(
+  way["building"](around:80,${origin.lat},${origin.lng});
+  way["highway"~"^(residential|service|tertiary|secondary|primary|unclassified|living_street)$"](around:70,${origin.lat},${origin.lng});
+);
+out tags geom;`;
+  const els = await fetchWays(origin, q);
+
+  const buildings: OsmBuilding[] = [];
+  const roads: { name: string | null; pts: Point[] }[] = [];
+  for (const w of els) {
+    if (!w.geometry || w.geometry.length < 2) continue;
+    const pts = w.geometry.map((g) => toLocal(origin, { lat: g.lat, lng: g.lon }));
+    if (w.tags?.building) {
+      const ring = pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] ? pts.slice(0, -1) : pts;
+      if (ring.length >= 3) buildings.push({ id: w.id, tags: w.tags, ring, area: polygonArea(ring) });
+    } else if (w.tags?.highway) {
+      roads.push({ name: w.tags.name ?? null, pts });
+    }
+  }
+
+  const here: Point = [0, 0];
+  const houses = buildings.filter((b) => !NON_HOUSE.has(b.tags.building) && b.area > 25);
+  const pool = houses.length ? houses : buildings;
+
+  let building: OsmBuilding | null = null;
+  let chosenBy: OsmContext["chosenBy"] = "none";
+  const inside = pool.find((b) => pointInPolygon(here, b.ring));
+  if (inside) {
+    building = inside;
+    chosenBy = "contains-point";
+  } else if (pool.length) {
+    const scored = pool
+      .map((b) => {
+        const c = polygonCentroid(b.ring);
+        const brg = bearing(origin, fromLocal(origin, c));
+        return { b, d: distToRing(here, b.ring), off: heading != null ? angleDiff(brg, heading) : 0 };
+      })
+      .filter((s) => s.d < 60);
+    if (heading != null) {
+      const inView = scored.filter((s) => s.off <= 35).sort((a, b) => a.d - b.d)[0];
+      if (inView) {
+        building = inView.b;
+        chosenBy = "in-view-direction";
+      }
+    }
+    if (!building && scored.length) {
+      building = scored.sort((a, b) => a.d - b.d)[0].b;
+      chosenBy = "nearest";
+    }
+  }
+
+  let roadDir: Point | null = null, roadName: string | null = null, roadDistance: number | null = null;
+  if (roads.length) {
+    const c = building ? polygonCentroid(building.ring) : here;
+    let best = Infinity;
+    for (const r of roads) {
+      for (let i = 0; i < r.pts.length - 1; i++) {
+        const n = nearestOnSegment(c, r.pts[i], r.pts[i + 1]);
+        const d = dist(c, n);
+        if (d < best) {
+          best = d;
+          roadDir = [(n[0] - c[0]) / (d || 1), (n[1] - c[1]) / (d || 1)];
+          roadName = r.name;
+          roadDistance = d;
+        }
+      }
+    }
+  }
+
+  return { building, chosenBy, buildingCount: buildings.length, roadDir, roadName, roadDistance };
+}

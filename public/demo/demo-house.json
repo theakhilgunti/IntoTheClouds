@@ -839,5 +839,16 @@
       "stairs": []
     }
   ],
-  "markers": []
+  "markers": [],
+  "roof": {
+    "shape": "gable",
+    "center": [
+      0,
+      0
+    ],
+    "width": 12,
+    "depth": 9,
+    "rotation": 0,
+    "height": 2.6
+  }
 }

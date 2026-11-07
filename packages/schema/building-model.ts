@@ -82,6 +82,18 @@ export const Marker = z.object({
   createdAt: z.string().describe("ISO timestamp"),
 });
 
+export const RoofShape = z.enum(["gable", "hip", "flat", "gambrel", "mansard", "other"]);
+
+/** Optional exterior roof, drawn on top of the highest floor. Oriented rectangle in the model frame. */
+export const Roof = z.object({
+  shape: RoofShape,
+  center: Point,
+  width: z.number().positive(),
+  depth: z.number().positive(),
+  rotation: z.number().describe("Radians, counter-clockwise from +x (east)"),
+  height: z.number().nonnegative().describe("Rise above the top floor's ceiling, meters"),
+});
+
 export const BuildingModel = z.object({
   id: z.string(),
   source: z.enum(["photo", "address", "wifi", "upload", "demo"]),
@@ -92,7 +104,11 @@ export const BuildingModel = z.object({
   footprint: Polygon,
   floors: z.array(Floor).min(1),
   markers: z.array(Marker).default([]),
+  roof: Roof.optional(),
 });
+
+export type RoofShape = z.infer<typeof RoofShape>;
+export type Roof = z.infer<typeof Roof>;
 
 export type RoomType = z.infer<typeof RoomType>;
 export type Room = z.infer<typeof Room>;
