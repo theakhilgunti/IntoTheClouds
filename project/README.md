@@ -70,9 +70,9 @@ You need: 3 phones (anchors), 1 Windows laptop (the walker carries it), a tape m
 2. **Positions:** measure each phone's `(x, y)` from a room corner in metres. Default layout: `ITC-A1` at `(0,0)`, `ITC-A2` at `(10,0)`, `ITC-A3` at `(5,10)`.
 3. **Laptop:** on Windows turn on Location services (needed to see Wi-Fi networks) and Bluetooth. Run the backend and dashboard (Quick Start steps 1 and 2 above).
 4. **Anchors:** register the anchors with the backend by BSSID (Wi-Fi) or Bluetooth name (`GET/POST /api/anchors`). Read the real BSSIDs from a scan on the laptop, not from the phone's settings screen.
-5. **Scanner:** run the laptop scanner from `project/laptop_client/` (the Windows scan scripts are on branch `agent/laptop/LC-01-windows-scan-spike`, and the scanner itself is task LC-02, not merged yet). Until then use the simulator above.
+5. **Scanner:** run the laptop scanner from `project/laptop_client/` (the Windows scan test scripts from LC-01 are there now; the scanner itself is task LC-02 and is not written yet). Until then use the simulator above.
 
-With no motion sensor, the backend moves the position estimate with a **random-walk motion model** (task BE-06, on branch `agent/backend/BE-06-random-walk-motion`, not merged yet). The position then comes from signal strength alone and is coarse.
+With no motion sensor, the backend moves the position estimate with a **random-walk motion model** (task BE-06, merged). The position then comes from signal strength alone and is coarse.
 
 **Optional 4th phone:** it can stream steps and heading to the backend (tasks HW-02a and HW-02). The base demo works without it.
 
@@ -86,7 +86,7 @@ IntoTheClouds/
 │   ├── backend/                 # FastAPI server, particle filter & math engine
 │   ├── frontend/                # React + Three.js 3D tactical HUD
 │   ├── pi_client/               # legacy: walk simulator (simulate_walk.py); the Pi scanner is retired
-│   ├── laptop_client/           # Windows Wi-Fi + Bluetooth scanner (LC-01/LC-02, on a branch until merged)
+│   ├── laptop_client/           # Windows Wi-Fi + Bluetooth scanner (LC-01 scan test scripts; LC-02 scanner to come)
 │   ├── scripts/                 # Core execution scripts
 │   ├── PRD.md                   # Full 24-hr Hackathon PRD & technical specs
 │   ├── DEMO_GUIDE.md            # Live judging 4-step walkthrough and setup guide
