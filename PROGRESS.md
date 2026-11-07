@@ -9,7 +9,7 @@
 
 | Task ID | Claimed Files / Directories | Owner / Agent | Branch | Status | Timestamp (UTC) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| — | — | — | — | — | — |
+| *None* | *(No active locks — all modules available)* | — | — | ⚪ Open | — |
 
 ---
 
@@ -89,3 +89,8 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 23:00 | Cursor | UI-08 | Widened OSM/aerial reach and site filters so larger buildings keep the lot, outbuildings, parking, and street. |
 | 23:10 | Cursor | UI-09 | Layered ground to stop z-fighting, gave garages/sheds walls and roofs, and rebuilt gable meshes from ridge lines. |
 | 23:55 | Cursor | UI-10 | Game/FS-style roofs: inward-offset loft on convex hips, distance-to-eaves field on complex/L footprints, outbuildings use hip loft. |
+| 00:10 | Cursor | UI-11 | Sealed roofs: triangulated height-field + eaves deck, fixed hip pitch, opaque flatShading materials to kill gaps/see-through. |
+| 00:25 | Cursor | UI-12 | Bloxburg-style edge/vertex roof pieces; capped zoom + smaller ground; top zoom buttons and rotate/tilt sliders. |
+| 00:45 | Cursor | UI-13 | Pulled blueprint UI; kept camera HUD; roofs use edge-matched hip/gable with preserved vertex insets; fog no longer whites out zoom. |
+| 00:50 | Cursor | UI-14 | Fixed inverted +/- zoom; raised OrbitControls rotateSpeed for faster drag orbit. |
+| 23:15 | Cursor | UI-14 | Finished task |

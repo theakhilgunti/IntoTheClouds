@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
 import { Edges, Line, OrbitControls } from "@react-three/drei";
+import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import * as THREE from "three";
 import type {
   BuildingModel,
@@ -413,7 +414,14 @@ function OutbuildingMesh({
       {roofGeo && (
         <group position={[0, wallH, 0]}>
           <mesh geometry={roofGeo} raycast={noopRaycast}>
-            <meshStandardMaterial color="#1c3f86" roughness={0.9} side={THREE.DoubleSide} />
+            <meshStandardMaterial
+              color="#1c3f86"
+              roughness={0.92}
+              metalness={0}
+              flatShading
+              depthWrite
+              side={THREE.DoubleSide}
+            />
             <Edges color="#eaf1ff" threshold={20} raycast={noopRaycast} />
           </mesh>
         </group>
@@ -554,19 +562,27 @@ function RoofMesh({ roof, footprint, baseY, xray }: { roof: Roof; footprint: Poi
   }, [roof, footprint]);
 
   if (!geometry) return null;
+  const roofMat = (
+    <>
+      <meshStandardMaterial
+        color={xray ? "#9ebcff" : "#1c3f86"}
+        wireframe={xray}
+        transparent={!!xray}
+        opacity={xray ? 0.35 : 1}
+        roughness={0.92}
+        metalness={0}
+        flatShading
+        depthWrite={!xray}
+        side={THREE.DoubleSide}
+      />
+      {!xray && <Edges color="#eaf1ff" threshold={20} raycast={noopRaycast} />}
+    </>
+  );
   if (!geometry.framed) {
     return (
       <group position={[0, baseY, 0]}>
         <mesh geometry={geometry.geo} raycast={noopRaycast}>
-          <meshStandardMaterial
-            color={xray ? "#9ebcff" : "#1c3f86"}
-            wireframe={xray}
-            transparent={xray}
-            opacity={xray ? 0.35 : 1}
-            roughness={0.9}
-            side={THREE.DoubleSide}
-          />
-          {!xray && <Edges color="#eaf1ff" threshold={20} raycast={noopRaycast} />}
+          {roofMat}
         </mesh>
       </group>
     );
@@ -575,15 +591,7 @@ function RoofMesh({ roof, footprint, baseY, xray }: { roof: Roof; footprint: Poi
   return (
     <group position={[x, baseY, z]} rotation={[0, roof.rotation, 0]}>
       <mesh geometry={geometry.geo} raycast={noopRaycast}>
-        <meshStandardMaterial
-          color={xray ? "#9ebcff" : "#1c3f86"}
-          wireframe={xray}
-          transparent={xray}
-          opacity={xray ? 0.35 : 1}
-          roughness={0.9}
-          side={THREE.DoubleSide}
-        />
-        {!xray && <Edges color="#eaf1ff" threshold={20} raycast={noopRaycast} />}
+        {roofMat}
       </mesh>
     </group>
   );
@@ -617,6 +625,10 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const [markers, setMarkers] = useState<Marker[]>(model.markers);
   const assumed = model.interior?.status !== "verified";
   const wrap = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<OrbitControlsImpl>(null);
+  const [orbitYaw, setOrbitYaw] = useState(0.85);
+  const [orbitPitch, setOrbitPitch] = useState(1.05);
+  const applyingOrbit = useRef(false);
   const [tip, setTip] = useState<{ id: string; title: string; detail: string; x: number; y: number } | null>(null);
 
   const showTip = (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => {
@@ -653,7 +665,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const showRoof = !!model.roof && roofOn && !hidden.has(topLevel);
 
   // Frame the camera on the house, whatever its size.
-  const { camPos, target, extent } = useMemo(() => {
+  const { camPos, target, extent, minDist, maxDist, camFar } = useMemo(() => {
     const pts = [
       ...model.floors.flatMap((f) => f.walls.flatMap((w) => [w.a, w.b])),
       ...(model.compound?.features.flatMap((f) => f.polygon) ?? []),
@@ -662,13 +674,42 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
     const height = top.elevation + top.height + (model.roof?.height ?? 0);
     // Portrait screens see less width, so back the camera off further.
     const portrait = typeof window !== "undefined" && window.innerHeight > window.innerWidth;
-    const d = (ext * 2.2 + height) * (portrait ? 1.6 : 1);
+    const d = Math.min((ext * 2.0 + height) * (portrait ? 1.45 : 1), ext * 3.2 + 18);
+    const maxD = Math.min(Math.max(ext * 3.4, d * 1.35), 140);
+    const minD = Math.max(2.5, Math.min(6, ext * 0.15));
     return {
-      camPos: [d * 0.75, d * 0.62, d * 0.85] as [number, number, number],
+      camPos: [d * 0.75, d * 0.55, d * 0.85] as [number, number, number],
       target: [0, height * 0.35, 0] as [number, number, number],
       extent: ext,
+      minDist: minD,
+      maxDist: maxD,
+      camFar: Math.max(2000, maxD * 20),
     };
   }, [model, top]);
+
+  useEffect(() => {
+    const c = controlsRef.current;
+    if (!c) return;
+    applyingOrbit.current = true;
+    c.setAzimuthalAngle(orbitYaw);
+    c.setPolarAngle(orbitPitch);
+    c.update();
+    applyingOrbit.current = false;
+  }, [orbitYaw, orbitPitch]);
+
+  // three-stdlib: dollyIn multiplies scale (use <1 to move closer); dollyOut divides.
+  const zoomIn = () => {
+    const c = controlsRef.current;
+    if (!c) return;
+    c.dollyIn(0.8);
+    c.update();
+  };
+  const zoomOut = () => {
+    const c = controlsRef.current;
+    if (!c) return;
+    c.dollyOut(0.8);
+    c.update();
+  };
 
   const footprintLine = useMemo(
     () => [...model.footprint, model.footprint[0]].map((p) => {
@@ -702,19 +743,20 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   return (
     <div ref={wrap} className="relative h-full w-full bg-bp">
       <Canvas
-        camera={{ position: camPos, fov: 45, near: 0.1, far: 1000 }}
+        camera={{ position: camPos, fov: 45, near: 0.1, far: camFar }}
         shadows={false}
         onCreated={() => requestAnimationFrame(() => requestAnimationFrame(() => onReady?.()))}
       >
         <color attach="background" args={[xray ? "#0b2e72" : "#0f3a8e"]} />
-        <fog attach="fog" args={[xray ? "#0b2e72" : "#0f3a8e", extent * 5, extent * 13]} />
+        {/* Keep fog beyond max orbit distance so zoom-out never whites out the house */}
+        <fog attach="fog" args={[xray ? "#0b2e72" : "#0f3a8e", maxDist * 1.35, Math.max(camFar * 0.55, maxDist * 3.5)]} />
         <hemisphereLight args={["#ffffff", "#3a5fb0", 1.05]} />
         <directionalLight position={[extent * 2, extent * 3, extent * 1.5]} intensity={1.0} />
         <directionalLight position={[-extent * 2, extent, -extent * 2]} intensity={0.35} />
 
         {!xray && (
           <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, LAYER_Y.base, 0]} raycast={noopRaycast}>
-            <circleGeometry args={[extent * 3, 48]} />
+            <circleGeometry args={[Math.min(extent * 2.2, extent + 28), 48]} />
             <meshStandardMaterial
               color="#0d3482"
               transparent
@@ -768,16 +810,80 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
           <RoofMesh roof={model.roof!} footprint={model.footprint} baseY={floorY(top) + top.height} xray={xray} />
         )}
 
-        <gridHelper args={[extent * 6, Math.round(extent * 3), "#4a78d0", "#2a55b0"]} position={[0, -2.7, 0]} />
+        <gridHelper
+          args={[Math.min(extent * 4, 120), Math.max(12, Math.round(Math.min(extent * 2, 60))), "#4a78d0", "#2a55b0"]}
+          position={[0, -2.7, 0]}
+        />
         <OrbitControls
+          ref={controlsRef}
           makeDefault
           target={target}
-          maxPolarAngle={Math.PI * 0.49}
-          minDistance={4}
-          maxDistance={extent * 8}
+          maxPolarAngle={Math.PI * 0.48}
+          minPolarAngle={0.18}
+          minDistance={minDist}
+          maxDistance={maxDist}
+          rotateSpeed={2.2}
+          zoomSpeed={1.2}
+          panSpeed={1.1}
           onStart={() => setTip(null)}
+          onChange={() => {
+            const c = controlsRef.current;
+            if (!c || applyingOrbit.current) return;
+            setOrbitYaw(c.getAzimuthalAngle());
+            setOrbitPitch(c.getPolarAngle());
+          }}
         />
       </Canvas>
+
+      <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-3">
+        <div className="pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-2 border border-bp-ink/60 bg-bp-deep px-3 py-2 text-bp-ink shadow-lg">
+          <button
+            type="button"
+            className="border border-bp-ink/45 px-2.5 py-1 font-data text-sm font-semibold hover:bg-bp-ink/15"
+            onClick={zoomIn}
+            title="Zoom in"
+            aria-label="Zoom in"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="border border-bp-ink/45 px-2.5 py-1 font-data text-sm font-semibold hover:bg-bp-ink/15"
+            onClick={zoomOut}
+            title="Zoom out"
+            aria-label="Zoom out"
+          >
+            −
+          </button>
+          <label className="flex items-center gap-2 font-data text-[11px] text-bp-line">
+            Rotate
+            <input
+              type="range"
+              min={-Math.PI}
+              max={Math.PI}
+              step={0.01}
+              value={orbitYaw}
+              onChange={(e) => setOrbitYaw(Number(e.target.value))}
+              className="h-1.5 w-24 cursor-pointer accent-bp-ink sm:w-32"
+              aria-label="Rotate view"
+            />
+          </label>
+          <label className="flex items-center gap-2 font-data text-[11px] text-bp-line">
+            Tilt
+            <input
+              type="range"
+              min={0.2}
+              max={Math.PI * 0.48}
+              step={0.01}
+              value={orbitPitch}
+              onChange={(e) => setOrbitPitch(Number(e.target.value))}
+              className="h-1.5 w-24 cursor-pointer accent-bp-ink sm:w-28"
+              aria-label="Tilt view"
+            />
+          </label>
+        </div>
+      </div>
+
       {tip && (
         <div
           className="pointer-events-none absolute z-10 max-w-[11rem] border border-bp-ink/60 bg-bp-deep px-2.5 py-1.5 text-bp-ink"
