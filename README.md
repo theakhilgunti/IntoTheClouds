@@ -22,3 +22,25 @@ The firefighter-location half of the project: a Raspberry Pi wearable (Wi-Fi sig
 - Overview and quick start: [`project/README.md`](project/README.md)
 - **Team work orders: [`project/WORK_ORDERS.md`](project/WORK_ORDERS.md)**
 - Multi-agent rules: [`AGENTS.md`](AGENTS.md) · live task board: [`PROGRESS.md`](PROGRESS.md)
+
+## Code layout
+```
+app/                 Next.js routes (/, /model/[id], /api/scan, /api/floorplan, /api/models/[id])
+components/          UI: home/ (address+photo form), model/ (screen, report, floor-plan panel), viewer/ (3D)
+lib/scan/            Pipeline (scan.ts), result types (sources.ts), saved-scan store (store.ts)
+lib/providers/       Outside data: geocode, OpenStreetMap (overpass), aerial imagery, Gemini vision, pins
+lib/model/           Building construction: layout, templates, floor-plan reading, verified interiors, demo
+lib/client/          Browser-only: localStorage store, streaming scan client
+lib/geo.ts           Shared geometry helpers
+packages/schema/     BuildingModel (zod + JSON Schema), the shared data contract
+data/interiors/      Verified room layouts keyed by building id
+project/             Wi-Fi + Pi tracking subproject (separate stack; excluded from the web build)
+project/docs/        Original hackathon PRD (PDF)
+```
+
+## LiDAR scans (Apple RoomPlan) → verified interiors
+`POST /api/lidar` (JSON) with `{ address, scan, frame?, level?, capturedBy? }`, where `scan` is the JSON of a RoomPlan `CapturedRoom` or `CapturedStructure` (`{ "rooms": [...] }`). Header `x-upload-key` must equal `LIDAR_UPLOAD_KEY` (unset = dev-only).
+- Finds the real building for the address, places the measured walls/doors/stairs inside its outline, saves it. Typing the address later shows the scanned interior.
+- Refuses a scan that doesn't fit the outline (wrong building) and reports uncertainty in the notes (no compass, partial coverage, stair direction). Use `frame: "north"` when the scan was captured with ARKit `gravityAndHeading` for exact rotation.
+- Format example: `public/demo/sample-roomplan.json`. Converter: `lib/model/roomplan.ts`.
+- Dev saves scans to `.data/` (git-ignored). On Vercel it is memory-only until the shared database lands.

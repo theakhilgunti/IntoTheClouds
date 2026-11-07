@@ -6,37 +6,37 @@ Start a new session with: *"Read PLAN.md and continue from Next Steps."*
 HackRPI 2026 ("Into The Clouds"), ~24h. Firefighters type an address (or upload a photo) → CloudScan finds the real building → shows an interactive 3D model (floors, rooms, walls, doors, stairs, roof) with tactical markers.
 
 - **Web (this repo):** website + address/photo → 3D pipeline. Working end to end.
-- **Backend (friend):** shared database for saved scans. Plugs in behind `lib/store.ts` (see contract below).
+- **Backend (friend):** shared database for saved scans. Plugs in behind `lib/scan/store.ts` (see contract below).
 - **WiFi team:** separate WiFi-based house mapping. They plug in by producing `BuildingModel` JSON.
 - Full product vision (MFA/RBAC, permit archives, CAD dispatch, offline PWA) is **roadmap only**.
 - Sponsor tracks we qualify for: **Best Use of Gemini API** (photo reading) and, once the backend lands, **Best Use of MongoDB Atlas**.
 
 ## How the system works (done)
-`POST /api/scan` streams progress lines, then one result. Pipeline is `lib/scan.ts`:
+`POST /api/scan` streams progress lines, then one result. Pipeline is `lib/scan/scan.ts`:
 
 | Step | Code | Source (all free) | Output |
 |---|---|---|---|
-| 1 Locate | `lib/geocode.ts` | US Census Geocoder → OSM Nominatim fallback. Photo path: EXIF GPS or device location | lat/lng |
-| 2 Outline | `lib/overpass.ts` | Main OSM API (`/api/0.6/map.json`, fast) → Overpass mirrors fallback | Real footprint, OSM tags (levels, roof:shape, height), nearest street direction |
-| 3 Imagery | `lib/imagery.ts` | Esri World Imagery export (needs ≥ ~40 m half-width or it 500s) | Aerial JPEG |
-| 4 Photos | `lib/vision.ts` | Google Gemini REST, structured JSON output. Skipped if no key | Floors, roof, garage side, basement, material, style |
-| 5 Build | `lib/layout.ts` | Our layout engine | `BuildingModel`: real footprint, front faces the street, typical room plan, roof |
+| 1 Locate | `lib/providers/geocode.ts` | US Census Geocoder → OSM Nominatim fallback. Photo path: EXIF GPS or device location | lat/lng |
+| 2 Outline | `lib/providers/overpass.ts` | Main OSM API (`/api/0.6/map.json`, fast) → Overpass mirrors fallback | Real footprint, OSM tags (levels, roof:shape, height), nearest street direction |
+| 3 Imagery | `lib/providers/imagery.ts` | Esri World Imagery export (needs ≥ ~40 m half-width or it 500s) | Aerial JPEG |
+| 4 Photos | `lib/providers/vision.ts` | Google Gemini REST, structured JSON output. Skipped if no key | Floors, roof, garage side, basement, material, style |
+| 5 Build | `lib/model/layout.ts` | Our layout engine | `BuildingModel`: real footprint, front faces the street, typical room plan, roof |
 
-- Merge rules (`lib/scan.ts`): photo-based values when the user gave a photo, else OSM tags, else Gemini on the aerial, else typical values. Every value is tagged `map` / `photos` / `estimated` and shown in the "How this was built" panel.
+- Merge rules (`lib/scan/scan.ts`): photo-based values when the user gave a photo, else OSM tags, else Gemini on the aerial, else typical values. Every value is tagged `map` / `photos` / `estimated` and shown in the "How this was built" panel.
 - Layout engine: center-hall plan for wide houses, side-hall plan for narrow ones (row houses), attached garage strip, 1–3 stories, optional basement. Walls are derived from room rectangles; doors are added until every room is reachable; front/back/garage exits are marked.
-- Saved scans: server memory (`lib/store.ts`) + browser localStorage (`lib/clientStore.ts`). Same building → same ID (`osm-<wayId>`) → no repeat work.
+- Saved scans: server memory (`lib/scan/store.ts`) + browser localStorage (`lib/client/clientStore.ts`). Same building → same ID (`osm-<wayId>`) → no repeat work.
 - UI: `/` (address or photo, live step list, recent scans) → `/model/[id]` (3D viewer + "How this was built" panel + Re-scan). `/model/demo` still works.
 - Viewer (`components/viewer/Viewer.tsx`): rotate/zoom, hide any floor, roof toggle, explode, X-ray (exits green, stairs yellow), windows, markers.
 
 ## Backend contract (for the friend building the database)
-Implement `ScanStore` in `lib/store.ts` and export it as `store`:
+Implement `ScanStore` in `lib/scan/store.ts` and export it as `store`:
 ```ts
 interface ScanStore {
   get(id: string): Promise<ScanResult | null>;   // id = model.id, e.g. "osm-1469882767"
   put(result: ScanResult): Promise<void>;        // upsert by result.model.id
 }
 ```
-- `ScanResult` is in `lib/sources.ts` (model + sources + attributes + warnings + images + summary + createdAt).
+- `ScanResult` is in `lib/scan/sources.ts` (model + sources + attributes + warnings + images + summary + createdAt).
 - MongoDB Atlas suggestion: db `cloudscan`, collection `scans`, `_id = model.id`. Consider dropping `images` (base64) or moving them to object storage to keep documents small.
 - Nothing else changes: `/api/scan` already checks `store.get` before doing any work and calls `store.put` after.
 - `GET /api/models/[id]` already reads from the store, so shared links work across devices once this lands.

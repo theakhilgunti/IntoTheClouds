@@ -428,6 +428,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "capturedAt": {
+          "description": "ISO timestamp of when the interior was captured; interiors go stale after renovations",
+          "type": "string"
+        },
+        "capturedBy": {
+          "description": "Who captured or submitted the interior",
+          "type": "string"
         }
       },
       "required": [

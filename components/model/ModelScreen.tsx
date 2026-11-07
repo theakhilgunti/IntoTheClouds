@@ -3,14 +3,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { demoModel } from "@/lib/demo";
-import { loadScan, saveScan, type SavedScan } from "@/lib/clientStore";
-import { streamScan } from "@/lib/scanClient";
+import { demoModel } from "@/lib/model/demo";
+import { loadScan, saveScan, type SavedScan } from "@/lib/client/clientStore";
+import { streamScan } from "@/lib/client/scanClient";
 import type { BuildingModel, Point } from "@/packages/schema/building-model";
-import type { ScanResult } from "@/lib/sources";
+import type { ScanResult } from "@/lib/scan/sources";
 import ScanReport from "./ScanReport";
 import FloorPlanPanel from "./FloorPlanPanel";
-import { mergeKnownFloors } from "@/lib/interior";
+import { mergeKnownFloors } from "@/lib/model/interior";
 
 // WebGL only runs in the browser.
 const Viewer = dynamic(() => import("@/components/viewer/Viewer"), {
@@ -35,16 +35,20 @@ export default function ModelScreen({ id }: { id: string }) {
   useEffect(() => {
     if (id === "demo") return setState({ kind: "demo", model: demoModel });
     const local = loadScan(id);
-    if (local) return setState({ kind: "scan", scan: local });
+    if (local) setState({ kind: "scan", scan: local });
+    // The server copy wins when a LiDAR scan was uploaded after this browser saved its own copy.
     fetch(`/api/models/${encodeURIComponent(id)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((result: ScanResult | null) => {
-        if (!result) return setState({ kind: "missing" });
-        const scan: SavedScan = { result, query: { address: result.model.address } };
+        if (!result) return local ? undefined : setState({ kind: "missing" });
+        const captured = result.model.interior?.capturedAt;
+        if (local && (!captured || captured === local.result.model.interior?.capturedAt)) return;
+        const scan: SavedScan = { result, query: local?.query ?? { address: result.model.address } };
         saveScan(scan);
         setState({ kind: "scan", scan });
+        setVersion((v) => v + 1);
       })
-      .catch(() => setState({ kind: "missing" }));
+      .catch(() => (local ? undefined : setState({ kind: "missing" })));
   }, [id]);
 
   async function rescan() {

@@ -1,5 +1,5 @@
-import type { LatLng } from "./geo";
-import type { SourceReport } from "./sources";
+import type { LatLng } from "@/lib/geo";
+import type { SourceReport } from "@/lib/scan/sources";
 
 const UA = "CloudScan-HackRPI/0.1 (hackathon project; contact via GitHub theakhilgunti)";
 

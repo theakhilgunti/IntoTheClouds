@@ -5,10 +5,10 @@
  * If the image can't be read, or doesn't fit the building, we say why and change nothing.
  */
 import { z } from "zod";
-import { minAreaRect } from "./geo";
-import { geminiModel } from "./vision";
-import { summarizeInterior } from "./interior";
-import type { Image } from "./imagery";
+import { minAreaRect } from "@/lib/geo";
+import { geminiModel } from "@/lib/providers/vision";
+import { summarizeInterior } from "@/lib/model/interior";
+import type { Image } from "@/lib/providers/imagery";
 import type { BuildingModel, Door, Floor, Point, Room, Stairs, Wall } from "@/packages/schema/building-model";
 
 const ROOM_TYPES = [

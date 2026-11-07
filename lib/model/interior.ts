@@ -6,18 +6,19 @@ export function summarizeInterior(
   floors: Floor[],
   prev: BuildingModel["interior"],
   extraNotes: string[] = [],
+  source = "uploaded floor plan, read by AI",
 ): NonNullable<BuildingModel["interior"]> {
   const knownLevels = floors.filter((f) => f.rooms.length > 0).map((f) => f.level);
   const missing = floors.filter((f) => f.rooms.length === 0).map((f) => f.name);
   const roomCount = floors.reduce((s, f) => s + f.rooms.length, 0);
   const notes = [...new Set([...(prev?.notes ?? []), ...extraNotes])];
   if (!missing.length) {
-    return { status: "verified", source: `uploaded floor plan, read by AI (${roomCount} rooms)`, knownLevels, notes, reasons: [] };
+    return { status: "verified", source: `${source} (${roomCount} rooms)`, knownLevels, notes, reasons: [] };
   }
   const kept = (prev?.reasons ?? []).filter((r) => !r.startsWith("No floor plan") && !r.startsWith("Floor plan not provided"));
   return {
     status: "unknown",
-    source: knownLevels.length ? "uploaded floor plan, read by AI" : undefined,
+    source: knownLevels.length ? source : undefined,
     knownLevels,
     notes,
     reasons: knownLevels.length

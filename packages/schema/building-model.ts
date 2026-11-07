@@ -105,6 +105,8 @@ export const Interior = z.object({
   reasons: z.array(z.string()).default([]).describe("Why the interior is unknown (empty when verified)"),
   knownLevels: z.array(z.number().int()).default([]).describe("Floors whose rooms come from a real source"),
   notes: z.array(z.string()).default([]).describe("Caveats on the verified part, e.g. placement unconfirmed"),
+  capturedAt: z.string().optional().describe("ISO timestamp of when the interior was captured; interiors go stale after renovations"),
+  capturedBy: z.string().optional().describe("Who captured or submitted the interior"),
 });
 
 export const BuildingModel = z.object({

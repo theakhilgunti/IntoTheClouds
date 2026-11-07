@@ -2,7 +2,7 @@
 import {
   angleDiff, bearing, dist, distToRing, fromLocal, nearestOnSegment, pointInPolygon, polygonArea, polygonCentroid, toLocal,
   type LatLng,
-} from "./geo";
+} from "@/lib/geo";
 import type { Point } from "@/packages/schema/building-model";
 
 const ENDPOINTS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];

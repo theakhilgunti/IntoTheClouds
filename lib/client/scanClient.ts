@@ -1,6 +1,6 @@
 "use client";
 /** Calls POST /api/scan and reads the streamed progress events. */
-import type { ScanEvent, ScanResult } from "./sources";
+import type { ScanEvent, ScanResult } from "@/lib/scan/sources";
 
 export async function streamScan(
   form: FormData,

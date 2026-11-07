@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { saveScan, recentScans, type SavedScan, type ScanQuery } from "@/lib/clientStore";
-import { streamScan } from "@/lib/scanClient";
-import { STEP_LABELS, type StepKey } from "@/lib/sources";
+import { saveScan, recentScans, type SavedScan, type ScanQuery } from "@/lib/client/clientStore";
+import { streamScan } from "@/lib/client/scanClient";
+import { STEP_LABELS, type StepKey } from "@/lib/scan/sources";
 
 type Mode = "photo" | "address";
 type StepState = { status: "pending" | "active" | "done" | "skipped"; detail?: string };

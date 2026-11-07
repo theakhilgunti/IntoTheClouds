@@ -12,7 +12,7 @@
 import type {
   BuildingModel, Door, Floor, Point, Roof, RoofShape, RoomType, Stairs, Wall,
 } from "@/packages/schema/building-model";
-import { minAreaRect } from "./geo";
+import { minAreaRect } from "@/lib/geo";
 
 type Rect = { x0: number; y0: number; x1: number; y1: number };
 type PlanRoom = { id: string; name: string; type: RoomType; r: Rect; zone: string };

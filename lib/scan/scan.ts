@@ -2,16 +2,16 @@
  * The scan pipeline: address or photo location -> building outline -> imagery -> photo reading -> 3D model.
  * Every step reports what it used, so the UI can show exactly where each fact came from.
  */
-import { fromLocal, polygonArea, polygonCentroid, type LatLng } from "./geo";
-import { geocode, nominatimBuildingId } from "./geocode";
-import { lookupBuilding, type OsmContext } from "./overpass";
-import { pinnedWayId } from "./pins";
-import { verifiedInterior } from "./interiors";
-import { aerialImage, type Image } from "./imagery";
-import { describeHouse, geminiAvailable, geminiModel, type HouseFacts } from "./vision";
-import { buildHouse, type GarageSide } from "./layout";
-import { store } from "./store";
-import type { AttributeReport, ScanEvent, ScanResult, SourceReport, StepKey } from "./sources";
+import { fromLocal, polygonArea, polygonCentroid, type LatLng } from "@/lib/geo";
+import { geocode, nominatimBuildingId } from "@/lib/providers/geocode";
+import { lookupBuilding, type OsmContext } from "@/lib/providers/overpass";
+import { pinnedWayId } from "@/lib/providers/pins";
+import { verifiedInterior } from "@/lib/model/interiors";
+import { aerialImage, type Image } from "@/lib/providers/imagery";
+import { describeHouse, geminiAvailable, geminiModel, type HouseFacts } from "@/lib/providers/vision";
+import { buildHouse, type GarageSide } from "@/lib/model/layout";
+import { store } from "@/lib/scan/store";
+import type { AttributeReport, ScanEvent, ScanResult, SourceReport, StepKey } from "@/lib/scan/sources";
 import type { Point, RoofShape } from "@/packages/schema/building-model";
 
 export type ScanInput = {

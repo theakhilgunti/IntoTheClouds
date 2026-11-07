@@ -4,7 +4,7 @@
  * GEMINI_MODEL overrides the model (default: the current Flash model alias).
  */
 import { z } from "zod";
-import type { Image } from "./imagery";
+import type { Image } from "@/lib/providers/imagery";
 
 export const HouseFacts = z.object({
   stories: z.number().int().min(1).max(4),

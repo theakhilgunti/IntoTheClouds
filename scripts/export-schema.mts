@@ -12,7 +12,7 @@ writeFileSync(
 console.log("wrote packages/schema/building-model.schema.json");
 
 // Sample model the WiFi team can copy the shape of.
-const { colonialTemplate } = await import("../lib/templates.ts");
+const { colonialTemplate } = await import("../lib/model/templates.ts");
 const sample = BuildingModel.parse(
   colonialTemplate({ id: "demo", lat: 42.7298, lng: -73.6789, address: "Demo house — Troy, NY" }),
 );

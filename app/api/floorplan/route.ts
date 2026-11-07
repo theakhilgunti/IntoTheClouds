@@ -1,6 +1,6 @@
 import { BuildingModel, type Point } from "@/packages/schema/building-model";
-import { applyFloorPlan, readFloorPlan } from "@/lib/floorplan";
-import { geminiAvailable } from "@/lib/vision";
+import { applyFloorPlan, readFloorPlan } from "@/lib/model/floorplan";
+import { geminiAvailable } from "@/lib/providers/vision";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;

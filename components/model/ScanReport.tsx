@@ -1,7 +1,7 @@
 "use client";
 
-import type { SavedScan } from "@/lib/clientStore";
-import type { AttributeReport, SourceReport } from "@/lib/sources";
+import type { SavedScan } from "@/lib/client/clientStore";
+import type { AttributeReport, SourceReport } from "@/lib/scan/sources";
 
 const FROM_STYLE: Record<AttributeReport["from"], { label: string; cls: string }> = {
   map: { label: "Map data", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },

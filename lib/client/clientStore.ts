@@ -3,7 +3,7 @@
  * Browser-side copy of each scan, so reopening a house is instant and free even before the
  * shared backend exists. Every access is wrapped: storage can be full, blocked or private.
  */
-import type { ScanResult } from "./sources";
+import type { ScanResult } from "@/lib/scan/sources";
 
 export type ScanQuery = { address?: string; lat?: number; lng?: number };
 export type SavedScan = { result: ScanResult; query: ScanQuery; photo?: string };

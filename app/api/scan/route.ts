@@ -1,5 +1,5 @@
-import { runScan, ScanError, type ScanInput } from "@/lib/scan";
-import type { ScanEvent } from "@/lib/sources";
+import { runScan, ScanError, type ScanInput } from "@/lib/scan/scan";
+import type { ScanEvent } from "@/lib/scan/sources";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;

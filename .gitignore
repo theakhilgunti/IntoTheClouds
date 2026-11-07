@@ -61,3 +61,6 @@ venv/
 
 # Pi benchmark output
 hw03_results.json
+
+# local saved scans (dev)
+/.data/
