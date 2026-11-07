@@ -1,49 +1,63 @@
-# Node
-node_modules/
-dist/
-.vite/
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# local Claude Code settings
+.claude/
+
+# --- Wi-Fi / Pi tracking project (project/) ---
+# nested node_modules and build output (the rules above only match the repo root)
+node_modules/
+dist/
+.vite/
 
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
 .venv/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+venv/
 *.egg-info/
-.installed.cfg
-*.egg
 
-# Environment variables
-.env
-.env.local
-.env.*.local
+# multi-agent claim lock (see AGENTS.md)
 .agent_locks.json
 
-# OS
-.DS_Store
-Thumbs.db
-
-# IDEs
-.idea/
-.vscode/
-*.swp
-*.swo
-
+# Pi benchmark output
+hw03_results.json

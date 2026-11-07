@@ -1,88 +1,24 @@
-# IntoTheClouds: Smoke-Resistant 3D Indoor Tactical Mapping
+# IntoTheClouds
+HackRPI Hackathon "Into The Clouds"
 
-> **HackRPI 24-Hour Hackathon Project**  
-> Real-time 3D indoor spatial reconstruction & firefighter localization in zero-visibility environments without optical line-of-sight.
+**CloudScan** — point your phone at a building (or type an address) and get a 3D layout of its floors, rooms, stairs and exits for firefighters. Live at [cloudscan.us](https://cloudscan.us).
 
----
-
-## 🎯 Architecture Overview
-
-```
-[ Static Wi-Fi Anchors (3+) ] 
-           │ (RSSI Attenuation)
-           ▼
-[ Firefighter Wearable Rig (Raspberry Pi) ] ──(USB Tether / WebSockets)──▶ [ Central Laptop ]
-     - Sub-second Wi-Fi scans (nmcli)                                           │
-     - Pedestrian Dead Reckoning (IMU / Step)                                   ├─▶ [ FastAPI Fusion Engine ]
-                                                                                │     • Log-Distance Path Loss
-                                                                                │     • Particle Filter Localizer
-                                                                                │     • RF Attenuation Tomography
-                                                                                │
-                                                                                └─▶ [ Three.js 3D Tactical HUD ]
-                                                                                      • Real-time 3D position
-                                                                                      • Breadcrumbs trajectory
-                                                                                      • Voice radio hazard pinning
-```
-
----
-
-## 🚀 Quick Start (Local Development)
-
-### Prerequisites
-- Python 3.9+
-- Node.js 18+ (tested on Node 26)
-
-### 1. Start the Central FastAPI Backend
+## Run locally
 ```bash
-./scripts/run-backend.sh
-```
-*API running at `http://localhost:8000` (`/docs` for Swagger UI).*
-
-### 2. Start the Three.js Tactical Dashboard
-In a new terminal:
-```bash
-./scripts/run-frontend.sh
-```
-*Dashboard accessible at `http://localhost:5173`.*
-
-### 3. Run the Firefighter Walk Simulator (Hardware-free testing)
-In a third terminal:
-```bash
-./scripts/simulate-walk.sh
-```
-*You will immediately see the firefighter position and breadcrumb trail updating in 3D on the dashboard in real-time!*
-
----
-
-## 📡 Hardware / Raspberry Pi Deployment
-
-On the Raspberry Pi wearable rig:
-```bash
-# Connect to central server via USB gadget ethernet or Wi-Fi
-python3 pi_client/pi_scanner.py --server ws://<LAPTOP_IP>:8000/ws/telemetry --interval 0.5
-```
-For testing on non-Linux systems without `nmcli`, use `--mock`:
-```bash
-python3 pi_client/pi_scanner.py --mock
+npm install
+npm run dev        # http://localhost:3000, demo model at /model/demo
 ```
 
----
+## Shared data format (for the WiFi mapping team)
+Every data source produces a **BuildingModel**:
+- TypeScript / zod: `packages/schema/building-model.ts`
+- JSON Schema: `packages/schema/building-model.schema.json`
+- Validated example: `public/demo/demo-house.json`
 
-## 📁 Repository Structure
+Coordinates are meters, x = east, y = north, origin at the footprint center. Regenerate the JSON files after changing the schema with `npm run schema`.
 
-```
-IntoTheClouds/
-├── project/
-│   ├── backend/                 # FastAPI server, particle filter & math engine
-│   ├── frontend/                # React + Three.js 3D tactical HUD
-│   ├── pi_client/               # nmcli telemetry scanner & walk simulator
-│   ├── scripts/                 # Core execution scripts
-│   ├── PRD.md                   # Full 24-hr Hackathon PRD & technical specs
-│   ├── DEMO_GUIDE.md            # Live judging 4-step walkthrough guide
-│   └── PITCH_OUTLINE.md         # Pitch deck slides & talking points
-├── scripts/                     # Root convenience runners (delegates to project/scripts)
-├── AGENTS.md                    # Multi-agent collision prevention guardrails
-├── PROGRESS.md                  # Active task locks & team progress board
-├── .env.example                 # Configuration template
-└── README.md
-```
+## Wi-Fi + Pi position tracking (`project/`)
+The firefighter-location half of the project: a Raspberry Pi wearable (Wi-Fi signal strength + step counting) streams to a FastAPI backend and a live Three.js dashboard.
+- Overview and quick start: [`project/README.md`](project/README.md)
+- **Team work orders: [`project/WORK_ORDERS.md`](project/WORK_ORDERS.md)**
+- Multi-agent rules: [`AGENTS.md`](AGENTS.md) · live task board: [`PROGRESS.md`](PROGRESS.md)
