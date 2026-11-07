@@ -16,7 +16,7 @@ import { mergeKnownFloors } from "@/lib/interior";
 const Viewer = dynamic(() => import("@/components/viewer/Viewer"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full items-center justify-center bg-neutral-950 text-yellow-400">Loading 3D model…</div>
+    <div className="bp-sheet flex h-full items-center justify-center font-data text-bp-ink">Loading 3D model…</div>
   ),
 });
 
@@ -150,14 +150,14 @@ export default function ModelScreen({ id }: { id: string }) {
   }
 
   if (state.kind === "loading") {
-    return <div className="flex h-full items-center justify-center bg-neutral-950 text-yellow-400">Loading 3D model…</div>;
+    return <div className="bp-sheet flex h-full items-center justify-center font-data text-bp-ink">Loading 3D model…</div>;
   }
   if (state.kind === "missing") {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-4 bg-neutral-950 px-6 text-center text-white">
-        <h1 className="text-2xl font-black">We don&apos;t have this house saved</h1>
-        <p className="max-w-sm text-neutral-400">Scans are kept on the device that made them for now. Scan it again to rebuild the model.</p>
-        <Link href="/" className="rounded-xl bg-yellow-400 px-6 py-3 font-black uppercase text-black">
+      <div className="bp-sheet flex h-full flex-col items-center justify-center gap-4 px-6 text-center text-bp-ink">
+        <h1 className="font-display text-4xl uppercase tracking-[0.02em] text-white">We don&apos;t have this house saved</h1>
+        <p className="max-w-sm font-data text-sm text-bp-line">Scans are kept on the device that made them for now. Scan it again to rebuild the model.</p>
+        <Link href="/" className="border border-bp-ink bg-bp-ink px-6 py-3 font-data text-sm uppercase text-bp hover:bg-transparent hover:text-bp-ink">
           Scan a house
         </Link>
       </div>
@@ -186,33 +186,33 @@ export default function ModelScreen({ id }: { id: string }) {
       <Viewer key={`${model.id}-${version}`} model={model} />
 
       <div className="pointer-events-none absolute left-3 right-3 top-3 flex items-start justify-between gap-3">
-        <div className="pointer-events-auto max-w-sm rounded-lg bg-black/55 px-3 py-2 text-white backdrop-blur">
+        <div className="pointer-events-auto max-w-sm border border-bp-ink/60 bg-bp-deep px-3.5 py-2.5 text-bp-ink">
           <div className="flex items-baseline justify-between gap-4">
-            <Link href="/" className="text-xs font-semibold tracking-tight text-neutral-300">
-              Cloud<span className="text-yellow-400">Scan</span>
+            <Link href="/" className="font-display text-base uppercase tracking-[0.14em] text-bp-ink">
+              CloudScan
             </Link>
-            <span className="flex gap-3 text-xs text-neutral-400">
+            <span className="flex gap-3 font-data text-xs text-bp-line">
               {state.kind === "scan" && !panel && (
-                <button onClick={() => setPanel(true)} className="hover:text-white">
+                <button onClick={() => setPanel(true)} className="hover:text-bp-ink">
                   Details
                 </button>
               )}
-              <button onClick={downloadModel} className="hover:text-white">
+              <button onClick={downloadModel} className="hover:text-bp-ink">
                 Save
               </button>
-              <Link href="/" className="hover:text-white">
+              <Link href="/" className="hover:text-bp-ink">
                 New
               </Link>
             </span>
           </div>
-          <div className="mt-0.5 truncate text-sm font-medium">{shortAddress(model.address) || `${model.lat.toFixed(5)}, ${model.lng.toFixed(5)}`}</div>
-          <div className="text-[11px] text-neutral-400">
+          <div className="mt-1 truncate font-display text-xl uppercase tracking-[0.03em] text-white">{shortAddress(model.address) || `${model.lat.toFixed(5)}, ${model.lng.toFixed(5)}`}</div>
+          <div className="font-data text-[11px] text-bp-line">
             {rescanning ? "Updating this house…" : interiorLine}
             {match === "nearest" ? " · closest building, confirm it's yours" : ""}
           </div>
           {nearby.length > 1 && (
             <div className="mt-1">
-              <button onClick={() => setWrongOpen((v) => !v)} className="text-[11px] text-neutral-300 underline-offset-2 hover:underline">
+              <button onClick={() => setWrongOpen((v) => !v)} className="font-data text-[11px] text-bp-line underline-offset-2 hover:text-bp-ink hover:underline">
                 {wrongOpen ? "Hide nearby houses" : "Wrong house?"}
               </button>
               {wrongOpen && (
@@ -224,7 +224,7 @@ export default function ModelScreen({ id }: { id: string }) {
                         key={house.id}
                         disabled={rescanning || selected}
                         onClick={() => rescan(house.id)}
-                        className={`rounded-full px-2 py-0.5 text-[11px] ${selected ? "bg-white text-black" : "bg-white/10 text-neutral-200 hover:bg-white/20"}`}
+                        className={`border px-2 py-0.5 font-data text-[11px] ${selected ? "border-bp-ink bg-bp-ink text-bp" : "border-bp-ink/45 text-bp-ink hover:bg-bp-ink/15"}`}
                       >
                         {shortAddress(house.label)}
                       </button>
@@ -235,6 +235,13 @@ export default function ModelScreen({ id }: { id: string }) {
             </div>
           )}
         </div>
+        <span
+          className={`pointer-events-none border bg-bp-deep px-2.5 py-1 font-data text-[11px] uppercase ${
+            interior?.status === "verified" || state.kind === "demo" ? "border-bp-ink text-bp-ink" : "border-dashed border-bp-red text-bp-red"
+          }`}
+        >
+          {state.kind === "demo" ? "Sample" : interior?.status === "verified" ? "Verified" : interior?.status === "estimated" ? "Estimated inside" : "Exterior only"}
+        </span>
       </div>
 
       {state.kind === "scan" && panel && (

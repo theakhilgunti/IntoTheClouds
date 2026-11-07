@@ -65,13 +65,13 @@ export default function FloorPlanPanel({
   }
 
   return (
-    <div className="mt-3 border-t border-neutral-700 pt-3">
-      <div className="text-xs font-bold text-yellow-300">Have a floor plan? Add it to make this floor real.</div>
+    <div className="mt-3 border-t border-bp-ink/30 pt-3">
+      <div className="font-data text-xs text-bp-red">Have a floor plan? Add it to make this floor real.</div>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <select
           value={level}
           onChange={(e) => setLevel(Number(e.target.value))}
-          className="min-h-9 rounded-lg bg-neutral-800 px-2 text-xs font-semibold text-white"
+          className="min-h-9 border border-bp-ink/45 bg-bp-deep px-2 font-data text-xs text-bp-ink"
           aria-label="Which floor is this plan for?"
         >
           {levels.map((l) => (
@@ -83,7 +83,7 @@ export default function FloorPlanPanel({
         <button
           disabled={busy}
           onClick={() => input.current?.click()}
-          className="min-h-9 rounded-lg bg-yellow-400 px-3 text-xs font-black uppercase text-black hover:bg-yellow-300 disabled:opacity-60"
+          className="min-h-9 border border-bp-ink bg-bp-ink px-3 font-data text-xs uppercase text-bp hover:bg-transparent hover:text-bp-ink disabled:opacity-60"
         >
           {busy ? "Reading plan…" : "Upload floor plan"}
         </button>
@@ -96,7 +96,7 @@ export default function FloorPlanPanel({
         />
       </div>
       {problems.length > 0 && (
-        <div className="mt-2 rounded-lg border border-red-500 bg-red-950/60 p-2 text-xs text-red-200">
+        <div className="mt-2 border border-dashed border-bp-red p-2 text-xs text-bp-red">
           <div className="font-black">This plan was not used. Why:</div>
           <ul className="mt-1 list-disc space-y-1 pl-4">
             {problems.map((p) => (
@@ -106,10 +106,10 @@ export default function FloorPlanPanel({
         </div>
       )}
       {done && (
-        <div className="mt-2 rounded-lg border border-emerald-600 bg-emerald-950/60 p-2 text-xs text-emerald-200">
+        <div className="mt-2 border border-bp-ink p-2 text-xs text-bp-ink">
           Plan added. It was read by AI, so compare the 3D rooms with your plan.
           {done.map((n) => (
-            <div key={n} className="mt-1 text-amber-200">• {n}</div>
+            <div key={n} className="mt-1 text-bp-red">• {n}</div>
           ))}
         </div>
       )}

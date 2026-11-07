@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
-import { Line, OrbitControls } from "@react-three/drei";
+import { Edges, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type {
   BuildingModel,
@@ -22,7 +22,7 @@ const toXZ = ([x, y]: Point): [number, number] => [x, -y];
 function LabelSprite({
   text,
   color,
-  textColor = "#111111",
+  textColor = "#eaf1ff",
   scale,
   fit = false,
 }: {
@@ -40,9 +40,12 @@ function LabelSprite({
     if (!ctx) return null;
     ctx.fillStyle = color;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "#eaf1ff";
+    ctx.lineWidth = 6;
+    ctx.strokeRect(3, 3, canvas.width - 6, canvas.height - 6);
     ctx.fillStyle = textColor;
-    const font = text.length > 22 ? 36 : text.length > 14 ? 48 : 64;
-    ctx.font = `bold ${font}px sans-serif`;
+    const font = text.length > 22 ? 36 : text.length > 14 ? 48 : 60;
+    ctx.font = `500 ${font}px ui-monospace, Menlo, monospace`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(text, canvas.width / 2, canvas.height / 2);
@@ -78,15 +81,15 @@ const ROOM_WORDS: Record<Room["type"], string> = {
 };
 
 const SITE_COLOR: Record<CompoundFeature["kind"], string> = {
-  yard: "#1b4332",
-  driveway: "#6b7280",
-  patio: "#a8a29e",
-  pool: "#0e7490",
-  garage: "#9aa0a8",
-  shed: "#78716c",
-  fence: "#e7e5e4",
-  trees: "#166534",
-  road: "#3a3f46",
+  yard: "#14439c",
+  driveway: "#3a68c4",
+  patio: "#4a78d0",
+  pool: "#6fa0ff",
+  garage: "#2a5ab8",
+  shed: "#2a5ab8",
+  fence: "#9ebcff",
+  trees: "#2f6bd0",
+  road: "#0a2a68",
 };
 
 const SITE_NOTE: Record<CompoundFeature["source"], string> = {
@@ -96,19 +99,19 @@ const SITE_NOTE: Record<CompoundFeature["source"], string> = {
 };
 
 const ROOM_COLORS: Record<Room["type"], string> = {
-  living: "#3b4252",
-  kitchen: "#4c3b2a",
-  dining: "#3d4a3a",
-  bedroom: "#2e3a4d",
-  bathroom: "#2a4448",
-  hallway: "#383838",
-  stair: "#facc15",
-  garage: "#333333",
-  utility: "#7f1d1d",
-  closet: "#333333",
-  office: "#2e3a4d",
-  basement: "#2b2b2b",
-  other: "#333333",
+  living: "#1d4fb3",
+  kitchen: "#1f56bd",
+  dining: "#1d4fb3",
+  bedroom: "#1a4aa8",
+  bathroom: "#1f56bd",
+  hallway: "#17409a",
+  stair: "#ff8a6b",
+  garage: "#143a8c",
+  utility: "#1f56bd",
+  closet: "#143a8c",
+  office: "#1a4aa8",
+  basement: "#12378a",
+  other: "#17409a",
 };
 
 const MARKER_STYLE: Record<MarkerType, { color: string; label: string }> = {
@@ -180,7 +183,7 @@ function roomBeside(wall: Wall, floor: Floor, mid: Point): Room | null {
   return null;
 }
 
-function WallMesh({ wall, floor, xray, passPointer }: { wall: Wall; floor: Floor; xray: boolean; passPointer: boolean }) {
+function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; floor: Floor; xray: boolean; passPointer: boolean; assumed: boolean }) {
   const [ax, ay] = wall.a;
   const [bx, by] = wall.b;
   const len = Math.hypot(bx - ax, by - ay);
@@ -188,7 +191,9 @@ function WallMesh({ wall, floor, xray, passPointer }: { wall: Wall; floor: Floor
   const ux = (bx - ax) / len, uy = (by - ay) / len;
   const angle = Math.atan2(by - ay, bx - ax);
   const raycast = passPointer ? noopRaycast : undefined;
-  const color = xray ? (wall.exterior ? "#ef4444" : "#facc15") : wall.exterior ? "#e4ddd0" : "#b6bcc6";
+  const color = xray ? (wall.exterior ? "#eaf1ff" : "#9ebcff") : wall.exterior ? "#3470d4" : "#5b8be3";
+  const edge = wall.exterior ? "#eaf1ff" : "#9ebcff";
+  const faded = assumed && !wall.exterior;
   const showWindows = !xray && wall.exterior && floor.level >= 0;
   const doors = floor.doors.filter((d) => d.wallId === wall.id);
 
@@ -210,17 +215,21 @@ function WallMesh({ wall, floor, xray, passPointer }: { wall: Wall; floor: Floor
               <boxGeometry args={[segLen, floor.height, wall.thickness]} />
               <meshStandardMaterial
                 color={color}
+                emissive={color}
+                emissiveIntensity={xray ? 0 : 0.22}
                 wireframe={xray}
                 transparent={xray || !wall.exterior}
-                opacity={xray ? 0.9 : wall.exterior ? 1 : 0.92}
+                opacity={xray ? 0.9 : wall.exterior ? 1 : faded ? 0.55 : 0.92}
               />
+              {!xray && <Edges color={edge} threshold={15} raycast={noopRaycast} />}
             </mesh>
             {Array.from({ length: nWin }, (_, k) => {
               const off = -segLen / 2 + (segLen / (nWin + 1)) * (k + 1);
               return (
                 <mesh key={k} position={[off, winY, 0]} raycast={raycast}>
                   <boxGeometry args={[Math.min(0.95, segLen * 0.42), winH, wall.thickness + 0.04]} />
-                  <meshStandardMaterial color="#1f3b57" emissive="#0b1d2e" roughness={0.2} metalness={0.3} />
+                  <meshStandardMaterial color="#9ebcff" transparent opacity={0.4} />
+                  <Edges color="#eaf1ff" raycast={noopRaycast} />
                 </mesh>
               );
             })}
@@ -237,12 +246,13 @@ function WallMesh({ wall, floor, xray, passPointer }: { wall: Wall; floor: Floor
             <mesh key={d.id} position={[x, h / 2, z]} rotation={[0, angle, 0]} raycast={raycast}>
               <boxGeometry args={[d.width, h, wall.thickness * 0.5]} />
               <meshStandardMaterial
-                color={xray ? "#22c55e" : "#6b3a1f"}
-                emissive={xray ? "#22c55e" : "#000000"}
-                emissiveIntensity={xray ? 0.9 : 0}
+                color="#ff8a6b"
+                emissive="#ff8a6b"
+                emissiveIntensity={xray ? 0.6 : 0.15}
                 transparent={xray}
                 opacity={xray ? 0.75 : 1}
               />
+              {!xray && <Edges color="#eaf1ff" raycast={noopRaycast} />}
             </mesh>
           );
         })}
@@ -297,15 +307,15 @@ function RoomSlab({
         }}
       >
         <meshStandardMaterial
-          color={xray && !isStair ? "#111111" : ROOM_COLORS[room.type]}
-          emissive={hovered ? "#ffffff" : isStair ? "#facc15" : "#000000"}
+          color={xray && !isStair ? "#0b2e72" : ROOM_COLORS[room.type]}
+          emissive={hovered ? "#ffffff" : isStair ? "#ff8a6b" : "#000000"}
           emissiveIntensity={hovered ? 0.35 : isStair ? (xray ? 0.8 : 0.3) : 0}
           side={THREE.DoubleSide}
         />
       </mesh>
       {(showLabel || hovered) && (
         <group position={[center[0], 0.7, center[1]]}>
-          <LabelSprite text={room.name} color="#111111" textColor="#ffffff" fit />
+          <LabelSprite text={room.name} color="#0b2e72" fit />
         </group>
       )}
     </group>
@@ -344,11 +354,11 @@ function SiteFeatureMesh({
       <group position={[center[0], 0, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
         <mesh position={[0, 1.1, 0]}>
           <cylinderGeometry args={[0.14, 0.2, 2.2, 6]} />
-          <meshStandardMaterial color="#5c4033" />
+          <meshStandardMaterial color="#9ebcff" />
         </mesh>
         <mesh position={[0, 2.8, 0]}>
           <coneGeometry args={[1.3, 2.4, 7]} />
-          <meshStandardMaterial color={hovered ? "#4ade80" : SITE_COLOR.trees} />
+          <meshStandardMaterial color={hovered ? "#6fa0ff" : SITE_COLOR.trees} />
         </mesh>
       </group>
     );
@@ -432,13 +442,14 @@ function RoofMesh({ roof, footprint, baseY, xray }: { roof: Roof; footprint: Poi
     <group position={[x, baseY, z]} rotation={[0, roof.rotation, 0]}>
       <mesh geometry={geometry} raycast={noopRaycast}>
         <meshStandardMaterial
-          color={xray ? "#ef4444" : "#4a4f57"}
+          color={xray ? "#9ebcff" : "#123a8f"}
           wireframe={xray}
           transparent={xray}
           opacity={xray ? 0.35 : 1}
           roughness={0.9}
           side={THREE.DoubleSide}
         />
+        {!xray && <Edges color="#eaf1ff" threshold={20} raycast={noopRaycast} />}
       </mesh>
     </group>
   );
@@ -470,6 +481,7 @@ export default function Viewer({ model }: { model: BuildingModel }) {
   const [tool, setTool] = useState<MarkerType | null>(null);
   const [marksOpen, setMarksOpen] = useState(false);
   const [markers, setMarkers] = useState<Marker[]>(model.markers);
+  const assumed = model.interior?.status !== "verified";
   const wrap = useRef<HTMLDivElement>(null);
   const [tip, setTip] = useState<{ id: string; title: string; detail: string; x: number; y: number } | null>(null);
 
@@ -549,25 +561,26 @@ export default function Viewer({ model }: { model: BuildingModel }) {
   };
 
   const btn = (active: boolean) =>
-    `shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium transition ${
-      active ? "bg-white text-black" : "bg-black/55 text-neutral-300 hover:bg-black/75 hover:text-white"
+    `shrink-0 border px-2.5 py-1.5 font-data text-[11px] transition ${
+      active ? "border-bp-ink bg-bp-ink text-bp" : "border-bp-ink/45 text-bp-ink hover:bg-bp-ink/15"
     }`;
 
   return (
-    <div ref={wrap} className="relative h-full w-full bg-neutral-950">
+    <div ref={wrap} className="relative h-full w-full bg-bp">
       <Canvas camera={{ position: camPos, fov: 45, near: 0.1, far: 1000 }} shadows={false}>
-        <color attach="background" args={[xray ? "#050505" : "#0d1420"]} />
-        <hemisphereLight args={["#dbe7ff", "#2a2a2a", 0.9]} />
-        <directionalLight position={[extent * 2, extent * 3, extent * 1.5]} intensity={1.3} />
+        <color attach="background" args={[xray ? "#0b2e72" : "#0f3a8e"]} />
+        <fog attach="fog" args={[xray ? "#0b2e72" : "#0f3a8e", extent * 5, extent * 13]} />
+        <hemisphereLight args={["#ffffff", "#3a5fb0", 1.05]} />
+        <directionalLight position={[extent * 2, extent * 3, extent * 1.5]} intensity={1.0} />
         <directionalLight position={[-extent * 2, extent, -extent * 2]} intensity={0.35} />
 
         {!xray && (
           <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.08, 0]} raycast={noopRaycast}>
             <circleGeometry args={[extent * 3, 48]} />
-            <meshStandardMaterial color="#1c2a1f" transparent opacity={hidden.size || exploded ? 0.35 : 0.85} />
+            <meshStandardMaterial color="#0d3482" transparent opacity={hidden.size || exploded ? 0.35 : 0.8} />
           </mesh>
         )}
-        <Line points={footprintLine} color="#facc15" lineWidth={1.5} transparent opacity={xray ? 0.9 : 0.5} raycast={noopRaycast} />
+        <Line points={footprintLine} color="#eaf1ff" lineWidth={1.5} dashed dashSize={0.45} gapSize={0.3} transparent opacity={xray ? 0.9 : 0.75} raycast={noopRaycast} />
 
         {model.compound?.features.map((feature) => (
           <SiteFeatureMesh
@@ -595,7 +608,7 @@ export default function Viewer({ model }: { model: BuildingModel }) {
               />
             ))}
             {floor.walls.map((wall) => (
-              <WallMesh key={wall.id} wall={wall} floor={floor} xray={xray} passPointer={!tool} />
+              <WallMesh key={wall.id} wall={wall} floor={floor} xray={xray} passPointer={!tool} assumed={assumed} />
             ))}
             {markers
               .filter((m) => m.floor === floor.level)
@@ -609,7 +622,7 @@ export default function Viewer({ model }: { model: BuildingModel }) {
           <RoofMesh roof={model.roof!} footprint={model.footprint} baseY={floorY(top) + top.height} xray={xray} />
         )}
 
-        <gridHelper args={[extent * 6, Math.round(extent * 3), "#333", "#1a1a1a"]} position={[0, -2.7, 0]} />
+        <gridHelper args={[extent * 6, Math.round(extent * 3), "#4a78d0", "#2a55b0"]} position={[0, -2.7, 0]} />
         <OrbitControls
           makeDefault
           target={target}
@@ -621,16 +634,33 @@ export default function Viewer({ model }: { model: BuildingModel }) {
       </Canvas>
       {tip && (
         <div
-          className="pointer-events-none absolute z-10 max-w-[11rem] rounded-md bg-black/90 px-2.5 py-1.5 text-white shadow-lg"
+          className="pointer-events-none absolute z-10 max-w-[11rem] border border-bp-ink/60 bg-bp-deep px-2.5 py-1.5 text-bp-ink"
           style={{ left: tip.x, top: tip.y }}
         >
-          <div className="text-xs font-medium leading-snug">{tip.title}</div>
-          <div className="text-[11px] leading-snug text-neutral-400">{tip.detail}</div>
+          <div className="font-data text-xs leading-snug">{tip.title}</div>
+          <div className="font-data text-[11px] leading-snug text-bp-line">{tip.detail}</div>
         </div>
       )}
 
+      <div className="pointer-events-none absolute bottom-16 left-3 hidden flex-col gap-1.5 font-data text-[11px] text-bp-line sm:flex">
+        <span className="flex items-center gap-2">
+          <svg width="22" height="6" aria-hidden><line x1="0" y1="3" x2="22" y2="3" stroke="#eaf1ff" strokeWidth="2" /></svg>
+          {assumed ? "from the map" : "from your plan"}
+        </span>
+        {assumed && (
+          <span className="flex items-center gap-2">
+            <svg width="22" height="6" aria-hidden><line x1="0" y1="3" x2="22" y2="3" stroke="#9ebcff" strokeWidth="2" strokeDasharray="4 3" /></svg>
+            estimated inside
+          </span>
+        )}
+        <span className="flex items-center gap-2">
+          <svg width="22" height="6" aria-hidden><line x1="0" y1="3" x2="22" y2="3" stroke="#ff8a6b" strokeWidth="2" /></svg>
+          exits and stairs
+        </span>
+      </div>
+
       <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-3">
-        <div className="pointer-events-auto flex max-w-full gap-1 overflow-x-auto rounded-full bg-black/40 p-1 backdrop-blur">
+        <div className="pointer-events-auto flex max-w-full gap-1.5 overflow-x-auto border border-bp-ink/60 bg-bp-deep p-1.5">
         {levels.map((lv) => (
           <button
             key={lv}
@@ -672,7 +702,7 @@ export default function Viewer({ model }: { model: BuildingModel }) {
       </div>
       {tool && (
         <div className="pointer-events-none absolute inset-x-0 bottom-24 flex justify-center">
-          <span className="rounded-full bg-black/80 px-4 py-1.5 text-sm text-white">
+          <span className="border border-bp-ink bg-bp-deep px-4 py-1.5 font-data text-sm text-bp-ink">
             Tap a room to drop a {MARKER_STYLE[tool].label.toLowerCase()} marker
           </span>
         </div>
