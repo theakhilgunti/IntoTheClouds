@@ -22,12 +22,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory storage for hackathon MVP
-anchors: Dict[str, BeaconAnchor] = {
-    "aa:bb:cc:11:22:33": BeaconAnchor(id="A1", bssid="aa:bb:cc:11:22:33", x=0.0, y=0.0, z=1.5, p0=-40.0),
-    "aa:bb:cc:44:55:66": BeaconAnchor(id="A2", bssid="aa:bb:cc:44:55:66", x=10.0, y=0.0, z=1.5, p0=-40.0),
-    "aa:bb:cc:77:88:99": BeaconAnchor(id="A3", bssid="aa:bb:cc:77:88:99", x=5.0, y=10.0, z=1.5, p0=-40.0),
-}
+# Default anchors. Easy to edit; POST /api/anchors overrides/extends them
+# (BE-05 will move these to .env). `bssid` may be any id string; `ble_name`
+# is the Bluetooth advertised name (iPhones rotate BLE addresses).
+DEFAULT_ANCHORS: List[BeaconAnchor] = [
+    BeaconAnchor(id="A1", bssid="aa:bb:cc:11:22:33", ble_name="ITC-A1", x=0.0, y=0.0, z=1.5, p0=-40.0),
+    BeaconAnchor(id="A2", bssid="aa:bb:cc:44:55:66", ble_name="ITC-A2", x=10.0, y=0.0, z=1.5, p0=-40.0),
+    BeaconAnchor(id="A3", bssid="aa:bb:cc:77:88:99", ble_name="ITC-A3", x=5.0, y=10.0, z=1.5, p0=-40.0),
+]
+
+# Lookup table: lowercase bssid AND lowercase ble_name -> anchor (one anchor may
+# appear under two keys; use unique_anchors() when listing).
+anchors: Dict[str, BeaconAnchor] = {}
+
+
+def register_anchor(anchor: BeaconAnchor) -> None:
+    """Register an anchor under its bssid and ble_name; replaces any anchor with the same id."""
+    for key in [k for k, a in anchors.items() if a.id == anchor.id]:
+        del anchors[key]
+    anchors[anchor.bssid.lower()] = anchor
+    if anchor.ble_name:
+        anchors[anchor.ble_name.lower()] = anchor
+
+
+def unique_anchors() -> List[BeaconAnchor]:
+    """Each anchor once, in registration order (dedupe by object identity)."""
+    seen = set()
+    result = []
+    for a in anchors.values():
+        if id(a) not in seen:
+            seen.add(id(a))
+            result.append(a)
+    return result
+
+
+for _a in DEFAULT_ANCHORS:
+    register_anchor(_a)
 
 hazards: List[HazardPin] = []
 breadcrumbs: List[Dict[str, float]] = []
@@ -50,12 +80,12 @@ async def health_check():
 
 @app.get("/api/anchors", response_model=List[BeaconAnchor])
 async def get_anchors():
-    return list(anchors.values())
+    return unique_anchors()
 
 
 @app.post("/api/anchors")
 async def set_anchor(anchor: BeaconAnchor):
-    anchors[anchor.bssid.lower()] = anchor
+    register_anchor(anchor)
     return {"message": "Anchor updated", "anchor": anchor}
 
 
@@ -124,6 +154,10 @@ async def telemetry_endpoint(websocket: WebSocket):
                     step_length_m=pdr.get("step_length_m", 0.75),
                     heading_deg=pdr.get("heading_deg", 0.0),
                 )
+                # No step => no motion sensor (or standing still): spread particles slightly so
+                # the filter keeps tracking from signal readings alone (BE-06).
+                if wifi_scans and not pdr.get("step_detected", False):
+                    localizer.diffuse()
                 localizer.update_rssi(wifi_scans, anchors)
 
                 # Get updated state
@@ -162,7 +196,7 @@ async def dashboard_endpoint(websocket: WebSocket):
     # Send initial state
     await websocket.send_text(json.dumps({
         "type": "init_state",
-        "anchors": [a.model_dump() for a in anchors.values()],
+        "anchors": [a.model_dump() for a in unique_anchors()],
         "state": current_state.model_dump(),
         "breadcrumbs": breadcrumbs,
         "hazards": [h.model_dump() for h in hazards],
