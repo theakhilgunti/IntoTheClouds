@@ -1,0 +1,345 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "photo",
+        "address",
+        "wifi",
+        "upload",
+        "demo"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "address": {
+      "default": "",
+      "type": "string"
+    },
+    "lat": {
+      "type": "number"
+    },
+    "lng": {
+      "type": "number"
+    },
+    "footprint": {
+      "minItems": 3,
+      "type": "array",
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2,
+        "description": "[x, y] in meters"
+      },
+      "description": "Closed ring, no repeated last point"
+    },
+    "floors": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991,
+            "description": "-1 basement, 0 ground, 1 second floor, ..."
+          },
+          "name": {
+            "type": "string"
+          },
+          "elevation": {
+            "type": "number"
+          },
+          "height": {
+            "default": 2.7,
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "rooms": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "living",
+                    "kitchen",
+                    "dining",
+                    "bedroom",
+                    "bathroom",
+                    "hallway",
+                    "stair",
+                    "garage",
+                    "utility",
+                    "closet",
+                    "office",
+                    "basement",
+                    "other"
+                  ]
+                },
+                "polygon": {
+                  "minItems": 3,
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": "[x, y] in meters"
+                  },
+                  "description": "Closed ring, no repeated last point"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "type",
+                "polygon"
+              ]
+            }
+          },
+          "walls": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "a": {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "items": false,
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[x, y] in meters"
+                },
+                "b": {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "items": false,
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "[x, y] in meters"
+                },
+                "thickness": {
+                  "default": 0.15,
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "exterior": {
+                  "default": false,
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "a",
+                "b"
+              ]
+            }
+          },
+          "doors": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "wallId": {
+                  "type": "string"
+                },
+                "t": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Position of door center along the wall, 0 = a, 1 = b"
+                },
+                "width": {
+                  "default": 0.9,
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "exit": {
+                  "default": false,
+                  "description": "True if it leads outside",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "wallId",
+                "t"
+              ]
+            }
+          },
+          "stairs": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "polygon": {
+                  "minItems": 3,
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": "[x, y] in meters"
+                  },
+                  "description": "Closed ring, no repeated last point"
+                },
+                "toLevel": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "id",
+                "polygon",
+                "toLevel"
+              ]
+            }
+          }
+        },
+        "required": [
+          "level",
+          "name",
+          "elevation"
+        ]
+      }
+    },
+    "markers": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "fire",
+              "victim",
+              "gas",
+              "shutoff",
+              "hazard",
+              "entry"
+            ]
+          },
+          "floor": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "pos": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in meters"
+          },
+          "note": {
+            "default": "",
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "ISO timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "floor",
+          "pos",
+          "createdAt"
+        ]
+      }
+    }
+  },
+  "required": [
+    "id",
+    "source",
+    "confidence",
+    "lat",
+    "lng",
+    "footprint",
+    "floors"
+  ]
+}

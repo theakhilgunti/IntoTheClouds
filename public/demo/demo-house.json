@@ -1,0 +1,843 @@
+{
+  "id": "demo",
+  "source": "demo",
+  "confidence": 0.5,
+  "address": "Demo house — Troy, NY",
+  "lat": 42.7298,
+  "lng": -73.6789,
+  "footprint": [
+    [
+      -6,
+      -4.5
+    ],
+    [
+      6,
+      -4.5
+    ],
+    [
+      6,
+      4.5
+    ],
+    [
+      -6,
+      4.5
+    ]
+  ],
+  "floors": [
+    {
+      "level": -1,
+      "name": "Basement",
+      "elevation": -2.4,
+      "height": 2.3,
+      "rooms": [
+        {
+          "id": "b-main",
+          "name": "Basement",
+          "type": "basement",
+          "polygon": [
+            [
+              -6,
+              -4.5
+            ],
+            [
+              -1.2,
+              -4.5
+            ],
+            [
+              -1.2,
+              4.5
+            ],
+            [
+              -6,
+              4.5
+            ]
+          ]
+        },
+        {
+          "id": "b-stair",
+          "name": "Basement Stairs",
+          "type": "stair",
+          "polygon": [
+            [
+              -1.2,
+              0.5
+            ],
+            [
+              1.2,
+              0.5
+            ],
+            [
+              1.2,
+              4
+            ],
+            [
+              -1.2,
+              4
+            ]
+          ]
+        },
+        {
+          "id": "b-util",
+          "name": "Utility / Breaker Panel",
+          "type": "utility",
+          "polygon": [
+            [
+              1.2,
+              -4.5
+            ],
+            [
+              6,
+              -4.5
+            ],
+            [
+              6,
+              4.5
+            ],
+            [
+              1.2,
+              4.5
+            ]
+          ]
+        }
+      ],
+      "walls": [
+        {
+          "id": "b-ext-0",
+          "a": [
+            -6,
+            -4.5
+          ],
+          "b": [
+            6,
+            -4.5
+          ],
+          "thickness": 0.25,
+          "exterior": true
+        },
+        {
+          "id": "b-ext-1",
+          "a": [
+            6,
+            -4.5
+          ],
+          "b": [
+            6,
+            4.5
+          ],
+          "thickness": 0.25,
+          "exterior": true
+        },
+        {
+          "id": "b-ext-2",
+          "a": [
+            6,
+            4.5
+          ],
+          "b": [
+            -6,
+            4.5
+          ],
+          "thickness": 0.25,
+          "exterior": true
+        },
+        {
+          "id": "b-ext-3",
+          "a": [
+            -6,
+            4.5
+          ],
+          "b": [
+            -6,
+            -4.5
+          ],
+          "thickness": 0.25,
+          "exterior": true
+        },
+        {
+          "id": "b-w1",
+          "a": [
+            -1.2,
+            -4.5
+          ],
+          "b": [
+            -1.2,
+            4.5
+          ],
+          "thickness": 0.12,
+          "exterior": false
+        },
+        {
+          "id": "b-w2",
+          "a": [
+            1.2,
+            -4.5
+          ],
+          "b": [
+            1.2,
+            4.5
+          ],
+          "thickness": 0.12,
+          "exterior": false
+        }
+      ],
+      "doors": [
+        {
+          "id": "b-d1",
+          "wallId": "b-w1",
+          "t": 0.5,
+          "width": 0.85,
+          "exit": false
+        },
+        {
+          "id": "b-d2",
+          "wallId": "b-w2",
+          "t": 0.5,
+          "width": 0.85,
+          "exit": false
+        }
+      ],
+      "stairs": [
+        {
+          "id": "b-s1",
+          "polygon": [
+            [
+              -1.2,
+              0.5
+            ],
+            [
+              1.2,
+              0.5
+            ],
+            [
+              1.2,
+              4
+            ],
+            [
+              -1.2,
+              4
+            ]
+          ],
+          "toLevel": 0
+        }
+      ]
+    },
+    {
+      "level": 0,
+      "name": "1st Floor",
+      "elevation": 0,
+      "height": 2.7,
+      "rooms": [
+        {
+          "id": "g-living",
+          "name": "Living Room",
+          "type": "living",
+          "polygon": [
+            [
+              -6,
+              -4.5
+            ],
+            [
+              -1.2,
+              -4.5
+            ],
+            [
+              -1.2,
+              0.5
+            ],
+            [
+              -6,
+              0.5
+            ]
+          ]
+        },
+        {
+          "id": "g-dining",
+          "name": "Dining Room",
+          "type": "dining",
+          "polygon": [
+            [
+              1.2,
+              -4.5
+            ],
+            [
+              6,
+              -4.5
+            ],
+            [
+              6,
+              0.5
+            ],
+            [
+              1.2,
+              0.5
+            ]
+          ]
+        },
+        {
+          "id": "g-hall",
+          "name": "Front Hall",
+          "type": "hallway",
+          "polygon": [
+            [
+              -1.2,
+              -4.5
+            ],
+            [
+              1.2,
+              -4.5
+            ],
+            [
+              1.2,
+              0.5
+            ],
+            [
+              -1.2,
+              0.5
+            ]
+          ]
+        },
+        {
+          "id": "g-stair",
+          "name": "Main Stairs",
+          "type": "stair",
+          "polygon": [
+            [
+              -1.2,
+              0.5
+            ],
+            [
+              1.2,
+              0.5
+            ],
+            [
+              1.2,
+              4
+            ],
+            [
+              -1.2,
+              4
+            ]
+          ]
+        },
+        {
+          "id": "g-family",
+          "name": "Family Room",
+          "type": "living",
+          "polygon": [
+            [
+              -6,
+              0.5
+            ],
+            [
+              -1.2,
+              0.5
+            ],
+            [
+              -1.2,
+              4.5
+            ],
+            [
+              -6,
+              4.5
+            ]
+          ]
+        },
+        {
+          "id": "g-kitchen",
+          "name": "Kitchen",
+          "type": "kitchen",
+          "polygon": [
+            [
+              1.2,
+              0.5
+            ],
+            [
+              6,
+              0.5
+            ],
+            [
+              6,
+              4.5
+            ],
+            [
+              1.2,
+              4.5
+            ]
+          ]
+        }
+      ],
+      "walls": [
+        {
+          "id": "g-ext-0",
+          "a": [
+            -6,
+            -4.5
+          ],
+          "b": [
+            6,
+            -4.5
+          ],
+          "thickness": 0.25,
+          "exterior": true
+        },
+        {
+          "id": "g-ext-1",
+          "a": [
+            6,
+            -4.5
+          ],
+          "b": [
+            6,
+            4.5
+          ],
+          "thickness": 0.25,
+          "exterior": true
+        },
+        {
+          "id": "g-ext-2",
+          "a": [
+            6,
+            4.5
+          ],
+          "b": [
+            -6,
+            4.5
+          ],
+          "thickness": 0.25,
+          "exterior": true
+        },
+        {
+          "id": "g-ext-3",
+          "a": [
+            -6,
+            4.5
+          ],
+          "b": [
+            -6,
+            -4.5
+          ],
+          "thickness": 0.25,
+          "exterior": true
+        },
+        {
+          "id": "g-w1",
+          "a": [
+            -1.2,
+            -4.5
+          ],
+          "b": [
+            -1.2,
+            4.5
+          ],
+          "thickness": 0.12,
+          "exterior": false
+        },
+        {
+          "id": "g-w2",
+          "a": [
+            1.2,
+            -4.5
+          ],
+          "b": [
+            1.2,
+            4.5
+          ],
+          "thickness": 0.12,
+          "exterior": false
+        },
+        {
+          "id": "g-w3",
+          "a": [
+            -6,
+            0.5
+          ],
+          "b": [
+            -1.2,
+            0.5
+          ],
+          "thickness": 0.12,
+          "exterior": false
+        },
+        {
+          "id": "g-w4",
+          "a": [
+            1.2,
+            0.5
+          ],
+          "b": [
+            6,
+            0.5
+          ],
+          "thickness": 0.12,
+          "exterior": false
+        }
+      ],
+      "doors": [
+        {
+          "id": "g-d-front",
+          "wallId": "g-ext-0",
+          "t": 0.5,
+          "width": 1,
+          "exit": true
+        },
+        {
+          "id": "g-d-back",
+          "wallId": "g-ext-2",
+          "t": 0.25,
+          "width": 1,
+          "exit": true
+        },
+        {
+          "id": "g-d1",
+          "wallId": "g-w1",
+          "t": 0.25,
+          "width": 0.85,
+          "exit": false
+        },
+        {
+          "id": "g-d2",
+          "wallId": "g-w2",
+          "t": 0.25,
+          "width": 0.85,
+          "exit": false
+        },
+        {
+          "id": "g-d3",
+          "wallId": "g-w1",
+          "t": 0.75,
+          "width": 0.85,
+          "exit": false
+        },
+        {
+          "id": "g-d4",
+          "wallId": "g-w2",
+          "t": 0.75,
+          "width": 0.85,
+          "exit": false
+        },
+        {
+          "id": "g-d5",
+          "wallId": "g-w3",
+          "t": 0.5,
+          "width": 0.85,
+          "exit": false
+        },
+        {
+          "id": "g-d6",
+          "wallId": "g-w4",
+          "t": 0.5,
+          "width": 0.85,
+          "exit": false
+        }
+      ],
+      "stairs": [
+        {
+          "id": "g-s1",
+          "polygon": [
+            [
+              -1.2,
+              0.5
+            ],
+            [
+              1.2,
+              0.5
+            ],
+            [
+              1.2,
+              4
+            ],
+            [
+              -1.2,
+              4
+            ]
+          ],
+          "toLevel": 1
+        }
+      ]
+    },
+    {
+      "level": 1,
+      "name": "2nd Floor",
+      "elevation": 2.7,
+      "height": 2.5,
+      "rooms": [
+        {
+          "id": "u-master",
+          "name": "Master Bedroom",
+          "type": "bedroom",
+          "polygon": [
+            [
+              -6,
+              -4.5
+            ],
+            [
+              -1.2,
+              -4.5
+            ],
+            [
+              -1.2,
+              0.5
+            ],
+            [
+              -6,
+              0.5
+            ]
+          ]
+        },
+        {
+          "id": "u-bed2",
+          "name": "Bedroom 2",
+          "type": "bedroom",
+          "polygon": [
+            [
+              1.2,
+              -4.5
+            ],
+            [
+              6,
+              -4.5
+            ],
+            [
+              6,
+              0.5
+            ],
+            [
+              1.2,
+              0.5
+            ]
+          ]
+        },
+        {
+          "id": "u-hall",
+          "name": "Upstairs Hall",
+          "type": "hallway",
+          "polygon": [
+            [
+              -1.2,
+              -4.5
+            ],
+            [
+              1.2,
+              -4.5
+            ],
+            [
+              1.2,
+              0.5
+            ],
+            [
+              -1.2,
+              0.5
+            ]
+          ]
+        },
+        {
+          "id": "u-stair",
+          "name": "Main Stairs",
+          "type": "stair",
+          "polygon": [
+            [
+              -1.2,
+              0.5
+            ],
+            [
+              1.2,
+              0.5
+            ],
+            [
+              1.2,
+              4
+            ],
+            [
+              -1.2,
+              4
+            ]
+          ]
+        },
+        {
+          "id": "u-bath",
+          "name": "Bathroom",
+          "type": "bathroom",
+          "polygon": [
+            [
+              -6,
+              0.5
+            ],
+            [
+              -1.2,
+              0.5
+            ],
+            [
+              -1.2,
+              4.5
+            ],
+            [
+              -6,
+              4.5
+            ]
+          ]
+        },
+        {
+          "id": "u-bed3",
+          "name": "Bedroom 3",
+          "type": "bedroom",
+          "polygon": [
+            [
+              1.2,
+              0.5
+            ],
+            [
+              6,
+              0.5
+            ],
+            [
+              6,
+              4.5
+            ],
+            [
+              1.2,
+              4.5
+            ]
+          ]
+        }
+      ],
+      "walls": [
+        {
+          "id": "u-ext-0",
+          "a": [
+            -6,
+            -4.5
+          ],
+          "b": [
+            6,
+            -4.5
+          ],
+          "thickness": 0.25,
+          "exterior": true
+        },
+        {
+          "id": "u-ext-1",
+          "a": [
+            6,
+            -4.5
+          ],
+          "b": [
+            6,
+            4.5
+          ],
+          "thickness": 0.25,
+          "exterior": true
+        },
+        {
+          "id": "u-ext-2",
+          "a": [
+            6,
+            4.5
+          ],
+          "b": [
+            -6,
+            4.5
+          ],
+          "thickness": 0.25,
+          "exterior": true
+        },
+        {
+          "id": "u-ext-3",
+          "a": [
+            -6,
+            4.5
+          ],
+          "b": [
+            -6,
+            -4.5
+          ],
+          "thickness": 0.25,
+          "exterior": true
+        },
+        {
+          "id": "u-w1",
+          "a": [
+            -1.2,
+            -4.5
+          ],
+          "b": [
+            -1.2,
+            4.5
+          ],
+          "thickness": 0.12,
+          "exterior": false
+        },
+        {
+          "id": "u-w2",
+          "a": [
+            1.2,
+            -4.5
+          ],
+          "b": [
+            1.2,
+            4.5
+          ],
+          "thickness": 0.12,
+          "exterior": false
+        },
+        {
+          "id": "u-w3",
+          "a": [
+            -6,
+            0.5
+          ],
+          "b": [
+            -1.2,
+            0.5
+          ],
+          "thickness": 0.12,
+          "exterior": false
+        },
+        {
+          "id": "u-w4",
+          "a": [
+            1.2,
+            0.5
+          ],
+          "b": [
+            6,
+            0.5
+          ],
+          "thickness": 0.12,
+          "exterior": false
+        }
+      ],
+      "doors": [
+        {
+          "id": "u-d1",
+          "wallId": "u-w1",
+          "t": 0.25,
+          "width": 0.85,
+          "exit": false
+        },
+        {
+          "id": "u-d2",
+          "wallId": "u-w2",
+          "t": 0.25,
+          "width": 0.85,
+          "exit": false
+        },
+        {
+          "id": "u-d3",
+          "wallId": "u-w1",
+          "t": 0.75,
+          "width": 0.85,
+          "exit": false
+        },
+        {
+          "id": "u-d4",
+          "wallId": "u-w2",
+          "t": 0.75,
+          "width": 0.85,
+          "exit": false
+        }
+      ],
+      "stairs": []
+    }
+  ],
+  "markers": []
+}
