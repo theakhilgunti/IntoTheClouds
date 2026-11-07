@@ -103,6 +103,8 @@ export const Interior = z.object({
   status: z.enum(["verified", "unknown"]),
   source: z.string().optional().describe("Where verified rooms came from, e.g. 'floor plan', 'wifi scan'"),
   reasons: z.array(z.string()).default([]).describe("Why the interior is unknown (empty when verified)"),
+  knownLevels: z.array(z.number().int()).default([]).describe("Floors whose rooms come from a real source"),
+  notes: z.array(z.string()).default([]).describe("Caveats on the verified part, e.g. placement unconfirmed"),
 });
 
 export const BuildingModel = z.object({

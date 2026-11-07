@@ -26,7 +26,11 @@ export type ScanResult = {
   warnings: string[];
   /** Images the scan looked at, as data: URLs. */
   images: { label: string; url: string }[];
-  summary: { width: number; depth: number; area: number; facing: string; stories: number };
+  summary: {
+    width: number; depth: number; area: number; facing: string; stories: number;
+    /** Unit vector in the model frame from the building toward the nearest street (for aligning floor plans). */
+    streetDir?: [number, number] | null;
+  };
   createdAt: string;
 };
 

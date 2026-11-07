@@ -6,9 +6,11 @@ import dynamic from "next/dynamic";
 import { demoModel } from "@/lib/demo";
 import { loadScan, saveScan, type SavedScan } from "@/lib/clientStore";
 import { streamScan } from "@/lib/scanClient";
-import type { BuildingModel } from "@/packages/schema/building-model";
+import type { BuildingModel, Point } from "@/packages/schema/building-model";
 import type { ScanResult } from "@/lib/sources";
 import ScanReport from "./ScanReport";
+import FloorPlanPanel from "./FloorPlanPanel";
+import { mergeKnownFloors } from "@/lib/interior";
 
 // WebGL only runs in the browser.
 const Viewer = dynamic(() => import("@/components/viewer/Viewer"), {
@@ -57,7 +59,8 @@ export default function ModelScreen({ id }: { id: string }) {
     form.append("rescan", "1");
     setRescanning(true);
     try {
-      const { result } = await streamScan(form, () => {});
+      const { result: fresh } = await streamScan(form, () => {});
+      const result = { ...fresh, model: mergeKnownFloors(fresh.model, state.scan.result.model) };
       const scan = { ...state.scan, result };
       saveScan(scan);
       setState({ kind: "scan", scan });
@@ -67,6 +70,32 @@ export default function ModelScreen({ id }: { id: string }) {
     } finally {
       setRescanning(false);
     }
+  }
+
+  function applyPlan(next: BuildingModel) {
+    if (state.kind !== "scan") return;
+    const interior = next.interior;
+    const attributes = state.scan.result.attributes.map((a) =>
+      a.field === "Interior"
+        ? interior?.status === "verified"
+          ? { ...a, value: "Verified", from: "map" as const, note: `Source: ${interior.source}` }
+          : { ...a, value: "Partly known — needs a scan", note: interior?.reasons[0] ?? a.note }
+        : a,
+    );
+    const result = { ...state.scan.result, model: next, attributes };
+    const scan = { ...state.scan, result };
+    saveScan(scan);
+    setState({ kind: "scan", scan });
+    setVersion((v) => v + 1);
+  }
+
+  function downloadModel() {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(model, null, 2)], { type: "application/json" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${model.id}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   if (state.kind === "loading") {
@@ -126,19 +155,41 @@ export default function ModelScreen({ id }: { id: string }) {
       </div>
 
       {interior?.status === "unknown" && (
-        <div className="pointer-events-auto absolute left-3 right-3 top-32 z-10 max-w-md rounded-xl border-2 border-red-500 bg-black/90 px-4 py-3 text-white backdrop-blur sm:top-28">
-          <div className="text-sm font-black uppercase tracking-wide text-red-400">Interior unknown · this house needs a scan</div>
-          <p className="mt-1 text-xs text-neutral-300">Only the outside is shown. We don&apos;t guess rooms. Why:</p>
+        <div className="pointer-events-auto absolute left-3 right-3 top-32 z-10 max-h-[60vh] max-w-md overflow-y-auto rounded-xl border-2 border-red-500 bg-black/90 px-4 py-3 text-white backdrop-blur sm:top-28">
+          <div className="text-sm font-black uppercase tracking-wide text-red-400">
+            {interior.knownLevels.length ? "Interior partly known · more floors need a plan" : "Interior unknown · this house needs a scan"}
+          </div>
+          <p className="mt-1 text-xs text-neutral-300">
+            {interior.knownLevels.length ? "Floors with a plan show real rooms. We don't guess the rest." : "Only the outside is shown. We don't guess rooms."} Why:
+          </p>
           <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-neutral-200">
             {interior.reasons.map((r) => (
               <li key={r}>{r}</li>
             ))}
           </ul>
+          {interior.notes.map((n) => (
+            <div key={n} className="mt-1 text-xs text-amber-200">• {n}</div>
+          ))}
+          {state.kind === "scan" && (
+            <FloorPlanPanel model={model} streetDir={(state.scan.result.summary.streetDir as Point | null | undefined) ?? null} onApplied={applyPlan} />
+          )}
+          {interior.knownLevels.length > 0 && (
+            <button onClick={downloadModel} className="mt-2 text-xs font-bold text-yellow-300 underline">
+              Download this model (.json) to keep it permanently
+            </button>
+          )}
         </div>
       )}
       {interior?.status === "verified" && (
-        <div className="pointer-events-none absolute left-3 top-32 z-10 rounded-xl border border-emerald-500 bg-black/85 px-3 py-2 text-xs font-bold text-emerald-300 sm:top-28">
-          Interior verified · {interior.source}
+        <div className="pointer-events-auto absolute left-3 top-32 z-10 max-w-md rounded-xl border border-emerald-500 bg-black/85 px-3 py-2 text-xs text-emerald-300 sm:top-28">
+          <div className="font-bold">Interior verified · {interior.source}</div>
+          {interior.notes.map((n) => (
+            <div key={n} className="mt-1 text-amber-200">• {n}</div>
+          ))}
+          <div className="mt-1 text-neutral-400">Read by AI from the plan you uploaded. Compare it with the plan.</div>
+          <button onClick={downloadModel} className="mt-1 font-bold text-yellow-300 underline">
+            Download this model (.json) to keep it permanently
+          </button>
         </div>
       )}
       {legacy && (

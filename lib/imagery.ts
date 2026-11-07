@@ -1,7 +1,7 @@
 /** Free aerial imagery (Esri World Imagery). Attribution: Esri, Maxar, Earthstar Geographics. */
 import type { LatLng } from "./geo";
 
-export type Image = { base64: string; mime: "image/jpeg" };
+export type Image = { base64: string; mime: "image/jpeg" | "image/png" | "image/webp" };
 
 function exportUrl(c: LatLng, halfSize: number) {
   const dLat = halfSize / 111320;

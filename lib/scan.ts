@@ -293,7 +293,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     built.model.floors = built.model.floors
       .filter((f) => f.level >= 0 || basementKnown)
       .map((f) => ({ ...f, rooms: [], doors: [], stairs: [], walls: f.walls.filter((w) => w.exterior) }));
-    built.model.interior = { status: "unknown", reasons };
+    built.model.interior = { status: "unknown", reasons, knownLevels: [], notes: [] };
   }
   if (!verified) {
     for (let i = attributes.length - 1; i >= 0; i--) if (attributes[i].field === "Basement" && attributes[i].from === "estimated") attributes.splice(i, 1);
@@ -339,7 +339,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     attributes,
     warnings,
     images: aerial ? [{ label: "Aerial view · Esri World Imagery", url: `data:${aerial.mime};base64,${aerial.base64}` }] : [],
-    summary: { width: built.width, depth: built.depth, area: Math.round(area), facing: built.facing, stories },
+    summary: { width: built.width, depth: built.depth, area: Math.round(area), facing: built.facing, stories, streetDir },
     createdAt: new Date().toISOString(),
   };
   // Don't save scans where the map server was down; the next try should get the real outline.

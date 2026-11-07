@@ -410,6 +410,24 @@
           "items": {
             "type": "string"
           }
+        },
+        "knownLevels": {
+          "default": [],
+          "description": "Floors whose rooms come from a real source",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          }
+        },
+        "notes": {
+          "default": [],
+          "description": "Caveats on the verified part, e.g. placement unconfirmed",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
