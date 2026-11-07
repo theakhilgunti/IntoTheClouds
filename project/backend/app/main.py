@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .models import BeaconAnchor, FirefighterState, HazardPin, TelemetryPayload
 from .fusion.math_engine import ParticleFilterLocalizer
+from .explored_session import build_exploration_payload, persist_exploration
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("IntoTheClouds")
@@ -63,6 +64,7 @@ hazards: List[HazardPin] = []
 breadcrumbs: List[Dict[str, float]] = []
 localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=(-2.0, -2.0, 12.0, 12.0))
 current_state: FirefighterState = localizer.get_state("FF_Pi_Rig_1", 0.0, time.time())
+session_started_at: float = time.time()
 
 # Active dashboard WebSockets
 dashboard_clients: Set[WebSocket] = set()
@@ -107,15 +109,24 @@ async def add_hazard(hazard: HazardPin):
 
 @app.post("/api/reset")
 async def reset_session():
-    global localizer, breadcrumbs, hazards, current_state
+    global localizer, breadcrumbs, hazards, current_state, session_started_at
+    payload = build_exploration_payload(
+        list(breadcrumbs),
+        [hazard.model_dump() for hazard in hazards],
+        current_state.device_id,
+        session_started_at,
+        time.time(),
+    )
     localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=(-2.0, -2.0, 12.0, 12.0))
     breadcrumbs.clear()
     hazards.clear()
-    current_state = localizer.get_state("FF_Pi_Rig_1", 0.0, time.time())
+    session_started_at = time.time()
+    current_state = localizer.get_state("FF_Pi_Rig_1", 0.0, session_started_at)
     await broadcast_to_dashboards({
         "type": "session_reset",
     })
-    return {"message": "Session reset successful"}
+    saved = await persist_exploration(payload)
+    return {"message": "Session reset successful", "saved": saved}
 
 
 async def broadcast_to_dashboards(message: dict):
@@ -184,6 +195,14 @@ async def telemetry_endpoint(websocket: WebSocket):
                 logger.warning("Invalid JSON received from telemetry client")
     except WebSocketDisconnect:
         logger.info("Telemetry client disconnected")
+        payload = build_exploration_payload(
+            list(breadcrumbs),
+            [hazard.model_dump() for hazard in hazards],
+            current_state.device_id,
+            session_started_at,
+            time.time(),
+        )
+        await persist_exploration(payload)
 
 
 @app.websocket("/ws/dashboard")

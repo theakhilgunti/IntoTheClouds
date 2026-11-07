@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
-import { Html, Line, OrbitControls } from "@react-three/drei";
+import { Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type {
   BuildingModel,
@@ -14,9 +14,39 @@ import type {
   Room,
   Wall,
 } from "@/packages/schema/building-model";
-
 // Model frame: x = east, y = north. Three.js frame: x = east, y = up, z = south.
 const toXZ = ([x, y]: Point): [number, number] => [x, -y];
+
+function LabelSprite({
+  text,
+  color,
+  textColor = "#111111",
+  scale = [1.8, 0.45, 1] as [number, number, number],
+}) {
+  const texture = useMemo(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 128;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = textColor;
+    ctx.font = "bold 64px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+    const map = new THREE.CanvasTexture(canvas);
+    map.needsUpdate = true;
+    return map;
+  }, [text, color, textColor]);
+  if (!texture) return null;
+  return (
+    <sprite scale={scale}>
+      <spriteMaterial map={texture} transparent />
+    </sprite>
+  );
+}
 
 const ROOM_COLORS: Record<Room["type"], string> = {
   living: "#3b4252",
@@ -161,11 +191,9 @@ function RoomSlab({
         />
       </mesh>
       {showLabel && (
-        <Html position={[center[0], 0.4, center[1]]} center distanceFactor={14}>
-          <div className="pointer-events-none whitespace-nowrap rounded bg-black/70 px-2 py-0.5 text-xs font-semibold text-white">
-            {room.name}
-          </div>
-        </Html>
+        <group position={[center[0], 0.45, center[1]]}>
+          <LabelSprite text={room.name} color="#111111" textColor="#ffffff" />
+        </group>
       )}
     </group>
   );
@@ -234,14 +262,9 @@ function MarkerPin({ marker }: { marker: Marker }) {
         <coneGeometry args={[0.35, 1.2, 16]} />
         <meshStandardMaterial color={style.color} emissive={style.color} emissiveIntensity={0.8} />
       </mesh>
-      <Html position={[0, 1.6, 0]} center distanceFactor={14}>
-        <div
-          className="pointer-events-none rounded px-2 py-0.5 text-xs font-black text-black"
-          style={{ background: style.color }}
-        >
-          {style.label}
-        </div>
-      </Html>
+      <group position={[0, 1.55, 0]}>
+        <LabelSprite text={style.label} color={style.color} scale={[1.2, 0.32, 1]} />
+      </group>
     </group>
   );
 }

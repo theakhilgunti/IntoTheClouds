@@ -49,6 +49,9 @@ node_modules/
 dist/
 .vite/
 
+# local toolchain (conda node used to run the demo)
+.tools/
+
 # Python
 __pycache__/
 *.py[cod]

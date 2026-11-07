@@ -72,3 +72,6 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 20:40 | DOC-07 subagent | DOC-07 | Docs updated for 3 phone anchors + carried Windows laptop (no Pi): WORK_ORDERS (retired Pi tasks, new LC/BE/FE cards, risks, phases), README, DEMO_GUIDE, PITCH_OUTLINE; honest meter-level / RF obstacle hints wording |
 | 20:33 | Claude Code | BE-06 | Added ParticleFilterLocalizer.diffuse() random-walk model, used when scans arrive with no step; 3 new tests (8 pass) |
 | 20:30 | Claude Code | LC-01 | Added project/laptop_client/ Windows Wi-Fi (netsh) and BLE (bleak) scan benchmarks + README; parsers tested on sample data, not yet run on Windows |
+| 19:32 | Cursor | ST-01 | Saved houses and finished walks in MongoDB via /api/models and /api/explorations. |
+| 20:40 | Cursor | ST-02 | Scanner walks are the only houses written to the buildings collection. |
+| 20:45 | Cursor | FE-04 | Replaced 3D HTML labels that crashed React when a scanner house loaded. |
