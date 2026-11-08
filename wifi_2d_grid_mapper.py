@@ -134,9 +134,63 @@ PHONE_CFG_DEFAULTS = {
     # the slow Wi-Fi fixes; each Wi-Fi fix then corrects the accumulated drift.
     "pdr_enabled": True,
     "stride_m": 0.7,
+    # Accelerometer step detector that runs in the dashboard (MAP-08)
+    "step_source": "dashboard",  # dashboard: detect from streamed accel here | walker: use the phone page's own step flags
+    "step_thresh": 1.4,          # m/s^2 above gravity a bump must reach to count as a step (replay vs phone page: best F1)
+    "step_gap_s": 0.4,           # minimum time between two steps
+    "step_tau_lp": 0.05,         # low-pass time constant in s: removes hand jitter (higher = smoother, may merge steps)
+    "accel_gravity": 0.0,        # measured |a| while still (should be ~9.8)
+    "accel_noise": 0.0,          # measured std of |a| while still, m/s^2
 }
 # Map heading (0 = +x, counter-clockwise) of each axis you can face during alignment
 AXIS_HEADING = {"+x": 0.0, "+y": 90.0, "-x": 180.0, "-y": 270.0}
+ACCEL_TAU_G = 0.8  # s, gravity tracking time constant
+
+
+class StepDetector:
+    """Step detector on the iPhone's accelerationIncludingGravity (MAP-08).
+    |a| minus a slow gravity average, low-passed, then a step = the top of a bump above the threshold.
+    Time-constant based so it works at the ~10 Hz the phone streams (the phone page itself runs ~60 Hz)."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.gavg, self.lp, self.p1, self.p2 = None, 0.0, 0.0, 0.0
+        self.last_step, self.prev_t = -1e9, None
+
+    def feed(self, t: float, mag: float, th: float, gap: float, tau_lp: float, tau_g: float = ACCEL_TAU_G):
+        """One sample -> (gravity-removed filtered value, stepped)."""
+        dt = 0.1 if self.prev_t is None else t - self.prev_t
+        if self.prev_t is None or dt > 0.6 or dt < 0:   # stream gap: restart so a pause is not read as a bump
+            self.gavg, self.lp, self.p1, self.p2 = mag, 0.0, 0.0, 0.0
+            dt = 0.1
+        dt = min(max(dt, 0.02), 0.6)
+        self.prev_t = t
+        self.gavg += (1.0 - math.exp(-dt / tau_g)) * (mag - self.gavg)
+        self.lp += (1.0 - math.exp(-dt / max(tau_lp, 0.005))) * ((mag - self.gavg) - self.lp)
+        hp = self.lp
+        stepped = self.p1 > th and self.p1 >= self.p2 and self.p1 >= hp and (t - self.last_step) > gap
+        if stepped:
+            self.last_step = t
+        self.p2, self.p1 = self.p1, hp
+        return hp, stepped
+
+
+def count_steps(samples, th: float, gap: float, tau_lp: float) -> int:
+    det = StepDetector()
+    return sum(1 for t, m in samples if det.feed(t, m, th, gap, tau_lp)[1])
+
+
+def fit_step_threshold(samples, n_true: int, gap: float, tau_lp: float) -> dict:
+    """Walk calibration: you walked n_true steps while the accel was recorded; sweep the threshold and pick the
+    middle of the range that counts exactly n_true (else the closest count)."""
+    counts = {th: count_steps(samples, th, gap, tau_lp) for th in [round(0.3 + 0.1 * i, 1) for i in range(38)]}
+    exact = [th for th, c in counts.items() if c == n_true]
+    pool = exact or [th for th, c in counts.items() if abs(c - n_true) == min(abs(v - n_true) for v in counts.values())]
+    th = pool[len(pool) // 2]
+    return {"threshold": th, "detected": counts[th], "actual": n_true, "exact": bool(exact),
+            "range": [min(exact), max(exact)] if exact else None}
 
 
 def detect_lan_ip() -> str:
@@ -255,6 +309,16 @@ class GlobalState:
         self.phone_cfg = dict(PHONE_CFG_DEFAULTS)
         self.wifi_rev = 0                # bumps on every fresh beacon reading; KF only re-measures when it changes
         self.wifi_rev_used = -1
+        self.step_det = StepDetector()
+        self.accel_t_last = time.time()  # only accel samples newer than the mapper start are used
+        self.accel_mag = self.accel_hp = 0.0
+        self.accel_t = 0.0
+        self.accel_trace = deque(maxlen=160)   # (t, filtered value) for the dashboard chart
+        self.det_marks = deque(maxlen=60)      # steps found by the dashboard detector
+        self.walker_marks = deque(maxlen=60)   # steps flagged by the phone page
+        self.dashboard_steps_total = 0
+        self.walker_steps_total = 0
+        self.accel_rec = None                  # list of (t, |a|) while still / walk calibration is recording
         self.pdr_pending = []            # step timestamps not yet applied to the position filter
         self.pdr_step_times = deque(maxlen=50)
         self.pdr_steps_total = 0
@@ -981,19 +1045,74 @@ def background_phone_thread():
         time.sleep(0.15)
 
 
+def queue_step(t: float):
+    STATE.pdr_pending.append(t)
+    STATE.pdr_step_times.append(t)
+    STATE.pdr_steps_total += 1
+
+
 def ingest_step_log(entries) -> int:
-    """Queue steps from the backend's /api/phone/log that are newer than the last one seen.
+    """Steps flagged by the /walker page in the backend's /api/phone/log, newer than the last one seen.
+    They always update the phone-page counter; they drive the position only when step_source == 'walker'.
     Call with STATE.lock held. Returns the number of new steps."""
     new = sorted(float(e["t"]) for e in entries
                  if isinstance(e, dict) and e.get("step") is True and isinstance(e.get("t"), (int, float))
                  and float(e["t"]) > STATE.pdr_last_step_t)
     for t in new:
-        STATE.pdr_pending.append(t)
-        STATE.pdr_step_times.append(t)
-        STATE.pdr_steps_total += 1
+        STATE.walker_marks.append(t)
+        STATE.walker_steps_total += 1
+        if STATE.phone_cfg["step_source"] == "walker":
+            queue_step(t)
     if new:
         STATE.pdr_last_step_t = new[-1]
     return len(new)
+
+
+def ingest_phone_log(entries) -> int:
+    """MAP-08: feed the streamed accelerometer samples through the dashboard step detector.
+    Call with STATE.lock held. Returns the number of new samples."""
+    cfg = STATE.phone_cfg
+    ingest_step_log(entries)
+    new = sorted((e for e in entries if isinstance(e, dict) and isinstance(e.get("t"), (int, float))
+                  and isinstance(e.get("accel_g"), dict) and float(e["t"]) > STATE.accel_t_last),
+                 key=lambda e: e["t"])
+    for e in new:
+        try:
+            mag = math.sqrt(sum(float(e["accel_g"].get(k) or 0.0) ** 2 for k in ("x", "y", "z")))
+        except (TypeError, ValueError):
+            continue
+        t = float(e["t"])
+        hp, stepped = STATE.step_det.feed(t, mag, cfg["step_thresh"], cfg["step_gap_s"], cfg["step_tau_lp"])
+        STATE.accel_mag, STATE.accel_hp, STATE.accel_t = mag, hp, t
+        STATE.accel_trace.append((t, hp))
+        if STATE.accel_rec is not None and len(STATE.accel_rec) < 6000:
+            STATE.accel_rec.append((t, mag))
+        if stepped:
+            STATE.det_marks.append(t)
+            STATE.dashboard_steps_total += 1
+            if cfg["step_source"] == "dashboard":
+                queue_step(t)
+    if new:
+        STATE.accel_t_last = float(new[-1]["t"])
+    return len(new)
+
+
+def accel_status_dict() -> dict:
+    """Live accelerometer view for the dashboard chart. Call with STATE.lock held."""
+    now = time.time()
+    since = None if not STATE.accel_t else round(now - STATE.accel_t, 1)
+    cfg = STATE.phone_cfg
+    return {
+        "connected": since is not None and since < cfg["fresh_s"],
+        "mag": round(STATE.accel_mag, 2), "hp": round(STATE.accel_hp, 2), "since_update_s": since,
+        "trace": [[round(now - t, 2), round(v, 2)] for t, v in STATE.accel_trace if now - t < 8.0],
+        "dashboard_marks": [round(now - t, 2) for t in STATE.det_marks if now - t < 8.0],
+        "walker_marks": [round(now - t, 2) for t in STATE.walker_marks if now - t < 8.0],
+        "dashboard_steps": STATE.dashboard_steps_total, "walker_steps": STATE.walker_steps_total,
+        "source": cfg["step_source"], "recording": STATE.accel_rec is not None,
+        "rec_samples": 0 if STATE.accel_rec is None else len(STATE.accel_rec),
+        "cfg": {k: cfg[k] for k in ("step_source", "step_thresh", "step_gap_s", "step_tau_lp", "accel_gravity", "accel_noise")},
+    }
 
 
 def background_step_thread():
@@ -1008,7 +1127,7 @@ def background_step_thread():
             with urllib.request.urlopen(PHONE_URL + "/api/phone/log?last=80", timeout=2, context=ctx) as r:
                 entries = json.load(r)
             with STATE.lock:
-                ingest_step_log(entries)
+                ingest_phone_log(entries)
         except Exception:
             pass
         time.sleep(0.3)
@@ -2132,6 +2251,33 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- Accelerometer + step detector (MAP-08) -->
+      <div class="sidebar-section" id="accelPanel">
+        <div class="section-title"><span>ACCELEROMETER &amp; STEPS</span></div>
+        <div style="font-size:0.78rem;line-height:1.5">
+          <canvas id="accCanvas" width="300" height="96" style="width:100%;background:#0006;border:1px solid #00f0ff44;border-radius:4px"></canvas>
+          <div style="font-size:0.68rem;opacity:.8">last 8 s of gravity-removed motion &nbsp;
+            <span style="color:#00f0ff">| dashboard step</span> &nbsp;<span style="color:#ff5cf0">| phone-page step</span> &nbsp;<span style="color:#fbbf24">- threshold</span></div>
+          <div id="accLive" style="font-family:monospace;font-size:0.72rem;white-space:pre;margin-top:4px">accelerometer: --</div>
+          <div style="margin-top:6px"><b>1. Step source</b>
+            <select id="accSrc" onchange="accCal('set',{step_source:accSrc.value})"><option value="dashboard">dashboard detector (tunable here)</option><option value="walker">phone page's own steps</option></select></div>
+          <div style="margin-top:6px"><b>2. Sensitivity</b> (lower = counts smaller bumps)<br>
+            Threshold <input id="accTh" type="range" min="0.3" max="4" step="0.1" style="width:110px" oninput="accThV.innerText=accTh.value" onchange="accCal('set',{step_thresh:parseFloat(accTh.value)})"> <span id="accThV"></span> m/s²<br>
+            Min gap <input id="accGap" type="range" min="0.2" max="1" step="0.05" style="width:110px" oninput="accGapV.innerText=accGap.value" onchange="accCal('set',{step_gap_s:parseFloat(accGap.value)})"> <span id="accGapV"></span> s<br>
+            Smoothing <input id="accLp" type="range" min="0.02" max="0.5" step="0.01" style="width:110px" oninput="accLpV.innerText=accLp.value" onchange="accCal('set',{step_tau_lp:parseFloat(accLp.value)})"> <span id="accLpV"></span> s</div>
+          <div style="margin-top:6px;padding:4px;border:1px solid #00f0ff55;border-radius:4px"><b>3. Walk calibration (best)</b><br>
+            Click Record, walk a known number of steps at your normal pace, then enter how many you walked and click Fit.<br>
+            <button class="btn-calib" onclick="accCal('accel_rec_start')">● Record</button>
+            actual steps <input id="accN" type="number" min="3" max="200" value="10" style="width:50px">
+            <button class="btn-calib" onclick="accCal('accel_rec_fit',{steps:parseInt(accN.value)})">■ Stop &amp; fit threshold</button>
+            <button class="btn-calib secondary" onclick="accCal('accel_rec_cancel')">Cancel</button></div>
+          <div style="margin-top:6px"><b>4. Hold-still check</b> (phone on a table)
+            <button class="btn-calib" onclick="accStill()">✋ Measure</button> <input id="accSecs" type="number" min="1" max="10" value="3" style="width:40px"> s
+            <div id="accStillOut" style="font-family:monospace;font-size:0.72rem;white-space:pre"></div></div>
+          <div id="accMsg" style="color:#fbbf24;margin-top:4px"></div>
+        </div>
+      </div>
+
       <!-- Environment & Grid Configuration -->
       <div class="sidebar-section">
         <div class="section-title">
@@ -2897,6 +3043,56 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
     }
     setInterval(refreshPhone, 500); refreshPhone();
 
+    // ---- Accelerometer panel (MAP-08)
+    let accInit = false;
+    async function accCal(action, extra) {
+      const r = await fetch('/api/phone_calib', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(Object.assign({action}, extra || {}))});
+      const d = await r.json();
+      if (!r.ok) { accMsg.innerText = 'Error: ' + d.detail; return; }
+      accMsg.innerText = d.threshold !== undefined
+        ? `fit: threshold ${d.threshold} m/s² counts ${d.detected} of ${d.actual} steps` + (d.exact ? ` (any threshold ${d.range[0]}-${d.range[1]} works)` : ' (no threshold matched exactly: walk more evenly or lower smoothing)')
+        : (action === 'accel_rec_start' ? 'recording... walk your steps now' : action + ' ok');
+      accInit = false; refreshAccel();
+    }
+    async function accStill() {
+      const secs = parseFloat(accSecs.value) || 3;
+      accStillOut.innerText = `keep the phone still for ${secs} s...`;
+      const r = await fetch('/api/phone_calib', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'accel_still', seconds: secs})});
+      const d = await r.json();
+      accStillOut.innerText = !r.ok ? 'Error: ' + d.detail :
+        `${d.samples} samples  gravity ${d.gravity} m/s² ${d.gravity_ok ? '✓' : '⚠ should be ~9.8'}\nnoise ${d.noise} m/s²  (threshold should stay above ${d.min_threshold})` + (d.moved ? '\n⚠ phone moved; redo it' : '');
+      accInit = false; refreshAccel();
+    }
+    function drawAccel(a) {
+      const c = accCanvas, g = c.getContext('2d'), W = c.width, H = c.height;
+      g.clearRect(0, 0, W, H);
+      const th = a.cfg.step_thresh;
+      const top = Math.max(3, th * 1.5, ...a.trace.map(p => Math.abs(p[1]))) * 1.1;
+      const X = ago => W * (1 - ago / 8), Y = v => H / 2 - (v / top) * (H / 2 - 4);
+      g.strokeStyle = '#ffffff22'; g.beginPath(); g.moveTo(0, Y(0)); g.lineTo(W, Y(0)); g.stroke();
+      g.strokeStyle = '#fbbf24'; g.setLineDash([4, 3]); g.beginPath(); g.moveTo(0, Y(th)); g.lineTo(W, Y(th)); g.stroke(); g.setLineDash([]);
+      g.strokeStyle = '#00f0ff'; g.lineWidth = 1.5; g.beginPath();
+      a.trace.forEach((p, i) => { const x = X(p[0]), y = Y(p[1]); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke(); g.lineWidth = 1;
+      g.strokeStyle = '#00f0ff'; a.dashboard_marks.forEach(t => { g.beginPath(); g.moveTo(X(t), H); g.lineTo(X(t), H - 18); g.stroke(); });
+      g.strokeStyle = '#ff5cf0'; a.walker_marks.forEach(t => { g.beginPath(); g.moveTo(X(t), 0); g.lineTo(X(t), 14); g.stroke(); });
+      if (!a.trace.length) { g.fillStyle = '#ffffff88'; g.fillText('no accelerometer data (phone not streaming)', 10, H / 2); }
+    }
+    async function refreshAccel() {
+      try {
+        const a = await (await fetch('/api/accel_status')).json();
+        drawAccel(a);
+        accLive.innerText = (a.connected ? '● streaming' : '○ not streaming') + `   |a| ${a.mag} m/s²  motion ${a.hp}` +
+          `\nsteps: dashboard ${a.dashboard_steps}   phone page ${a.walker_steps}   (driving the dot: ${a.source})` +
+          (a.recording ? `\n● RECORDING ${a.rec_samples} samples` : '');
+        if (!accInit) {
+          accInit = true; const c = a.cfg;
+          accSrc.value = c.step_source; accTh.value = c.step_thresh; accGap.value = c.step_gap_s; accLp.value = c.step_tau_lp;
+          accThV.innerText = c.step_thresh; accGapV.innerText = c.step_gap_s; accLpV.innerText = c.step_tau_lp;
+        }
+      } catch (e) {}
+    }
+    setInterval(refreshAccel, 400); refreshAccel();
+
     async function calibrateAnchor(anchorId, distM) {
       const res = await fetch('/api/calibrate', {
         method: 'POST',
@@ -3201,6 +3397,15 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
             return
 
         # 3. Discovered Signals List
+        if url.path == "/api/accel_status":
+            with STATE.lock:
+                out = accel_status_dict()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(out).encode('utf-8'))
+            return
+
         if url.path == "/api/phone_status":
             with STATE.lock:
                 out = phone_status_dict()
@@ -3526,6 +3731,8 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
         #   gyro_still   {seconds}             hold the phone still: measures gyro bias/noise + compass jitter
         #   set          {mode, smoothing, turn_smoothing, turn_thresh_dps, fresh_s, offset_deg}
         #   reset                              back to defaults, unaligned
+        #   accel_still  {seconds}             hold still: measures gravity (~9.8) and accel noise
+        #   accel_rec_start / accel_rec_cancel / accel_rec_fit {steps}   walk N steps, then fit the step threshold (MAP-08)
         if url.path == "/api/phone_calib":
             code, res = 200, {"status": "ok"}
             try:
@@ -3559,6 +3766,24 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
                         res.update(samples=len(samples), gyro_bias=cfg["gyro_bias"], gyro_noise_dps=cfg["gyro_noise_dps"],
                                    compass_jitter_deg=cfg["compass_jitter_deg"], turn_thresh_dps=cfg["turn_thresh_dps"],
                                    moved=bool(noise > 15.0 or jitter > 10.0))
+                        STATE.save_config()
+                elif act == "accel_still":
+                    secs = float(req_data.get("seconds", 3.0))
+                    if not (1.0 <= secs <= 10.0):
+                        raise ValueError("seconds must be 1-10")
+                    with STATE.lock:
+                        STATE.accel_rec = []
+                    time.sleep(secs)
+                    with STATE.lock:
+                        samples, STATE.accel_rec = STATE.accel_rec, None
+                        if len(samples) < 8:
+                            raise ValueError(f"only {len(samples)} accelerometer samples in {secs:.0f} s; is /walker streaming?")
+                        mags = np.array([m for _, m in samples], dtype=float)
+                        gravity, noise = float(mags.mean()), float(mags.std())
+                        STATE.phone_cfg["accel_gravity"], STATE.phone_cfg["accel_noise"] = round(gravity, 2), round(noise, 3)
+                        res.update(samples=len(samples), gravity=round(gravity, 2), noise=round(noise, 3),
+                                   gravity_ok=bool(abs(gravity - 9.81) < 0.8), moved=bool(noise > 0.6),
+                                   min_threshold=round(max(0.6, 4.0 * noise), 2))
                         STATE.save_config()
                 else:
                     with STATE.lock:
@@ -3597,8 +3822,13 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
                                 if req_data["mode"] not in ("auto", "phone", "motion"):
                                     raise ValueError("mode must be auto, phone or motion")
                                 cfg["mode"] = req_data["mode"]
+                            if "step_source" in req_data:
+                                if req_data["step_source"] not in ("dashboard", "walker"):
+                                    raise ValueError("step_source must be dashboard or walker")
+                                cfg["step_source"] = req_data["step_source"]
                             for key, lo, hi in (("smoothing", 0.02, 1.0), ("turn_smoothing", 0.05, 1.0),
-                                                ("turn_thresh_dps", 1.0, 360.0), ("fresh_s", 0.5, 30.0)):
+                                                ("turn_thresh_dps", 1.0, 360.0), ("fresh_s", 0.5, 30.0),
+                                                ("step_thresh", 0.3, 4.0), ("step_gap_s", 0.2, 1.0), ("step_tau_lp", 0.02, 0.5)):
                                 if key in req_data:
                                     v = float(req_data[key])
                                     if not (lo <= v <= hi):
@@ -3614,6 +3844,22 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
                                 if not (0.3 <= v <= 1.2):
                                     raise ValueError("stride_m must be 0.3-1.2")
                                 cfg["stride_m"] = round(v, 3)
+                        elif act == "accel_rec_start":
+                            STATE.accel_rec = []
+                        elif act == "accel_rec_cancel":
+                            STATE.accel_rec = None
+                        elif act == "accel_rec_fit":
+                            if STATE.accel_rec is None:
+                                raise ValueError("press Record first")
+                            n = int(req_data.get("steps", 0))
+                            if not (3 <= n <= 200):
+                                raise ValueError("steps must be 3-200 (how many steps you actually walked)")
+                            samples, STATE.accel_rec = STATE.accel_rec, None
+                            if len(samples) < 20:
+                                raise ValueError(f"only {len(samples)} accelerometer samples recorded; is /walker streaming?")
+                            fit = fit_step_threshold(samples, n, STATE.phone_cfg["step_gap_s"], STATE.phone_cfg["step_tau_lp"])
+                            STATE.phone_cfg["step_thresh"] = fit["threshold"]
+                            res.update(fit, samples=len(samples))
                         elif act == "stride_start":
                             STATE.stride_cal = {"start_steps": STATE.pdr_steps_total}
                         elif act == "stride_finish":

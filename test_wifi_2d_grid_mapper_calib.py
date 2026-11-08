@@ -274,10 +274,12 @@ class StepTracking(unittest.TestCase):
             M.STATE.kf_state = M.np.array([1.0, 1.0, 0.0, 0.0])
             M.STATE.kf_cov = M.np.eye(4) * 0.25
             M.STATE.pdr_pending, M.STATE.pdr_last_step_t, M.STATE.pdr_steps_total = [], 1000.0, 0
+            M.STATE.phone_cfg["step_source"] = "dashboard"
 
     def test_step_log_dedup(self):
         log = [{"t": 999.0, "step": True}, {"t": 1001.0, "step": True}, {"t": 1001.5}, {"t": 1002.0, "step": True}]
         with M.STATE.lock:
+            M.STATE.phone_cfg["step_source"] = "walker"
             self.assertEqual(M.ingest_step_log(log), 2)
             self.assertEqual(M.ingest_step_log(log), 0)  # same log polled again
             self.assertEqual(M.STATE.pdr_steps_total, 2)
@@ -319,6 +321,122 @@ class StrideApi(ServerCase):
         self.assertAlmostEqual(d["stride_m"], 0.73, places=3)
         self.assertEqual(self.post({"action": "stride_finish", "distance_m": 7.3}, "/api/phone_calib")[0], 400)
         self.assertEqual(self.post({"action": "set", "stride_m": 3}, "/api/phone_calib")[0], 400)
+
+
+def walking_samples(n_steps, hz=10.0, step_hz=1.8, amp=2.5, t0=1000.0, noise=0.0):
+    """|accelerationIncludingGravity| of someone walking: gravity + one bump per step."""
+    import random
+    rnd = random.Random(1)
+    n = int(n_steps / step_hz * hz)
+    out = []
+    for i in range(n):
+        t = t0 + i / hz
+        a = 9.81 + amp * math.sin(2 * math.pi * step_hz * (t - t0)) + rnd.gauss(0, noise)
+        out.append((round(t, 3), a))
+    return out
+
+
+class Accelerometer(unittest.TestCase):
+    def test_walking_counts_steps_and_standing_counts_none(self):
+        walk = walking_samples(20)
+        self.assertAlmostEqual(M.count_steps(walk, 1.4, 0.4, 0.05), 20, delta=2)
+        still = [(1000.0 + i * 0.1, 9.81) for i in range(200)]
+        self.assertEqual(M.count_steps(still, 1.4, 0.4, 0.05), 0)
+        jitter = walking_samples(0, noise=0.2) + [(1000.0 + i * 0.1, 9.81 + (0.3 if i % 2 else -0.3)) for i in range(200)]
+        self.assertEqual(M.count_steps(jitter, 1.4, 0.4, 0.05), 0)
+
+    def test_stream_gap_does_not_fake_a_step(self):
+        a = [(1000.0 + i * 0.1, 9.81) for i in range(30)]
+        b = [(1020.0 + i * 0.1, 15.0) for i in range(30)]   # phone paused 17 s, resumes at a different |a|
+        self.assertEqual(M.count_steps(a + b, 1.4, 0.4, 0.05), 0)
+
+    def test_min_gap_limits_rate(self):
+        fast = walking_samples(30, step_hz=4.0)
+        self.assertLessEqual(M.count_steps(fast, 1.4, 0.5, 0.05), 30 / 4.0 * 2.0 + 1)
+
+    def test_fit_threshold_finds_working_value(self):
+        # soft first steps then strong ones: only a lowish threshold counts all 12
+        samples = walking_samples(12, amp=2.0)
+        fit = M.fit_step_threshold(samples, 12, 0.4, 0.05)
+        self.assertTrue(fit["exact"], fit)
+        self.assertEqual(M.count_steps(samples, fit["threshold"], 0.4, 0.05), 12)
+        self.assertGreaterEqual(fit["threshold"], fit["range"][0])
+        self.assertLessEqual(fit["threshold"], fit["range"][1])
+
+    def test_ingest_runs_detector_and_only_drives_chosen_source(self):
+        t0 = M.time.time() + 1.0
+        with M.STATE.lock:
+            M.STATE.accel_t_last = t0 - 1
+            M.STATE.step_det.reset()
+            M.STATE.phone_cfg.update(step_source="dashboard", step_thresh=1.4, step_gap_s=0.4, step_tau_lp=0.05)
+            M.STATE.pdr_pending, M.STATE.pdr_steps_total, M.STATE.dashboard_steps_total = [], 0, 0
+            entries = [{"t": t, "accel_g": {"x": 0.0, "y": a, "z": 0.0}} for t, a in walking_samples(8, t0=t0)]
+            self.assertEqual(M.ingest_phone_log(entries), len(entries))
+            self.assertEqual(M.ingest_phone_log(entries), 0)   # same log again: no double counting
+            self.assertAlmostEqual(M.STATE.dashboard_steps_total, 8, delta=2)
+            self.assertEqual(M.STATE.pdr_steps_total, M.STATE.dashboard_steps_total)
+            # now let the phone page drive instead: dashboard keeps counting for display but does not move the dot
+            M.STATE.phone_cfg["step_source"] = "walker"
+            before = M.STATE.pdr_steps_total
+            more = [{"t": t, "accel_g": {"x": 0.0, "y": a, "z": 0.0}} for t, a in walking_samples(8, t0=t0 + 30)]
+            M.ingest_phone_log(more)
+            self.assertEqual(M.STATE.pdr_steps_total, before)
+            M.STATE.phone_cfg["step_source"] = "dashboard"
+
+
+class AccelApi(ServerCase):
+    def setUp(self):
+        self.post({"action": "reset"}, "/api/phone_calib")
+
+    def test_settings_validation_and_status(self):
+        s, d = self.post({"action": "set", "step_thresh": 2.0, "step_gap_s": 0.5, "step_source": "walker"}, "/api/phone_calib")
+        self.assertEqual((s, d["phone"]["cfg"]["step_thresh"], d["phone"]["cfg"]["step_source"]), (200, 2.0, "walker"))
+        self.assertEqual(self.post({"action": "set", "step_thresh": 9}, "/api/phone_calib")[0], 400)
+        self.assertEqual(self.post({"action": "set", "step_source": "gps"}, "/api/phone_calib")[0], 400)
+        with urllib.request.urlopen(self.url + "/api/accel_status", timeout=5) as r:
+            st = json.load(r)
+        self.assertEqual(st["source"], "walker")
+        self.assertIn("trace", st)
+
+    def test_walk_fit_needs_recording_and_enough_samples(self):
+        self.assertEqual(self.post({"action": "accel_rec_fit", "steps": 10}, "/api/phone_calib")[0], 400)
+        self.assertEqual(self.post({"action": "accel_rec_start"}, "/api/phone_calib")[0], 200)
+        self.assertEqual(self.post({"action": "accel_rec_fit", "steps": 1}, "/api/phone_calib")[0], 400)
+        s, d = self.post({"action": "accel_rec_fit", "steps": 10}, "/api/phone_calib")
+        self.assertEqual(s, 400)   # nothing recorded yet
+
+    def test_walk_fit_sets_threshold(self):
+        samples = walking_samples(10)
+        self.post({"action": "accel_rec_start"}, "/api/phone_calib")
+        with M.STATE.lock:
+            M.STATE.accel_rec.extend(samples)
+        s, d = self.post({"action": "accel_rec_fit", "steps": 10}, "/api/phone_calib")
+        self.assertEqual(s, 200, d)
+        self.assertEqual(d["detected"], 10)
+        self.assertEqual(d["phone"]["cfg"]["step_thresh"], d["threshold"])
+
+    def test_still_measures_gravity_and_noise(self):
+        stop = threading.Event()
+        base = M.time.time()
+
+        def pump():
+            i = 0
+            while not stop.is_set():
+                with M.STATE.lock:
+                    if M.STATE.accel_rec is not None:
+                        M.STATE.accel_rec.append((base + i * 0.1, 9.81 + (0.02 if i % 2 else -0.02)))
+                i += 1
+                M.time.sleep(0.03)
+        t = threading.Thread(target=pump, daemon=True)
+        t.start()
+        try:
+            s, d = self.post({"action": "accel_still", "seconds": 1}, "/api/phone_calib")
+        finally:
+            stop.set()
+        self.assertEqual(s, 200, d)
+        self.assertAlmostEqual(d["gravity"], 9.81, delta=0.05)
+        self.assertTrue(d["gravity_ok"])
+        self.assertFalse(d["moved"])
 
 
 if __name__ == "__main__":
