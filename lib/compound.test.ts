@@ -11,6 +11,7 @@ import {
   neighborReach,
   neighborShellHeight,
   pointInRing,
+  ringSeparation,
   roomBays,
   siteHull,
 } from "./compound-geom.ts";
@@ -262,5 +263,99 @@ describe("compound assembly", () => {
     });
     assert.ok(features.some((f) => f.kind === "garage" && f.source === "map"));
     assert.ok(features.some((f) => f.kind === "driveway" && f.source === "aerial"));
+  });
+
+  it("keeps a large attached wing even when its centroid is far from the focus wall", () => {
+    const focus: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    // 40 m deep wing sharing the east wall — centroid sits ~20 m out.
+    const wing: [number, number][] = [[5, -4], [45, -4], [45, 4], [5, 4]];
+    assert.equal(ringSeparation(focus, wing), 0);
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: focus,
+      structures: [
+        { id: 1, tag: "house", ring: focus, area: 80 },
+        { id: 2, tag: "yes", ring: wing, area: 160 },
+      ],
+      fences: [],
+      pools: [],
+      parcel: null,
+      aerial: [],
+      streetDir: [0, -1],
+      mainEaveHeight: 5.4,
+    });
+    assert.ok(features.some((f) => f.kind === "neighbor"), "touching building=yes wing should be a neighbor shell");
+  });
+
+  it("adds neighbor backyard fences/trees and keeps mapped fences on the neighbor lot", () => {
+    const focus: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const nbr: [number, number][] = [[8, -4], [18, -4], [18, 4], [8, 4]];
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: focus,
+      structures: [
+        { id: 1, tag: "house", ring: focus, area: 80 },
+        { id: 2, tag: "house", ring: nbr, area: 80 },
+      ],
+      fences: [[[20, 6], [20, 16]]],
+      pools: [[[10, 10], [16, 10], [16, 14], [10, 14]]],
+      parcel: [[-8, -8], [8, -8], [8, 8], [-8, 8]],
+      aerial: [],
+      streetDir: [0, -1],
+      trees: [[12, 12]],
+      mainEaveHeight: 5.4,
+    });
+    assert.ok(features.some((f) => f.kind === "neighbor"));
+    assert.ok(features.some((f) => f.kind === "fence" && f.source === "map"), "fence beside neighbor should stay");
+    assert.ok(features.some((f) => f.kind === "pool"), "neighbor backyard pool should stay");
+    assert.ok(features.some((f) => f.kind === "trees" && f.source === "map"));
+    assert.ok(
+      features.some((f) => f.kind === "fence" && f.source === "estimated" && f.id.includes("nbr")),
+      "empty neighbor rear should get estimated fence",
+    );
+  });
+
+  it("infers a backyard fence and trees when the rear lot is empty", () => {
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: house,
+      structures: [{ id: 1, tag: "house", ring: house, area: 80 }],
+      fences: [],
+      pools: [],
+      parcel: lot,
+      aerial: [],
+      streetDir: [0, -1],
+      trees: [],
+    });
+    const estFences = features.filter((f) => f.kind === "fence" && f.source === "estimated");
+    const estTrees = features.filter((f) => f.kind === "trees" && f.source === "estimated");
+    assert.ok(estFences.length >= 2, `expected rear fence segments, got ${estFences.length}`);
+    assert.ok(estTrees.length >= 2, `expected backyard trees, got ${estTrees.length}`);
+    for (const t of estTrees) {
+      const c = t.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((n) => n / 4);
+      assert.ok(c[1] > 0, "estimated trees should sit behind the house (+y)");
+    }
+  });
+
+  it("keeps mapped backyard trees and skips inferred fill when fences already cover the rear", () => {
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: house,
+      structures: [{ id: 1, tag: "house", ring: house, area: 80 }],
+      fences: [
+        [[-8, 10], [-8, 28]],
+        [[-8, 28], [12, 28]],
+        [[12, 28], [12, 10]],
+      ],
+      pools: [],
+      parcel: lot,
+      aerial: [],
+      streetDir: [0, -1],
+      trees: [[0, 18], [4, 20]],
+    });
+    assert.ok(features.some((f) => f.kind === "trees" && f.source === "map"));
+    assert.equal(features.filter((f) => f.kind === "trees" && f.source === "estimated").length, 0);
+    assert.equal(features.filter((f) => f.kind === "fence" && f.source === "estimated").length, 0);
+    assert.ok(features.filter((f) => f.kind === "fence" && f.source === "map").length >= 3);
   });
 });

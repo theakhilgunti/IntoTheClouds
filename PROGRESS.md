@@ -59,6 +59,10 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 02:30 | Cursor | UI-47 | Neighbors: ring-gap detect + neighbor fences/trees/pools/backyard fill (compound-v12). |
+| 02:25 | Cursor | UI-46 | Backyard fences/trees: OSM trees + inferred rear fence/trees (compound-v11). |
+| 02:23 | Cursor | UI-45 | Hide outside lot/yard pad and base ground disc only. |
+| 02:22 | Cursor | UI-44 | Larger compounds can zoom out farther (orbit cap + ground disc/grid). |
 | 00:40 | Cursor | UI-28 | Rotate 0° uses front-door outward normal (not road centroid). |
 | 17:50 | Antigravity | Scaffolding | Initialized FastAPI backend, React+Three.js frontend, mock simulator, and test suite. |
 | 17:52 | Backend-Agent | BE-01 | Tested claim CLI |
@@ -125,3 +129,8 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 02:10 | Cursor | UI-36 | Finished task |
 | 02:11 | Cursor | UI-37 | Finished task |
 | 02:13 | Cursor | UI-38 | Finished task |
+| 02:14 | Cursor | UI-39 | Finished task |
+| 02:14 | Cursor | UI-40 | Finished task |
+| 02:16 | Cursor | UI-41 | Finished task |
+| 02:17 | Cursor | UI-42 | Finished task |
+| 02:18 | Cursor | UI-43 | Finished task |

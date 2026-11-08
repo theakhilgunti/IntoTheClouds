@@ -21,7 +21,7 @@ export type SiteFeature = {
   label: string;
   polygon: Point[];
   height: number;
-  source: "map" | "aerial" | "parcel";
+  source: "map" | "aerial" | "parcel" | "estimated";
 };
 
 const OUTBUILDING: Record<string, "garage" | "shed"> = {
@@ -94,11 +94,36 @@ function isHouseLike(tag: string, area: number): boolean {
   return area >= minArea && area <= 4000;
 }
 
+/**
+ * Neighbor shells: tagged houses, or untagged building=yes pads that clearly touch / sit next door.
+ * Centroid checks alone miss large attached wings whose center sits far from our wall.
+ */
+function isNeighborCandidate(tag: string, area: number, separationM: number): boolean {
+  if (OUTBUILDING[tag]) return false;
+  if (area < 35 || area > 4000) return false;
+  if (isHouseLike(tag, area)) return true;
+  // Close, house-sized, but tagged only as building=yes / missing tag — still a dwelling obstacle.
+  if ((tag === "yes" || !tag) && separationM <= 14 && area >= 40) return true;
+  return false;
+}
+
+/** Shortest gap between two rings (0 if they touch or overlap). */
+export function ringSeparation(a: Point[], b: Point[]): number {
+  if (a.length < 3 || b.length < 3) return Infinity;
+  for (const p of a) if (pointInRing(p, b)) return 0;
+  for (const p of b) if (pointInRing(p, a)) return 0;
+  let best = Infinity;
+  for (const p of a) best = Math.min(best, distToRing(p, b));
+  for (const p of b) best = Math.min(best, distToRing(p, a));
+  return best;
+}
+
 /** Reach for ghost neighbor shells — wider than garages so attached / next-door units show. */
 export function neighborReach(mainRing: Point[]): number {
   const ext = foundationExtent(mainRing);
   const accessory = accessoryReach(mainRing);
-  return Math.min(95, Math.max(accessory * 1.35, ext * 1.65 + 14));
+  // Room for large attached wings whose far wall sits well past the old centroid check.
+  return Math.min(120, Math.max(accessory * 1.55, ext * 2.1 + 18));
 }
 
 export type NeighborHeightInput = {
@@ -261,6 +286,24 @@ export function siteHull(rings: Point[][], pad = 4): Point[] | null {
   });
 }
 
+function treePad(p: Point, s = 0.85): Point[] {
+  return [
+    [p[0] - s, p[1] - s],
+    [p[0] + s, p[1] - s],
+    [p[0] + s, p[1] + s],
+    [p[0] - s, p[1] + s],
+  ];
+}
+
+/** True when `p` sits on the backyard side of the house (opposite the street). */
+function inBackyard(p: Point, houseC: Point, streetDir: Point | null): boolean {
+  const back: Point = streetDir ? [-streetDir[0], -streetDir[1]] : [0, 1];
+  const len = Math.hypot(back[0], back[1]) || 1;
+  const dx = p[0] - houseC[0];
+  const dy = p[1] - houseC[1];
+  return (dx * back[0] + dy * back[1]) / len > 0.5;
+}
+
 export function assembleCompound(site: {
   mainId: number | null;
   mainRing: Point[];
@@ -272,10 +315,15 @@ export function assembleCompound(site: {
   aerial: { kind: CompoundKind; label?: string; polygon: Point[] }[];
   /** Focus-house eave height (m) so neighbors without OSM height match the scanned shell. */
   mainEaveHeight?: number;
+  /** Unit vector toward the street — used to place backyard fence/trees. */
+  streetDir?: Point | null;
+  /** Mapped OSM tree trunks (local meters). */
+  trees?: Point[];
 }): { features: SiteFeature[] } {
   const features: SiteFeature[] = [];
   const main = site.mainRing.length >= 3 ? site.mainRing : null;
   const mainC: Point = main ? ringCentroid(main) : [0, 0];
+  const streetDir = site.streetDir ?? null;
   const reach = compoundReach(site.mainRing);
   const accessoryR = accessoryReach(site.mainRing);
   const neighborR = neighborReach(site.mainRing);
@@ -351,17 +399,26 @@ export function assembleCompound(site: {
   }
 
   // Attached / next-door dwellings: ghost shells so they read as obstacles, not the focus house.
-  // May sit just off the tax lot (row houses, duplexes) — use neighbor reach, not onSite.
+  // Use ring-to-ring gap (not centroid) so large attached wings still qualify.
   const neighborHits = site.structures
     .filter((s) => {
       if (s.id === site.mainId || s.ring.length < 3) return false;
-      if (!isHouseLike(s.tag, s.area) || s.area > maxNeighborArea) return false;
-      const c = ringCentroid(s.ring);
-      return nearFoundation(c, main, neighborR);
+      if (s.area > maxNeighborArea) return false;
+      const sep = main ? ringSeparation(main, s.ring) : dist(ringCentroid(s.ring), mainC);
+      if (sep > neighborR) return false;
+      return isNeighborCandidate(s.tag, s.area, sep);
     })
-    .map((s) => ({ s, d: main ? distToRing(ringCentroid(s.ring), main) : dist(ringCentroid(s.ring), mainC) }))
+    .map((s) => ({
+      s,
+      d: main ? ringSeparation(main, s.ring) : dist(ringCentroid(s.ring), mainC),
+    }))
     .sort((a, b) => a.d - b.d)
-    .slice(0, 8);
+    .slice(0, 10);
+  const neighborRings = neighborHits.map((h) => h.s.ring);
+  const neighborSoft = Math.min(30, Math.max(14, accessoryR * 0.9));
+  const nearNeighborhood = (p: Point) =>
+    onSite(p) || neighborRings.some((r) => nearFoundation(p, r, neighborSoft));
+
   const mainEave = site.mainEaveHeight && site.mainEaveHeight > 2 ? site.mainEaveHeight : 5.5;
   for (const { s } of neighborHits) {
     const h = neighborShellHeight({
@@ -379,13 +436,34 @@ export function assembleCompound(site: {
     });
   }
 
+  // Neighbor accessories (garage/shed on their lot) — obstacle context, not focus-house pads.
+  for (const s of site.structures) {
+    if (s.id === site.mainId) continue;
+    if (s.ring.length < 3 || s.area < 8 || s.area > maxOut) continue;
+    if (isHouseLike(s.tag, s.area) || isNeighborCandidate(s.tag, s.area, 0)) continue;
+    const kind = OUTBUILDING[s.tag];
+    if (!kind) continue;
+    const c = ringCentroid(s.ring);
+    if (onSite(c) && nearFoundation(c, main, accessoryR)) continue; // already added above
+    if (!neighborRings.some((r) => nearFoundation(c, r, neighborSoft))) continue;
+    if (features.some((f) => f.id === `osm-${s.id}`)) continue;
+    features.push({
+      id: `osm-nbr-${s.id}`,
+      kind,
+      label: LABEL[kind],
+      polygon: s.ring,
+      height: HEIGHT[kind],
+      source: "map",
+    });
+  }
+
   site.pools.forEach((ring, i) => {
-    if (ring.length < 3 || !onSite(ringCentroid(ring))) return;
+    if (ring.length < 3 || !nearNeighborhood(ringCentroid(ring))) return;
     features.push({ id: `pool-${i}`, kind: "pool", label: "Pool", polygon: ring, height: HEIGHT.pool, source: "map" });
   });
 
   (site.parking ?? []).forEach((ring, i) => {
-    if (ring.length < 3 || !onSite(ringCentroid(ring))) return;
+    if (ring.length < 3 || !nearNeighborhood(ringCentroid(ring))) return;
     features.push({
       id: `parking-${i}`,
       kind: "driveway",
@@ -397,13 +475,13 @@ export function assembleCompound(site: {
   });
 
   let fenceCount = 0;
-  const fenceCap = Math.min(120, Math.max(40, Math.round(reach)));
+  const fenceCap = Math.min(160, Math.max(50, Math.round(reach * 1.2)));
   for (const line of site.fences) {
     for (let i = 0; i < line.length - 1 && fenceCount < fenceCap; i++) {
       const a = line[i];
       const b = line[i + 1];
       const mid: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-      if (!onSite(mid)) continue;
+      if (!nearNeighborhood(mid)) continue;
       const polygon = ribbon(a, b, 0.14, Math.max(30, reach * 0.5));
       if (!polygon) continue;
       features.push({
@@ -418,15 +496,39 @@ export function assembleCompound(site: {
     }
   }
 
+  let treeCount = 0;
+  const treeCap = 40;
+  for (const p of site.trees ?? []) {
+    if (treeCount >= treeCap) break;
+    if (!nearNeighborhood(p)) continue;
+    if (main && (pointInRing(p, main) || distToRing(p, main) < 1.2)) continue;
+    if (neighborRings.some((r) => pointInRing(p, r) || distToRing(p, r) < 1.0)) continue;
+    features.push({
+      id: `tree-map-${treeCount}`,
+      kind: "trees",
+      label: "Tree",
+      polygon: treePad(p),
+      height: HEIGHT.trees,
+      source: "map",
+    });
+    treeCount++;
+  }
+
   for (const [i, a] of site.aerial.entries()) {
     if (a.polygon.length < 3) continue;
     if (a.kind === "yard" || a.kind === "fence") continue;
     const c = ringCentroid(a.polygon);
     if (main && pointInRing(c, main)) continue;
-    if (!onSite(c)) continue;
-    if ((a.kind === "garage" || a.kind === "shed") && !nearFoundation(c, main, accessoryR)) continue;
+    if (!nearNeighborhood(c)) continue;
+    if ((a.kind === "garage" || a.kind === "shed") && !nearFoundation(c, main, accessoryR) && !neighborRings.some((r) => nearFoundation(c, r, neighborSoft))) {
+      continue;
+    }
     if ((a.kind === "garage" || a.kind === "shed") && features.some((f) => (f.kind === "garage" || f.kind === "shed") && dist(ringCentroid(f.polygon), c) < 7)) {
       continue;
+    }
+    if (a.kind === "trees") {
+      if (treeCount >= treeCap) continue;
+      treeCount++;
     }
     features.push({
       id: `aerial-${i}`,
@@ -438,7 +540,161 @@ export function assembleCompound(site: {
     });
   }
 
-  return { features: features.slice(0, 120) };
+  // --- Backyard fill: mapped data first; invent only when the rear lot is still empty. ---
+  const yardRing = yard && yard.length >= 3 ? yard : null;
+  const backFenceN = features.filter(
+    (f) => f.kind === "fence" && inBackyard(ringCentroid(f.polygon), mainC, streetDir),
+  ).length;
+  const backTreeN = features.filter(
+    (f) => f.kind === "trees" && inBackyard(ringCentroid(f.polygon), mainC, streetDir),
+  ).length;
+
+  if (backFenceN < 2 && yardRing) {
+    const ring = yardRing;
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % ring.length];
+      const mid: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      if (!inBackyard(mid, mainC, streetDir)) continue;
+      // Skip edges that hug the house (interior lot lines).
+      if (main && distToRing(mid, main) < 1.5) continue;
+      const polygon = ribbon(a, b, 0.14, Math.max(40, reach * 0.6));
+      if (!polygon) continue;
+      if (fenceCount >= fenceCap) break;
+      features.push({
+        id: `fence-est-${fenceCount}`,
+        kind: "fence",
+        label: "Fence",
+        polygon,
+        height: HEIGHT.fence,
+        source: "estimated",
+      });
+      fenceCount++;
+    }
+  }
+
+  if (backTreeN === 0 && treeCount < treeCap) {
+    const back: Point = streetDir ? [-streetDir[0], -streetDir[1]] : [0, 1];
+    const bLen = Math.hypot(back[0], back[1]) || 1;
+    const bu: Point = [back[0] / bLen, back[1] / bLen];
+    const side: Point = [-bu[1], bu[0]];
+    const ext = foundationExtent(site.mainRing);
+    const depth = Math.min(14, Math.max(6, ext * 0.55));
+    const candidates: Point[] = [
+      [mainC[0] + bu[0] * depth, mainC[1] + bu[1] * depth],
+      [mainC[0] + bu[0] * (depth * 0.7) + side[0] * (ext * 0.35), mainC[1] + bu[1] * (depth * 0.7) + side[1] * (ext * 0.35)],
+      [mainC[0] + bu[0] * (depth * 0.7) - side[0] * (ext * 0.35), mainC[1] + bu[1] * (depth * 0.7) - side[1] * (ext * 0.35)],
+      [mainC[0] + bu[0] * (depth * 1.15) + side[0] * (ext * 0.15), mainC[1] + bu[1] * (depth * 1.15) + side[1] * (ext * 0.15)],
+    ];
+    let estTrees = 0;
+    for (const p of candidates) {
+      if (estTrees >= 3 || treeCount >= treeCap) break;
+      if (!onSite(p)) continue;
+      if (main && (pointInRing(p, main) || distToRing(p, main) < 2)) continue;
+      if (!inBackyard(p, mainC, streetDir)) continue;
+      // Avoid pools / driveways / outbuildings already placed.
+      if (
+        features.some((f) => {
+          if (f.kind === "yard" || f.kind === "fence" || f.kind === "trees" || f.kind === "neighbor") return false;
+          return pointInRing(p, f.polygon) || distToRing(p, f.polygon) < 1.5;
+        })
+      ) {
+        continue;
+      }
+      features.push({
+        id: `tree-est-${estTrees}`,
+        kind: "trees",
+        label: "Tree",
+        polygon: treePad(p),
+        height: HEIGHT.trees,
+        source: "estimated",
+      });
+      estTrees++;
+      treeCount++;
+    }
+  }
+
+  // Neighbor backyard obstacles — mapped first; light estimated fence/trees when their rear is empty.
+  const back: Point = streetDir ? [-streetDir[0], -streetDir[1]] : [0, 1];
+  const bLen = Math.hypot(back[0], back[1]) || 1;
+  const bu: Point = [back[0] / bLen, back[1] / bLen];
+  const side: Point = [-bu[1], bu[0]];
+  let nbrEst = 0;
+  for (const { s } of neighborHits.slice(0, 6)) {
+    const nc = ringCentroid(s.ring);
+    const nExt = foundationExtent(s.ring.map(([x, y]) => [x - nc[0], y - nc[1]] as Point));
+    const soft = Math.min(18, Math.max(8, nExt * 0.9));
+    const nBackFences = features.filter(
+      (f) =>
+        f.kind === "fence" &&
+        inBackyard(ringCentroid(f.polygon), nc, streetDir) &&
+        nearFoundation(ringCentroid(f.polygon), s.ring, soft),
+    ).length;
+    const nBackTrees = features.filter(
+      (f) =>
+        f.kind === "trees" &&
+        inBackyard(ringCentroid(f.polygon), nc, streetDir) &&
+        nearFoundation(ringCentroid(f.polygon), s.ring, soft),
+    ).length;
+
+    if (nBackFences < 2 && fenceCount < fenceCap) {
+      const depth = Math.min(12, Math.max(5, nExt * 0.7));
+      const half = Math.min(8, Math.max(3.5, nExt * 0.55));
+      const rear: Point = [nc[0] + bu[0] * depth, nc[1] + bu[1] * depth];
+      const left: Point = [rear[0] + side[0] * half, rear[1] + side[1] * half];
+      const right: Point = [rear[0] - side[0] * half, rear[1] - side[1] * half];
+      // U-shaped backyard fence: left post → rear span → right post, offset from the shell.
+      const nearLeft: Point = [nc[0] + bu[0] * (depth * 0.35) + side[0] * half, nc[1] + bu[1] * (depth * 0.35) + side[1] * half];
+      const nearRight: Point = [nc[0] + bu[0] * (depth * 0.35) - side[0] * half, nc[1] + bu[1] * (depth * 0.35) - side[1] * half];
+      for (const [a, b] of [
+        [nearLeft, left],
+        [left, right],
+        [right, nearRight],
+      ] as [Point, Point][]) {
+        if (fenceCount >= fenceCap) break;
+        // Don't draw through the focus house.
+        const mid: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        if (main && (pointInRing(mid, main) || distToRing(mid, main) < 1.2)) continue;
+        const polygon = ribbon(a, b, 0.12, 40);
+        if (!polygon) continue;
+        features.push({
+          id: `fence-nbr-${s.id}-${fenceCount}`,
+          kind: "fence",
+          label: "Fence",
+          polygon,
+          height: HEIGHT.fence,
+          source: "estimated",
+        });
+        fenceCount++;
+      }
+    }
+
+    if (nBackTrees === 0 && treeCount < treeCap) {
+      const depth = Math.min(11, Math.max(5, nExt * 0.65));
+      const half = Math.min(5, Math.max(2.5, nExt * 0.35));
+      const spots: Point[] = [
+        [nc[0] + bu[0] * depth, nc[1] + bu[1] * depth],
+        [nc[0] + bu[0] * (depth * 0.85) + side[0] * half, nc[1] + bu[1] * (depth * 0.85) + side[1] * half],
+      ];
+      for (const p of spots) {
+        if (treeCount >= treeCap) break;
+        if (main && (pointInRing(p, main) || distToRing(p, main) < 2)) continue;
+        if (pointInRing(p, s.ring) || distToRing(p, s.ring) < 1.5) continue;
+        if (!inBackyard(p, nc, streetDir)) continue;
+        features.push({
+          id: `tree-nbr-${s.id}-${nbrEst++}`,
+          kind: "trees",
+          label: "Tree",
+          polygon: treePad(p),
+          height: HEIGHT.trees,
+          source: "estimated",
+        });
+        treeCount++;
+      }
+    }
+  }
+
+  return { features: features.slice(0, 180) };
 }
 
 /**
@@ -606,13 +862,13 @@ export function accessFeatures(opts: {
   const width = Math.min(12, Math.max(7.2, ringExtent(opts.footprint) * 0.15));
   const out: SiteFeature[] = [];
 
-  // Street hydrants are often 100–200 m from the house centroid — keep a wide net.
-  const hydrantR = Math.max(250, keepR * 2.2);
+  // Street hydrants are often 100–250 m from the house — keep a wide net independent of road clip.
+  const hydrantR = 320;
   const nearestHydrants = [...(opts.hydrants ?? [])]
     .map((p) => ({ p, d: dist(here, p) }))
     .filter((h) => h.d < hydrantR)
     .sort((a, b) => a.d - b.d)
-    .slice(0, 8);
+    .slice(0, 40);
   nearestHydrants.forEach((h, i) => {
     const s = 0.45;
     out.push({

@@ -636,7 +636,8 @@
                 "enum": [
                   "map",
                   "aerial",
-                  "parcel"
+                  "parcel",
+                  "estimated"
                 ]
               }
             },

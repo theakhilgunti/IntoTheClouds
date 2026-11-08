@@ -158,7 +158,7 @@ export const CompoundFeature = z.object({
   label: z.string(),
   polygon: Polygon,
   height: z.number().nonnegative().default(0),
-  source: z.enum(["map", "aerial", "parcel"]),
+  source: z.enum(["map", "aerial", "parcel", "estimated"]),
 });
 
 export const Compound = z.object({

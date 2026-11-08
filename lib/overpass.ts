@@ -42,6 +42,8 @@ export type OsmContext = {
   roads: { name: string | null; pts: Point[] }[];
   /** Mapped fire hydrants near the house (local meters). */
   hydrants: Point[];
+  /** Mapped tree trunks / tree-row samples near the house (local meters). */
+  trees: Point[];
 };
 
 const NON_HOUSE = new Set(["garage", "garages", "shed", "roof", "carport", "service", "hut", "cabin", "greenhouse", "barn"]);
@@ -54,7 +56,39 @@ function isHydrantTags(tags: Record<string, string> | undefined): boolean {
   return tags.emergency === "fire_hydrant" || tags.amenity === "fire_hydrant";
 }
 
-type OsmFetch = { ways: OsmWay[]; hydrants: Point[] };
+function isTreeNodeTags(tags: Record<string, string> | undefined): boolean {
+  return tags?.natural === "tree";
+}
+
+function isTreeRowTags(tags: Record<string, string> | undefined): boolean {
+  return tags?.natural === "tree_row";
+}
+
+/** Sample points along a polyline every ~spacing meters (includes endpoints). */
+function samplePolyline(pts: Point[], spacing = 4): Point[] {
+  if (pts.length === 0) return [];
+  const out: Point[] = [pts[0]];
+  let carry = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const seg = dist(a, b);
+    if (seg < 1e-6) continue;
+    let t = spacing - carry;
+    while (t < seg) {
+      const u = t / seg;
+      out.push([a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u]);
+      t += spacing;
+    }
+    carry = (carry + seg) % spacing;
+  }
+  const last = pts[pts.length - 1];
+  const prev = out[out.length - 1];
+  if (dist(prev, last) > 0.5) out.push(last);
+  return out;
+}
+
+type OsmFetch = { ways: OsmWay[]; hydrants: Point[]; trees: Point[] };
 
 /** Main OpenStreetMap API: everything in a small box around the point. Fast and reliable for tiny areas. */
 async function fromOsmApi(o: LatLng, radius: number): Promise<OsmFetch> {
@@ -69,11 +103,16 @@ async function fromOsmApi(o: LatLng, radius: number): Promise<OsmFetch> {
   const j = await res.json();
   const nodes = new Map<number, { lat: number; lon: number }>();
   const hydrants: Point[] = [];
+  const trees: Point[] = [];
   for (const e of j.elements) {
     if (e.type !== "node") continue;
     nodes.set(e.id, { lat: e.lat, lon: e.lon });
-    if (isHydrantTags(e.tags as Record<string, string> | undefined)) {
+    const tags = e.tags as Record<string, string> | undefined;
+    if (isHydrantTags(tags)) {
       hydrants.push(toLocal(o, { lat: e.lat, lng: e.lon }));
+    }
+    if (isTreeNodeTags(tags)) {
+      trees.push(toLocal(o, { lat: e.lat, lng: e.lon }));
     }
   }
   const ways: OsmWay[] = [];
@@ -83,11 +122,17 @@ async function fromOsmApi(o: LatLng, radius: number): Promise<OsmFetch> {
     const barrier = tags.barrier && /^(fence|wall|hedge)$/.test(tags.barrier);
     const pool = tags.leisure === "swimming_pool";
     const parking = tags.amenity === "parking" || tags.leisure === "parking";
-    if (!tags.building && !(tags.highway && ROADS.test(tags.highway)) && !barrier && !pool && !parking) continue;
+    const treeRow = isTreeRowTags(tags);
+    if (!tags.building && !(tags.highway && ROADS.test(tags.highway)) && !barrier && !pool && !parking && !treeRow) continue;
     const geometry = (e.nodes as number[]).map((id) => nodes.get(id)).filter(Boolean) as { lat: number; lon: number }[];
+    if (treeRow && geometry.length >= 2) {
+      const local = geometry.map((g) => toLocal(o, { lat: g.lat, lng: g.lon }));
+      trees.push(...samplePolyline(local, 4));
+      continue;
+    }
     ways.push({ id: e.id, tags: e.tags, geometry });
   }
-  return { ways, hydrants };
+  return { ways, hydrants, trees };
 }
 
 /** Try the main OSM API first, then the Overpass mirrors. */
@@ -147,6 +192,7 @@ async function runQuery(origin: LatLng, query: string): Promise<OsmFetch> {
       const j = await res.json();
       const ways: OsmWay[] = [];
       const hydrants: Point[] = [];
+      const trees: Point[] = [];
       for (const e of j.elements as Array<{
         type: string;
         id: number;
@@ -155,13 +201,19 @@ async function runQuery(origin: LatLng, query: string): Promise<OsmFetch> {
         lon?: number;
         geometry?: { lat: number; lon: number }[];
       }>) {
-        if (e.type === "node" && e.lat != null && e.lon != null && isHydrantTags(e.tags)) {
-          hydrants.push(toLocal(origin, { lat: e.lat, lng: e.lon }));
+        if (e.type === "node" && e.lat != null && e.lon != null) {
+          if (isHydrantTags(e.tags)) hydrants.push(toLocal(origin, { lat: e.lat, lng: e.lon }));
+          if (isTreeNodeTags(e.tags)) trees.push(toLocal(origin, { lat: e.lat, lng: e.lon }));
         } else if (e.type === "way" && e.geometry) {
-          ways.push({ id: e.id, tags: e.tags, geometry: e.geometry });
+          if (isTreeRowTags(e.tags)) {
+            const local = e.geometry.map((g) => toLocal(origin, { lat: g.lat, lng: g.lon }));
+            trees.push(...samplePolyline(local, 4));
+          } else {
+            ways.push({ id: e.id, tags: e.tags, geometry: e.geometry });
+          }
         }
       }
-      return { ways, hydrants };
+      return { ways, hydrants, trees };
     } catch (e) {
       lastErr = e;
     }
@@ -201,27 +253,29 @@ export async function lookupBuilding(origin: LatLng, heading?: number | null, hi
   way["leisure"="swimming_pool"](around:${R},${origin.lat},${origin.lng});
   way["amenity"="parking"](around:${R},${origin.lat},${origin.lng});
   way["leisure"="parking"](around:${R},${origin.lat},${origin.lng});
+  way["natural"="tree_row"](around:${R},${origin.lat},${origin.lng});
+  node["natural"="tree"](around:${R},${origin.lat},${origin.lng});
   node["emergency"="fire_hydrant"](around:${HYDRANT_R},${origin.lat},${origin.lng});
   node["amenity"="fire_hydrant"](around:${HYDRANT_R},${origin.lat},${origin.lng});
 );
 out tags geom;`;
   // OSM map API bbox uses R; hydrant nodes farther out are filled in by Overpass when needed.
-  const { ways: els, hydrants: apiHydrants } = await fetchMap(origin, q, R);
+  const { ways: els, hydrants: apiHydrants, trees: apiTrees } = await fetchMap(origin, q, R);
   let rawHydrants = apiHydrants;
-  if (rawHydrants.length < 2) {
-    try {
-      const extra = await fetchHydrantsOverpass(origin, HYDRANT_R);
-      const seen = new Set(rawHydrants.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`));
-      for (const p of extra) {
-        const key = `${p[0].toFixed(1)},${p[1].toFixed(1)}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          rawHydrants.push(p);
-        }
+  let rawTrees = [...apiTrees];
+  // OSM map bbox (R) often misses the nearest street hydrants past ~150–200 m — always merge Overpass.
+  try {
+    const extra = await fetchHydrantsOverpass(origin, HYDRANT_R);
+    const seen = new Set(rawHydrants.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`));
+    for (const p of extra) {
+      const key = `${p[0].toFixed(1)},${p[1].toFixed(1)}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        rawHydrants.push(p);
       }
-    } catch (e) {
-      console.warn("Hydrant Overpass supplement failed", e);
     }
+  } catch (e) {
+    console.warn("Hydrant Overpass supplement failed", e);
   }
 
   const buildings: OsmBuilding[] = [];
@@ -331,16 +385,30 @@ out tags geom;`;
     nearby.unshift({ id: building.id, label: houseLabel(building) });
   }
 
-  // Nearest mapped hydrants (keep a handful for the SAR scene).
+  // All mapped hydrants in range (beacons render every one kept on the scene).
   const hydrants = rawHydrants
     .map((p) => ({ p, d: dist(here, p) }))
     .filter((h) => h.d < HYDRANT_R)
     .sort((a, b) => a.d - b.d)
-    .slice(0, 10)
+    .slice(0, 40)
     .map((h) => h.p);
+
+  const seenTree = new Set<string>();
+  const trees = rawTrees
+    .map((p) => ({ p, d: dist(here, p) }))
+    .filter((t) => t.d < R)
+    .sort((a, b) => a.d - b.d)
+    .filter((t) => {
+      const key = `${t.p[0].toFixed(1)},${t.p[1].toFixed(1)}`;
+      if (seenTree.has(key)) return false;
+      seenTree.add(key);
+      return true;
+    })
+    .slice(0, 60)
+    .map((t) => t.p);
 
   return {
     building, chosenBy, buildingCount: buildings.length, nearby, roadDir, roadName, roadDistance,
-    structures: buildings, fences, pools, parking, roads, hydrants,
+    structures: buildings, fences, pools, parking, roads, hydrants, trees,
   };
 }

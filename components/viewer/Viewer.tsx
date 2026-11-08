@@ -75,6 +75,22 @@ function SolidEdges({ color, threshold = 12 }: { color: string; threshold?: numb
   );
 }
 
+const ROOM_WORDS: Record<Room["type"], string> = {
+  living: "Living room",
+  kitchen: "Kitchen",
+  dining: "Dining room",
+  bedroom: "Bedroom",
+  bathroom: "Bathroom",
+  hallway: "Hall",
+  stair: "Stairs",
+  garage: "Garage",
+  utility: "Utility",
+  closet: "Closet",
+  office: "Office",
+  basement: "Basement",
+  other: "Room",
+};
+
 const SITE_COLOR: Record<CompoundFeature["kind"], string> = {
   yard: "#14439c",
   driveway: "#3a68c4",
@@ -94,6 +110,7 @@ const SITE_NOTE: Record<CompoundFeature["source"], string> = {
   map: "From the map",
   aerial: "From the aerial photo",
   parcel: "City tax lot",
+  estimated: "Estimated for the backyard",
 };
 
 const ROOM_COLORS: Record<Room["type"], string> = {
@@ -260,17 +277,24 @@ function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; flo
 
 function RoomSlab({
   room,
+  floorName,
   xray,
   showLabel,
   onPick,
+  onOver,
+  onOut,
   y = 0.08,
 }: {
   room: Room;
+  floorName: string;
   xray: boolean;
   showLabel: boolean;
   onPick: (e: ThreeEvent<MouseEvent>) => void;
+  onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
+  onOut: (id: string) => void;
   y?: number;
 }) {
+  const [hovered, setHovered] = useState(false);
   const geom = useMemo(() => {
     const shape = new THREE.Shape(room.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
     return new THREE.ShapeGeometry(shape);
@@ -289,11 +313,21 @@ function RoomSlab({
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, y, 0]}
         onClick={onPick}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          setHovered(true);
+          onOver(e, room.id, room.name, `${floorName} · ${ROOM_WORDS[room.type]}`);
+        }}
+        onPointerOut={(e) => {
+          e.stopPropagation();
+          setHovered(false);
+          onOut(room.id);
+        }}
       >
         <meshStandardMaterial
           color={xray && !isStair ? "#0b2e72" : ROOM_COLORS[room.type]}
-          emissive={isStair ? "#ff8a6b" : "#000000"}
-          emissiveIntensity={isStair ? (xray ? 0.8 : 0.3) : 0}
+          emissive={hovered ? "#ffffff" : isStair ? "#ff8a6b" : "#000000"}
+          emissiveIntensity={hovered ? 0.35 : isStair ? (xray ? 0.8 : 0.3) : 0}
           side={THREE.FrontSide}
           depthWrite
           polygonOffset
@@ -319,12 +353,19 @@ function SimpleFloorDeck({
   footprint,
   xray,
   onPick,
+  onOver,
+  onOut,
+  tipId,
 }: {
   floor: Floor;
   footprint: Point[];
   xray: boolean;
   onPick: (e: ThreeEvent<MouseEvent>, room: Room | null) => void;
+  onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
+  onOut: (id: string) => void;
+  tipId: string | null;
 }) {
+  const [hovered, setHovered] = useState(false);
   const ring = footprint.length >= 3 ? footprint : floor.rooms[0]?.polygon ?? [];
   const geom = useMemo(() => {
     if (ring.length < 3) return null;
@@ -343,9 +384,24 @@ function SimpleFloorDeck({
         const room = floor.rooms.find((r) => pointInRing(p, r.polygon)) ?? null;
         onPick(e, room);
       }}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        setHovered(true);
+        const p: Point = [e.point.x, -e.point.z];
+        const room = floor.rooms.find((r) => pointInRing(p, r.polygon));
+        if (room) onOver(e, room.id, room.name, `${floor.name} · ${ROOM_WORDS[room.type]}`);
+        else onOver(e, `deck-${floor.level}`, floor.name, "Floor deck");
+      }}
+      onPointerOut={(e) => {
+        e.stopPropagation();
+        setHovered(false);
+        onOut(tipId ?? `deck-${floor.level}`);
+      }}
     >
       <meshStandardMaterial
         color={xray ? "#0b2e72" : "#c5d6f4"}
+        emissive={hovered ? "#ffffff" : "#000000"}
+        emissiveIntensity={hovered ? 0.28 : 0}
         side={THREE.FrontSide}
         polygonOffset
         polygonOffsetFactor={-1}
@@ -357,7 +413,6 @@ function SimpleFloorDeck({
 
 /** Stack ground surfaces so large lots do not z-fight. */
 const LAYER_Y: Record<string, number> = {
-  base: -0.22,
   yard: 0.0,
   road: 0.05,
   driveway: 0.07,
@@ -504,7 +559,7 @@ function OutbuildingMesh({
   );
 }
 
-/** Tall pulsing red beacon — rank 0 is nearest (tallest); 1–2 are slightly shorter. */
+/** Tall pulsing red beacon — rank 0 is nearest (tallest); farther ranks step down. */
 function HydrantBeacon({
   position,
   hovered,
@@ -522,13 +577,14 @@ function HydrantBeacon({
 }) {
   const glow = useRef<THREE.MeshStandardMaterial>(null);
   const beam = useRef<THREE.MeshStandardMaterial>(null);
-  const mastH = rank === 0 ? 28 : rank === 1 ? 22 : 17;
+  const mastH = Math.max(12, 28 - rank * 2);
   const tipY = 1.2 + mastH;
   const phase = rank * 0.9;
+  const strength = rank === 0 ? 1 : Math.max(0.45, 0.85 - rank * 0.06);
   useFrame(({ clock }) => {
     const pulse = 0.55 + Math.sin(clock.elapsedTime * 3.2 + phase) * 0.45;
-    if (glow.current) glow.current.emissiveIntensity = hovered ? 1.6 : pulse * (rank === 0 ? 1 : 0.75);
-    if (beam.current) beam.current.opacity = (0.18 + pulse * 0.28) * (rank === 0 ? 1 : 0.7);
+    if (glow.current) glow.current.emissiveIntensity = hovered ? 1.6 : pulse * strength;
+    if (beam.current) beam.current.opacity = (0.18 + pulse * 0.28) * strength;
   });
   return (
     <group position={position} onPointerOver={onOver} onPointerOut={onOut}>
@@ -745,8 +801,8 @@ function SiteFeatureMesh({
         transparent: feature.kind === "pool",
         opacity: feature.kind === "pool" ? 0.88 : 1,
         offset,
-        // Lot / street pads stay quiet; garages, hydrants, etc. still light up.
-        noHover: feature.kind === "yard" || feature.kind === "road" || feature.kind === "driveway" || feature.kind === "patio" || feature.kind === "pool",
+        // Only the outside lot/yard pad stays quiet on hover.
+        noHover: feature.kind === "yard",
       })}
     </mesh>
   );
@@ -1052,15 +1108,14 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const floorY = (f: Floor) => f.elevation + (exploded ? f.level * EXPLODE_GAP : 0);
   const top = model.floors.find((f) => f.level === topLevel)!;
   const showRoof = !!model.roof && roofOn && !hidden.has(topLevel);
-  // Already distance-sorted as hydrant-0, hydrant-1, … — beacon the closest few.
+  // Distance-sorted as hydrant-0, hydrant-1, … — beacon every mapped hydrant in the scene.
   const beaconHydrants = useMemo(() => {
     const list = model.compound?.features.filter((f) => f.kind === "hydrant") ?? [];
-    const ranked = [...list].sort((a, b) => {
+    return [...list].sort((a, b) => {
       const ia = Number(a.id.replace("hydrant-", "")) || 99;
       const ib = Number(b.id.replace("hydrant-", "")) || 99;
       return ia - ib;
     });
-    return ranked.slice(0, 3);
   }, [model.compound?.features]);
   const beaconHydrantIds = useMemo(() => new Set(beaconHydrants.map((f) => f.id)), [beaconHydrants]);
   // Basement open with ground floor gone → clear the yard/ground disc that sat on top of it.
@@ -1068,9 +1123,14 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
 
   // Frame the camera on the house, whatever its size.
   const { camPos, target, extent, minDist, maxDist, camNear, camFar, largeSite, rotateSpeed } = useMemo(() => {
+    // Don't let distant hydrants/roads pull the camera to a city-block zoom — beacons then look like pins.
+    const frameKinds = new Set(["yard", "garage", "shed", "neighbor", "driveway", "patio", "pool", "fence", "trees"]);
     const pts = [
       ...model.floors.flatMap((f) => f.walls.flatMap((w) => [w.a, w.b])),
-      ...(model.compound?.features.flatMap((f) => f.polygon) ?? []),
+      ...(model.compound?.features
+        .filter((f) => frameKinds.has(f.kind))
+        .flatMap((f) => f.polygon) ?? []),
+      ...model.footprint,
     ];
     const ext = Math.max(6, ...pts.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y))));
     const roomCount = model.floors.reduce((n, f) => n + f.rooms.length, 0);
@@ -1079,7 +1139,11 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
     // Portrait screens see less width, so back the camera off further.
     const portrait = typeof window !== "undefined" && window.innerHeight > window.innerWidth;
     const d = Math.min((ext * 2.0 + height) * (portrait ? 1.45 : 1), ext * 3.2 + 18);
-    const maxD = Math.min(Math.max(ext * 4.2, d * 1.45), large ? 260 : 180);
+    // Large compounds (neighbors, yard, street pads) need more pull-back than a single house.
+    const maxD = Math.min(
+      Math.max(ext * (large ? 6.8 : 4.2), d * (large ? 2.15 : 1.45)),
+      large ? 480 : 180,
+    );
     const minD = Math.max(2.5, Math.min(large ? 10 : 6, ext * 0.15));
     // Start outside the front door looking in.
     const fy = streetFrontYaw(model);
@@ -1157,7 +1221,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const HELP: Record<string, string> = {
     floor: "Show or hide this floor. Opening the basement hides floors above so you can look down into it.",
     roof: "Show or hide the roof. Turn it off to see straight down into the top floor.",
-    hydrant: "Red sky beacons on the few nearest fire hydrants. Tap again to hide the POIs.",
+    hydrant: "Red sky beacons on every mapped fire hydrant nearby. Tap again to hide the POIs.",
     explode: "Pulls the floors apart vertically so you can see every level at once. Tap again to stack them back.",
     xray: "See-through mode: walls turn to outlines so you can spot exits (green) and stairs (yellow) through them.",
     markers: "Open the hazard tools. Pick one, then tap a room to pin it so everyone sees it.",
@@ -1199,17 +1263,6 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         <directionalLight position={[extent * 2, extent * 3, extent * 1.5]} intensity={1.0} />
         <directionalLight position={[-extent * 2, extent, -extent * 2]} intensity={0.35} />
 
-        {!xray && !peeringBasement && (
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, LAYER_Y.base, 0]} raycast={noopRaycast}>
-            <circleGeometry args={[Math.max(90, Math.min(largeSite ? 200 : 160, extent * 5.5)), largeSite ? 32 : 48]} />
-            <meshBasicMaterial
-              color="#0d3482"
-              transparent
-              opacity={hidden.size || exploded ? 0.3 : 0.75}
-              depthWrite={false}
-            />
-          </mesh>
-        )}
         <Line
           points={footprintLine}
           color="#eaf1ff"
@@ -1225,22 +1278,13 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
 
         {(() => {
           const feats = model.compound?.features ?? [];
+          // Outside lot/yard pad + base disc stay off — keep streets, pads, and structures.
+          const noYard = feats.filter((f) => f.kind !== "yard");
           const filtered = peeringBasement
-            ? feats.filter((f) => f.kind === "garage" || f.kind === "shed" || f.kind === "neighbor" || f.kind === "hydrant" || f.kind === "signal" || f.kind === "fence" || f.kind === "trees")
+            ? noYard.filter((f) => f.kind === "garage" || f.kind === "shed" || f.kind === "neighbor" || f.kind === "hydrant" || f.kind === "signal" || f.kind === "fence" || f.kind === "trees")
             : largeSite
-              ? (() => {
-                  // One yard + roads/access + structures — drop overlapping patio/pool clutter.
-                  let yardSeen = false;
-                  return feats.filter((f) => {
-                    if (f.kind === "yard") {
-                      if (yardSeen) return false;
-                      yardSeen = true;
-                      return true;
-                    }
-                    return f.kind !== "patio" && f.kind !== "pool";
-                  });
-                })()
-              : feats;
+              ? noYard.filter((f) => f.kind !== "patio" && f.kind !== "pool")
+              : noYard;
           return filtered.map((feature) => {
             // Beacon POIs replace the small meshes for the closest few when the toggle is on.
             if (hydrantBeaconOn && beaconHydrantIds.has(feature.id)) return null;
@@ -1271,7 +1315,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
                   title,
                   rank === 0
                     ? "Closest mapped fire hydrant — primary water supply"
-                    : `Hydrant #${rank + 1} by distance — secondary supply`,
+                    : `Hydrant #${rank + 1} by distance`,
                 )
               }
               onOut={hideTip}
@@ -1286,6 +1330,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
                   floor={floor}
                   footprint={model.footprint}
                   xray={xray}
+                  tipId={tip?.id ?? null}
                   onPick={(e, room) => {
                     if (!tool) return;
                     e.stopPropagation();
@@ -1301,6 +1346,8 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
                       },
                     ]);
                   }}
+                  onOver={showTip}
+                  onOut={hideTip}
                 />
                 {/* Keep stair pads visible on the merged deck — they were lost in the perf flatten. */}
                 {floor.rooms
@@ -1309,10 +1356,13 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
                     <RoomSlab
                       key={room.id}
                       room={room}
+                      floorName={floor.name}
                       xray={xray}
                       showLabel
                       y={0.14}
                       onPick={dropMarker(floor)}
+                      onOver={showTip}
+                      onOut={hideTip}
                     />
                   ))}
               </>
@@ -1321,9 +1371,12 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
                 <RoomSlab
                   key={room.id}
                   room={room}
+                  floorName={floor.name}
                   xray={xray}
                   showLabel={shown.length === 1 || exploded || room.type === "stair"}
                   onPick={dropMarker(floor)}
+                  onOver={showTip}
+                  onOut={hideTip}
                 />
               ))
             )}
@@ -1371,8 +1424,8 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
 
         <gridHelper
           args={[
-            Math.min(extent * 6, largeSite ? 240 : 200),
-            largeSite ? 20 : Math.max(16, Math.round(Math.min(extent * 3, 80))),
+            Math.min(extent * (largeSite ? 9 : 6), largeSite ? 420 : 200),
+            largeSite ? 24 : Math.max(16, Math.round(Math.min(extent * 3, 80))),
             "#4a78d0",
             "#2a55b0",
           ]}
