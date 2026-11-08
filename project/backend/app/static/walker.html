@@ -18,6 +18,12 @@
 <div class="card"><div class="muted">3. Stand on your start spot (map metres) and:</div>
  x <input id="sx" type="number" step="0.1" value="0"> y <input id="sy" type="number" step="0.1" value="0">
  <button id="start">Set start position</button></div>
+<div class="card"><div class="muted">0. Room size (metres). x runs 0..width, y runs 0..length from your origin corner. Applying clears the current walk.</div>
+ width <input id="rw" type="number" step="0.5" value="10"> length <input id="rl" type="number" step="0.5" value="10">
+ <button id="room">Apply room size</button><div class="muted" id="rmsg"></div></div>
+<div class="card"><div class="muted">Live map: dots = beacons, arrow = you and the way the phone points. Walk along +X: the arrow should move right.</div>
+ <canvas id="map" width="340" height="340" style="width:100%;background:#0f1a2b;border-radius:8px"></canvas>
+ <div class="muted" id="pos">position --</div></div>
 <div class="card"><div class="muted">Phone sensors (sent ~10 Hz)</div>
  <div>GPS <span id="gp">waiting</span></div><div>Tilt <span id="tl">--</span></div><div>Turn rate <span id="rr">--</span></div>
  <div class="muted">GPS is metres-level, and unreliable indoors or in smoke. The accuracy shown is what the phone itself claims.</div></div>
@@ -74,6 +80,33 @@ $("go").onclick=async()=>{
     $("go").textContent="Sensors running";
   }catch(err){ $("go").textContent="Failed: "+err.message+" (needs HTTPS)"; }
 };
+let room={width_m:10,length_m:10,margin_m:2},anchors=[],me=null,trail=[];
+async function loadRoom(){ try{ room=await (await fetch("/api/room")).json(); $("rw").value=room.width_m; $("rl").value=room.length_m;
+  anchors=await (await fetch("/api/anchors")).json(); }catch(e){} draw(); }
+$("room").onclick=async()=>{ try{ const r=await fetch("/api/room",{method:"POST",headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({width_m:parseFloat($("rw").value),length_m:parseFloat($("rl").value)})});
+  if(!r.ok){ $("rmsg").textContent="Rejected: "+((await r.json()).detail||r.status); return; }
+  trail=[]; me=null; $("rmsg").textContent="Room set."; loadRoom(); }catch(e){ $("rmsg").textContent="Failed: "+e.message; } };
+function draw(){
+  const c=$("map"),g=c.getContext("2d"),m=room.margin_m||0,W=room.width_m+2*m,L=room.length_m+2*m,k=Math.min(c.width/W,c.height/L);
+  const X=x=>(x+m)*k, Y=y=>c.height-(y+m)*k; g.clearRect(0,0,c.width,c.height);
+  g.strokeStyle="#334155"; g.strokeRect(X(0),Y(room.length_m),room.width_m*k,room.length_m*k);
+  g.fillStyle="#94a3b8"; g.font="11px sans-serif"; g.fillText("0,0",X(0)+2,Y(0)-3); g.fillText("+X",X(room.width_m)-18,Y(0)-3);
+  g.strokeStyle="#22d3ee"; g.beginPath(); trail.forEach((p,i)=>i?g.lineTo(X(p.x),Y(p.y)):g.moveTo(X(p.x),Y(p.y))); g.stroke();
+  g.fillStyle="#fbbf24"; anchors.forEach(a=>{ g.beginPath(); g.arc(X(a.x),Y(a.y),6,0,7); g.fill(); g.fillText(a.id,X(a.x)+8,Y(a.y)+4); });
+  if(me){ const t=(me.heading_deg||0)*Math.PI/180, x=X(me.x), y=Y(me.y);   // map heading: 0 = +x, counter-clockwise
+    g.fillStyle="#34d399"; g.beginPath(); g.moveTo(x+14*Math.cos(t),y-14*Math.sin(t));
+    g.lineTo(x+7*Math.cos(t+2.5),y-7*Math.sin(t+2.5)); g.lineTo(x+7*Math.cos(t-2.5),y-7*Math.sin(t-2.5)); g.fill();
+    $("pos").textContent="position x "+me.x.toFixed(2)+" y "+me.y.toFixed(2)+" m, heading "+Math.round(me.heading_deg||0)+"° (0 = +X, counter-clockwise), steps "+(me.step_count||0); }
+}
+function liveMap(){
+  const d=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws/dashboard");
+  d.onmessage=ev=>{ let m; try{ m=JSON.parse(ev.data); }catch(e){ return; }
+    if(m.type==="session_reset"){ trail=[]; me=null; loadRoom(); return; }
+    const st=m.state; if(!st) return; me=st; if(m.breadcrumb||m.type==="init_state"){ trail.push({x:st.x,y:st.y}); if(trail.length>300) trail.shift(); } draw(); };
+  d.onclose=()=>setTimeout(liveMap,2000);
+}
+loadRoom(); liveMap();
 $("align").onclick=()=>{ if(compass===null) return alert("No compass reading yet"); send({type:"align",compass_deg:compass}); };
 $("start").onclick=()=>send({type:"start",x:parseFloat($("sx").value)||0,y:parseFloat($("sy").value)||0});
 </script></body></html>

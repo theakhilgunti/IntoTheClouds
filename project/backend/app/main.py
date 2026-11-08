@@ -1,9 +1,11 @@
 import asyncio
 import json
 import logging
+import math
 import time
 from typing import Dict, List, Set
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 
 from .models import BeaconAnchor, FirefighterState, HazardPin, TelemetryPayload
@@ -69,12 +71,42 @@ for _a in DEFAULT_ANCHORS:
 
 hazards: List[HazardPin] = []
 breadcrumbs: List[Dict[str, float]] = []
-localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=(-2.0, -2.0, 12.0, 12.0))
-# BE-08: per-anchor RSSI heatmap over the same bounds (a signal map, not a floor plan).
-rf_map = RFMap(-2.0, -2.0, 12.0, 12.0, cell_m=0.5)
-# BE-01/02: RF obstacle-hint voxel grid. PATH_LOSS_N matches the particle filter's model.
+# BE-14: room size is user-set (GET/POST /api/room). Map x runs 0..width_m, y runs 0..length_m; the
+# grids extend margin_m beyond that so beacons or walkers just outside the room still fit.
+ROOM = {"width_m": 10.0, "length_m": 10.0, "height_m": 3.0, "margin_m": 2.0, "voxel_m": 0.25, "rf_cell_m": 0.5}
+MAX_VOXELS = 4_000_000
+
+
+class RoomConfig(BaseModel):
+    width_m: float = Field(10.0, gt=0, le=100)
+    length_m: float = Field(10.0, gt=0, le=100)
+    height_m: float = Field(3.0, gt=0, le=10)
+    margin_m: float = Field(2.0, ge=0, le=10)
+    voxel_m: float = Field(0.25, ge=0.05, le=2.0)
+    rf_cell_m: float = Field(0.5, ge=0.1, le=5.0)
+
+
+def room_bounds_2d(room=None):
+    r = room or ROOM
+    m = r["margin_m"]
+    return (-m, -m, r["width_m"] + m, r["length_m"] + m)
+
+
+def build_room(room):
+    """-> (localizer, rf_map, voxel_grid) sized for `room`. Raises ValueError if too large."""
+    x0, y0, x1, y1 = room_bounds_2d(room)
+    v = room["voxel_m"]
+    n = math.ceil((x1 - x0) / v) * math.ceil((y1 - y0) / v) * math.ceil(room["height_m"] / v)
+    if n > MAX_VOXELS:
+        raise ValueError(f"grid would have {n:,} voxels (max {MAX_VOXELS:,}); raise voxel_m or shrink the room")
+    return (ParticleFilterLocalizer(num_particles=600, room_bounds=(x0, y0, x1, y1)),
+            RFMap(x0, y0, x1, y1, cell_m=room["rf_cell_m"]),
+            VoxelGrid(bounds=(x0, y0, 0.0, x1, y1, room["height_m"]), voxel_m=v))
+
+
+localizer, rf_map, voxel_grid = build_room(ROOM)
+# BE-01/02: RF obstacle-hint voxel grid (built above with the room). PATH_LOSS_N matches the particle filter's model.
 PATH_LOSS_N = 2.5
-voxel_grid = VoxelGrid()
 current_state: FirefighterState = localizer.get_state("FF_Pi_Rig_1", 0.0, time.time())
 session_started_at: float = time.time()
 
@@ -136,6 +168,33 @@ async def get_anchors():
 async def set_anchor(anchor: BeaconAnchor):
     register_anchor(anchor)
     return {"message": "Anchor updated", "anchor": anchor}
+
+
+@app.get("/api/room")
+async def get_room():
+    """Current room size and the grid bounds derived from it (metres)."""
+    x0, y0, x1, y1 = room_bounds_2d()
+    return {**ROOM, "bounds": {"min_x": x0, "min_y": y0, "max_x": x1, "max_y": y1},
+            "voxel_shape": list(voxel_grid.shape)}
+
+
+@app.post("/api/room")
+async def set_room(cfg: RoomConfig):
+    """Set the room size. Rebuilds the localizer, signal map and obstacle grid and clears the current
+    walk (breadcrumbs, map, obstacles). Anchors, hazards and the phone alignment are kept. Not saved to the
+    database; use POST /api/reset first if you want the current walk saved."""
+    global localizer, rf_map, voxel_grid, current_state, session_started_at
+    new = cfg.model_dump()
+    try:
+        localizer, rf_map, voxel_grid = build_room(new)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    ROOM.update(new)
+    breadcrumbs.clear()
+    session_started_at = time.time()
+    current_state = localizer.get_state("FF_Pi_Rig_1", pdr_state["map_heading"], session_started_at)
+    await broadcast_to_dashboards({"type": "session_reset"})
+    return await get_room()
 
 
 @app.get("/api/hazards", response_model=List[HazardPin])
@@ -271,7 +330,7 @@ async def reset_session():
         time.time(),
     )
     phone_state.update(gps_origin=None, gps_local=None)  # new session: re-anchor GPS (log is kept)
-    localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=(-2.0, -2.0, 12.0, 12.0))
+    localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=room_bounds_2d())
     breadcrumbs.clear()
     hazards.clear()
     rf_map.reset()
