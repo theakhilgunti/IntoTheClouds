@@ -107,3 +107,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 08:45 | Claude Code | BE-14 | User-set room size: GET/POST /api/room (width, length, height, margin, voxel, rf cell) resizes localizer, signal map and voxel grid, clears walk, reset keeps size; /walker page gets room inputs and a live top-down map (beacons, trail, heading arrow); 3 new tests (42 pass); frontend 3D view not updated; not yet tested on iPhone |
 | 06:36 | Claude Code | LC-06 | Finished task |
 | 09:30 | Claude Code | LC-06 | radar_bridge.py --insecure: accepts the self-signed https backend (wss + https POST); 16 tests pass; not yet run against live beacons |
+| 04:16 | Claude Code | PRIV-01 | Removed phone GPS end to end: /walker no longer requests or shows location, backend /api/phone and /api/phone/log no longer carry gps/gps_usable/gps_origin/gps_local, clean_sensors allow-lists compass/gyro/accel only (location keys from old clients are dropped), latlon_to_local removed; tests prove GPS is rejected; 41 backend tests |
+| 09:16 | Claude Code | PRIV-01 | Finished task |

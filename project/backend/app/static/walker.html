@@ -25,8 +25,8 @@
  <canvas id="map" width="340" height="340" style="width:100%;background:#0f1a2b;border-radius:8px"></canvas>
  <div class="muted" id="pos">position --</div></div>
 <div class="card"><div class="muted">Phone sensors (sent ~10 Hz)</div>
- <div>GPS <span id="gp">waiting</span></div><div>Tilt <span id="tl">--</span></div><div>Turn rate <span id="rr">--</span></div>
- <div class="muted">GPS is metres-level, and unreliable indoors or in smoke. The accuracy shown is what the phone itself claims.</div></div>
+ <div>Tilt <span id="tl">--</span></div><div>Turn rate <span id="rr">--</span></div>
+ <div class="muted">Motion sensors only: compass, gyro and accelerometer. This page never asks for or sends location.</div></div>
 <div class="card">Step length (m) <input id="sl" type="number" step="0.05" value="0.7">
  <br>Step sensitivity (m/s&sup2;, lower = more steps) <input id="th" type="number" step="0.1" value="1.6">
  <div class="muted">Last peak <span id="pk">--</span></div></div>
@@ -72,11 +72,6 @@ $("go").onclick=async()=>{
     }
     addEventListener("deviceorientation",onOrient,true); addEventListener("devicemotion",onMotion,true);
     connect(); setInterval(()=>{ if(compass!==null) send({compass_deg:compass,sensors:sens}); },100);
-    if(navigator.geolocation) navigator.geolocation.watchPosition(p=>{
-      const c=p.coords; sens.gps={lat:c.latitude,lon:c.longitude,acc:c.accuracy,alt:c.altitude,alt_acc:c.altitudeAccuracy,speed:c.speed,course:c.heading};
-      $("gp").textContent=c.latitude.toFixed(6)+", "+c.longitude.toFixed(6)+" ±"+c.accuracy.toFixed(0)+" m";
-    },err=>{ $("gp").textContent="no fix ("+err.message+")"; },{enableHighAccuracy:true,maximumAge:0,timeout:20000});
-    else $("gp").textContent="not available";
     $("go").textContent="Sensors running";
   }catch(err){ $("go").textContent="Failed: "+err.message+" (needs HTTPS)"; }
 };

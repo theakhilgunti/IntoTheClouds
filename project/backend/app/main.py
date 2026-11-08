@@ -13,7 +13,7 @@ import numpy as np
 from .fusion.math_engine import ParticleFilterLocalizer
 from .fusion.rf_map import RFMap
 from .fusion.tomography import VoxelGrid
-from .fusion.geo import GPS_OK_ACC_M, clean_sensors, latlon_to_local
+from .fusion.geo import clean_sensors
 from .fusion.heading import compass_to_map_heading, offset_from_plus_x, valid_angle
 from fastapi.responses import FileResponse
 import os
@@ -114,9 +114,9 @@ session_started_at: float = time.time()
 pdr_state = {"offset": 0.0, "map_heading": 0.0, "last": 0.0, "aligned": False}
 PDR_FRESH_S = 3.0
 
-# BE-12: raw iPhone sensors (GPS, 3D orientation, gyro, accel). GPS is metres-level and unreliable
-# indoors: `gps_usable` is false when accuracy is worse than GPS_OK_ACC_M. Not fused into position yet.
-phone_state = {"latest": {}, "t": 0.0, "gps_origin": None, "gps_local": None}
+# BE-12: iPhone motion sensors only (3D orientation / compass, gyro, accelerometer). No location data is
+# accepted, stored or served: clean_sensors() drops everything outside its allow-list.
+phone_state = {"latest": {}, "t": 0.0}
 phone_log: list = []
 PHONE_LOG_MAX = 20000
 
@@ -126,14 +126,6 @@ def record_phone_sensors(raw) -> None:
     if not s:
         return
     now = time.time()
-    g = s.get("gps")
-    if g:
-        if phone_state["gps_origin"] is None and g.get("acc", 1e9) <= GPS_OK_ACC_M:
-            phone_state["gps_origin"] = {"lat": g["lat"], "lon": g["lon"]}
-        o = phone_state["gps_origin"]
-        if o:
-            x, y = latlon_to_local(g["lat"], g["lon"], o["lat"], o["lon"], pdr_state["offset"])
-            phone_state["gps_local"] = {"x": round(x, 2), "y": round(y, 2)}
     phone_state["latest"].update(s)
     phone_state["t"] = now
     phone_log.append({"t": round(now, 3), "map_heading": round(pdr_state["map_heading"], 1), **s})
@@ -298,11 +290,9 @@ async def pdr_endpoint(websocket: WebSocket):
 
 @app.get("/api/phone")
 async def get_phone_sensors():
-    """Latest iPhone sensor packet, GPS in local map metres (relative to the first good fix), and its age."""
-    g = phone_state["latest"].get("gps", {})
+    """Latest iPhone motion-sensor packet (orientation, gyro, accelerometer) and its age."""
     return {"latest": phone_state["latest"], "age_s": round(time.time() - phone_state["t"], 2) if phone_state["t"] else None,
-            "gps_usable": bool(g) and g.get("acc", 1e9) <= GPS_OK_ACC_M, "gps_origin": phone_state["gps_origin"],
-            "gps_local": phone_state["gps_local"], "samples": len(phone_log)}
+            "samples": len(phone_log)}
 
 
 @app.get("/api/phone/log")
@@ -329,7 +319,6 @@ async def reset_session():
         session_started_at,
         time.time(),
     )
-    phone_state.update(gps_origin=None, gps_local=None)  # new session: re-anchor GPS (log is kept)
     localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=room_bounds_2d())
     breadcrumbs.clear()
     hazards.clear()
