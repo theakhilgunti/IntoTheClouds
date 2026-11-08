@@ -12,6 +12,7 @@ import {
   demHeightfieldBuffers,
   entryStairFeatures,
   expandRing,
+  fenceRibbonsFromPolygon,
   foundationExtent,
   gradeHeight,
   neighborhoodTerrainFeatures,
@@ -471,6 +472,43 @@ describe("compound assembly", () => {
       const c = t.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((n) => n / 4);
       assert.ok(c[1] > 0, "estimated trees should sit behind the house (+y)");
     }
+  });
+
+  it("turns elongated aerial boxes into fence ribbons and keeps aerial backyard fences", () => {
+    const longBox: [number, number][] = [[-6, 12], [8, 12], [8, 12.6], [-6, 12.6]];
+    const ribbons = fenceRibbonsFromPolygon(longBox);
+    assert.ok(ribbons.length >= 1, "long box should yield at least one ribbon");
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: house,
+      structures: [{ id: 1, tag: "house", ring: house, area: 80 }],
+      fences: [],
+      pools: [],
+      parcel: lot,
+      aerial: [{ kind: "fence", label: "Hedge", polygon: longBox }],
+      streetDir: [0, -1],
+      trees: [],
+    });
+    assert.ok(
+      features.some((f) => f.kind === "fence" && f.source === "aerial"),
+      "aerial fence cue should become a fence feature",
+    );
+  });
+
+  it("fills sparse backyard with parcel-edge estimated fences", () => {
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: house,
+      structures: [{ id: 1, tag: "house", ring: house, area: 80 }],
+      fences: [],
+      pools: [],
+      parcel: lot,
+      aerial: [],
+      streetDir: [0, -1],
+      trees: [],
+    });
+    const est = features.filter((f) => f.kind === "fence" && f.source === "estimated");
+    assert.ok(est.length >= 1, `expected parcel-edge fences, got ${est.length}`);
   });
 
   it("keeps mapped backyard trees and skips inferred fill when fences already cover the rear", () => {

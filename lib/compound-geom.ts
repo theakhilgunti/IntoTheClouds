@@ -530,6 +530,42 @@ function ribbon(a: Point, b: Point, width: number, maxLen = 320): Point[] | null
   ];
 }
 
+/**
+ * Turn an aerial fence/hedge box (or ring) into thin ribbon segments along its long edges.
+ * Short edges (< minLen) are skipped so driveway stubs don't become fences.
+ */
+export function fenceRibbonsFromPolygon(poly: Point[], opts?: { width?: number; minLen?: number }): Point[][] {
+  if (poly.length < 2) return [];
+  const width = opts?.width ?? 0.16;
+  const minLen = opts?.minLen ?? 1.6;
+  const closed =
+    poly.length >= 3 &&
+    Math.hypot(poly[0][0] - poly[poly.length - 1][0], poly[0][1] - poly[poly.length - 1][1]) < 0.05
+      ? poly.slice(0, -1)
+      : poly;
+  const out: Point[][] = [];
+  const n = closed.length;
+  for (let i = 0; i < n; i++) {
+    const a = closed[i];
+    const b = closed[(i + 1) % n];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < minLen) continue;
+    // For closed quads, keep the longer pair of edges (skip short ends).
+    if (n === 4) {
+      const lens = [0, 1, 2, 3].map((k) => {
+        const p = closed[k];
+        const q = closed[(k + 1) % 4];
+        return Math.hypot(q[0] - p[0], q[1] - p[1]);
+      });
+      const long = Math.max(...lens);
+      if (len < long * 0.72) continue;
+    }
+    const r = ribbon(a, b, width, 120);
+    if (r) out.push(r);
+  }
+  return out;
+}
+
 /** Characteristic foundation size from the model origin (meters). */
 export function foundationExtent(mainRing: Point[]): number {
   if (mainRing.length < 3) return 10;
@@ -804,7 +840,7 @@ export function assembleCompound(site: {
   }
 
   let treeCount = 0;
-  const treeCap = 40;
+  const treeCap = 55;
   for (const p of site.trees ?? []) {
     if (treeCount >= treeCap) break;
     if (!nearNeighborhood(p)) continue;
@@ -823,10 +859,37 @@ export function assembleCompound(site: {
 
   for (const [i, a] of site.aerial.entries()) {
     if (a.polygon.length < 3) continue;
-    if (a.kind === "yard" || a.kind === "fence") continue;
+    if (a.kind === "yard") continue;
     const c = ringCentroid(a.polygon);
     if (main && pointInRing(c, main)) continue;
     if (!nearNeighborhood(c)) continue;
+    if (a.kind === "fence") {
+      const ribbons = fenceRibbonsFromPolygon(a.polygon);
+      const segs = ribbons.length ? ribbons : [a.polygon];
+      for (const polygon of segs) {
+        if (fenceCount >= fenceCap) break;
+        const mid = ringCentroid(polygon);
+        if (main && distToRing(mid, main) < 1.2) continue;
+        // Skip near-duplicates of mapped fence segments.
+        if (
+          features.some(
+            (f) => f.kind === "fence" && dist(ringCentroid(f.polygon), mid) < 2.2,
+          )
+        ) {
+          continue;
+        }
+        features.push({
+          id: `fence-aerial-${fenceCount}`,
+          kind: "fence",
+          label: a.label?.trim() || "Fence",
+          polygon,
+          height: HEIGHT.fence,
+          source: "aerial",
+        });
+        fenceCount++;
+      }
+      continue;
+    }
     if ((a.kind === "garage" || a.kind === "shed") && !nearFoundation(c, main, accessoryR) && !neighborRings.some((r) => nearFoundation(c, r, neighborSoft))) {
       continue;
     }
@@ -847,7 +910,7 @@ export function assembleCompound(site: {
     });
   }
 
-  // --- Backyard fill: mapped data first; invent only when the rear lot is still empty. ---
+  // --- Backyard fill: mapped + aerial first; invent only when the rear lot is still empty. ---
   const yardRing = yard && yard.length >= 3 ? yard : null;
   const backFenceN = features.filter(
     (f) => f.kind === "fence" && inBackyard(ringCentroid(f.polygon), mainC, streetDir),
@@ -856,7 +919,8 @@ export function assembleCompound(site: {
     (f) => f.kind === "trees" && inBackyard(ringCentroid(f.polygon), mainC, streetDir),
   ).length;
 
-  if (backFenceN < 2 && yardRing) {
+  // Soft parcel / hull perimeter when backyard barriers are still sparse.
+  if (backFenceN < 3 && yardRing) {
     const ring = yardRing;
     for (let i = 0; i < ring.length; i++) {
       const a = ring[i];
@@ -865,13 +929,15 @@ export function assembleCompound(site: {
       if (!inBackyard(mid, mainC, streetDir)) continue;
       // Skip edges that hug the house (interior lot lines).
       if (main && distToRing(mid, main) < 1.5) continue;
+      // Skip if a mapped/aerial fence already covers this edge.
+      if (features.some((f) => f.kind === "fence" && dist(ringCentroid(f.polygon), mid) < 3.5)) continue;
       const polygon = ribbon(a, b, 0.14, Math.max(40, reach * 0.6));
       if (!polygon) continue;
       if (fenceCount >= fenceCap) break;
       features.push({
         id: `fence-est-${fenceCount}`,
         kind: "fence",
-        label: "Fence",
+        label: hasParcel ? "Lot line fence" : "Fence",
         polygon,
         height: HEIGHT.fence,
         source: "estimated",
@@ -1039,12 +1105,29 @@ export function crossVerifySiteFeatures(opts: {
     return cueNear("garage", c, 10) || cueNear("shed", c, 10);
   });
 
-  // Add aerial cues the map missed.
+  // Add aerial cues the map missed (including fence / hedge ribbons).
   let addN = 0;
   for (const cue of cues) {
-    if (cue.kind === "yard" || cue.kind === "fence" || cue.kind === "road" || cue.kind === "signal" || cue.kind === "hydrant") continue;
+    if (cue.kind === "yard" || cue.kind === "road" || cue.kind === "signal" || cue.kind === "hydrant") continue;
     if ((cue.confidence ?? 0.5) < 0.4) continue;
     const c = ringCentroid(cue.polygon);
+    if (cue.kind === "fence") {
+      const ribbons = fenceRibbonsFromPolygon(cue.polygon);
+      const segs = ribbons.length ? ribbons : [cue.polygon];
+      for (const polygon of segs) {
+        const mid = ringCentroid(polygon);
+        if (filtered.some((f) => f.kind === "fence" && dist(ringCentroid(f.polygon), mid) < 2.5)) continue;
+        filtered.push({
+          id: `verify-aerial-${addN++}`,
+          kind: "fence",
+          label: cue.label?.trim() || LABEL.fence,
+          polygon,
+          height: HEIGHT.fence,
+          source: "aerial",
+        });
+      }
+      continue;
+    }
     const dup = filtered.some(
       (f) =>
         (f.kind === cue.kind || ((f.kind === "garage" || f.kind === "shed") && (cue.kind === "garage" || cue.kind === "shed"))) &&

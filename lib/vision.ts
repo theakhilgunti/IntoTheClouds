@@ -18,6 +18,15 @@ export const HouseFacts = z.object({
   photo_matches_aerial: z.enum(["yes", "no", "unsure", "no_photo"]),
   /** Front door / main entry as seen from the street. */
   entry: z.enum(["center", "left", "right", "unknown"]).default("unknown"),
+  /**
+   * Front door position along the street facade (0 = left edge, 1 = right edge)
+   * as seen standing on the street looking at the house.
+   */
+  front_door_t: z.number().min(0).max(1).optional(),
+  /** Visible front-facing window openings on the main story (approx). */
+  front_windows: z.number().int().min(0).max(12).optional(),
+  /** Pedestrian side entry toward a driveway / flank. */
+  side_entry: z.enum(["left", "right", "none", "unknown"]).default("unknown"),
   /** Covered porch or stoop visible on the street facade. */
   porch: z.enum(["yes", "no", "unknown"]).default("unknown"),
   confidence: z.number().min(0).max(1),
@@ -50,6 +59,21 @@ const RESPONSE_SCHEMA = {
       enum: ["center", "left", "right", "unknown"],
       description: "Main front entry as seen from the street looking at the facade",
     },
+    front_door_t: {
+      type: "NUMBER",
+      description:
+        "0 to 1 position of the main front door along the street facade (0=left edge, 1=right edge as seen from the street). Prefer Street View.",
+    },
+    front_windows: {
+      type: "INTEGER",
+      description:
+        "Approximate count of front-facing window openings on the main above-ground story (not counting the door or garage door). Prefer Street View.",
+    },
+    side_entry: {
+      type: "STRING",
+      enum: ["left", "right", "none", "unknown"],
+      description: "Pedestrian side door toward the driveway / flank, as seen from the street",
+    },
     porch: {
       type: "STRING",
       enum: ["yes", "no", "unknown"],
@@ -64,7 +88,7 @@ const RESPONSE_SCHEMA = {
   },
   required: [
     "stories", "roof_shape", "ridge_along", "garage", "basement", "exterior_material", "style",
-    "photo_matches_aerial", "entry", "porch", "confidence", "observations",
+    "photo_matches_aerial", "entry", "side_entry", "porch", "confidence", "observations",
   ],
 };
 
@@ -107,7 +131,7 @@ export async function describeHouse(opts: {
     parts.push({
       text:
         `Image ${n}: Google Street View of the ${where}, looking at the house from the road. ` +
-        "Use this for stories, garage side, entry, porch, basement windows, and exterior material. " +
+        "Use this for stories, garage side, entry, front_door_t, front_windows, side_entry, porch, basement windows, and exterior material. " +
         "Left/right are as seen in this street view.",
     });
     parts.push({ inlineData: { mimeType: img.mime, data: img.base64 } });
@@ -116,8 +140,11 @@ export async function describeHouse(opts: {
     text:
       "You help firefighters understand a house before they go in. Describe the house at the center of the " +
       "aerial image (and in the street / Street View photos, if given). Count floors above ground carefully: a dormer or attic " +
-      "window does not count as a full floor. Prefer Street View for stories, garage left/right, entry, porch, and basement " +
-      "windows when those shots are present. For roof_shape and ridge_along, prefer the aerial: a long dark " +
+      "window does not count as a full floor. Prefer Street View for stories, garage left/right, entry, front_door_t, " +
+      "front_windows, side_entry, porch, and basement windows when those shots are present. " +
+      "front_door_t is 0 at the left edge of the street facade and 1 at the right edge as you face the house. " +
+      "front_windows counts openings on the main story facing the street (exclude the door and garage door). " +
+      "For roof_shape and ridge_along, prefer the aerial: a long dark " +
       "rectangle with a center seam is usually a gable; a rectangle that tapers on all four sides is a hip; a " +
       "featureless pad is flat. Only report what the images support; use \"unknown\" when you cannot tell. Map " +
       "data we already have:\n" + opts.facts,
@@ -148,11 +175,20 @@ export async function describeHouse(opts: {
   raw.observations = (raw.observations ?? []).slice(0, 6);
   if (!raw.ridge_along) raw.ridge_along = "unknown";
   if (!raw.entry) raw.entry = "unknown";
+  if (!raw.side_entry) raw.side_entry = "unknown";
   if (!raw.porch) raw.porch = "unknown";
+  if (raw.front_door_t != null) {
+    const t = Number(raw.front_door_t);
+    raw.front_door_t = Number.isFinite(t) ? Math.min(1, Math.max(0, t)) : undefined;
+  }
+  if (raw.front_windows != null) {
+    const n = Math.round(Number(raw.front_windows));
+    raw.front_windows = Number.isFinite(n) ? Math.min(12, Math.max(0, n)) : undefined;
+  }
   return HouseFacts.parse(raw);
 }
 
-const SITE_KINDS = ["garage", "shed", "driveway", "patio", "pool", "trees"] as const;
+const SITE_KINDS = ["garage", "shed", "driveway", "patio", "pool", "trees", "fence"] as const;
 
 export const AerialBox = z.object({
   kind: z.enum(SITE_KINDS),
@@ -208,10 +244,12 @@ export async function describeSite(aerial: Image, crossCheck?: Image | null): Pr
   }
   parts.push({
     text:
-      "Cross-verify structures you would see on a satellite map around that house: detached garage, shed, driveway, patio or deck, swimming pool, and a distinct clump of trees. " +
-      "Prefer features confirmed by paving tone, shadow, and roof rectangles — not guesses. " +
+      "Cross-verify structures and yard obstacles around that house: detached garage, shed, driveway, patio or deck, swimming pool, " +
+      "distinct tree clumps, and fence or hedge lines (thin boxes along backyard and side-lot barriers). " +
+      "Prefer features confirmed by paving tone, shadow, roof rectangles, or dark/green linear ribbons — not guesses. " +
       "Coordinates are 0 to 1000. x grows to the right (east). y grows downward (south). Boxes should be tight. " +
-      "If you are not sure a feature is there, leave it out. Do not mark fences or the street itself. Return an empty list when the photo is unclear.",
+      "For fences/hedges, draw elongated boxes along the barrier (not the street curb). " +
+      "If you are not sure a feature is there, leave it out. Do not mark the street itself. Return an empty list when the photo is unclear.",
   });
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel()}:generateContent`,

@@ -1,6 +1,7 @@
 /**
  * Lightweight site cues from an Esri / satellite JPEG (no Gemini required).
- * Finds dark paved ribbons (driveways) and secondary dark rectangles (likely garages).
+ * Finds dark paved ribbons (driveways), secondary dark rectangles (likely garages),
+ * and thin dark/green linear features (likely fences / hedges).
  */
 import jpeg from "jpeg-js";
 import type { Image } from "./imagery";
@@ -16,6 +17,11 @@ export type AerialSiteCue = {
 
 function lum(r: number, g: number, b: number) {
   return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+/** Green-ish vegetation (hedges) vs grey pavement. */
+function greenness(r: number, g: number, b: number) {
+  return g - (r + b) * 0.5;
 }
 
 /**
@@ -98,10 +104,98 @@ export function analyzeAerialSite(image: Image, halfSize: number): AerialSiteCue
       }
     }
 
-    return cues.filter((c) => c.confidence >= 0.35).slice(0, 4);
+    const fenceCues = extractLinearFenceCues(data, w, h, halfSize, cx0, cx1, cy0, cy1);
+    cues.push(...fenceCues);
+
+    return cues.filter((c) => c.confidence >= 0.35).slice(0, 10);
   } catch {
     return [];
   }
+}
+
+/**
+ * Thin dark or green ribbons outside the house — candidate fences / hedges.
+ * Emits up to a few elongated boxes in the model frame.
+ */
+function extractLinearFenceCues(
+  data: Uint8Array | Uint8ClampedArray | Buffer,
+  w: number,
+  h: number,
+  halfSize: number,
+  cx0: number,
+  cx1: number,
+  cy0: number,
+  cy1: number,
+): AerialSiteCue[] {
+  const vals: number[] = [];
+  const greens: number[] = [];
+  for (let y = 0; y < h; y += 3) {
+    for (let x = 0; x < w; x += 3) {
+      if (x >= cx0 && x < cx1 && y >= cy0 && y < cy1) continue;
+      const i = (y * w + x) * 4;
+      vals.push(lum(data[i], data[i + 1], data[i + 2]));
+      greens.push(greenness(data[i], data[i + 1], data[i + 2]));
+    }
+  }
+  if (vals.length < 40) return [];
+  vals.sort((a, b) => a - b);
+  greens.sort((a, b) => a - b);
+  const darkCut = vals[Math.floor(vals.length * 0.22)] ?? 70;
+  const greenCut = greens[Math.floor(greens.length * 0.72)] ?? 12;
+
+  type Cell = { x: number; y: number };
+  const cells: Cell[] = [];
+  const step = Math.max(2, Math.floor(Math.min(w, h) / 180));
+  for (let y = step; y < h - step; y += step) {
+    for (let x = step; x < w - step; x += step) {
+      if (x >= cx0 && x < cx1 && y >= cy0 && y < cy1) continue;
+      const i = (y * w + x) * 4;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const v = lum(r, g, b);
+      const gn = greenness(r, g, b);
+      if (v <= darkCut || gn >= greenCut) cells.push({ x, y });
+    }
+  }
+
+  const out: AerialSiteCue[] = [];
+  let remaining = cells;
+  for (let n = 0; n < 5 && remaining.length >= 10; n++) {
+    const blob = densestBlob(remaining.map((c) => ({ ...c, v: 0 })), w, h, 0.004, 0.06);
+    if (!blob) break;
+    const bw = blob.maxX - blob.minX;
+    const bh = blob.maxY - blob.minY;
+    const aspect = (bw + 1) / Math.max(1, bh + 1);
+    // Fences/hedges are elongated; skip compact garage-like blobs.
+    if (aspect < 1.8 && aspect > 1 / 1.8) {
+      remaining = remaining.filter(
+        (c) => !(c.x >= blob.minX - 4 && c.x <= blob.maxX + 4 && c.y >= blob.minY - 4 && c.y <= blob.maxY + 4),
+      );
+      continue;
+    }
+    const poly = boxToPolygon(
+      {
+        x0: (blob.minX / w) * 1000,
+        y0: (blob.minY / h) * 1000,
+        x1: (blob.maxX / w) * 1000,
+        y1: (blob.maxY / h) * 1000,
+      },
+      halfSize,
+    );
+    if (poly) {
+      out.push({
+        kind: "fence",
+        label: aspect >= 1.8 || aspect <= 1 / 1.8 ? "Fence / hedge (aerial)" : "Yard barrier (aerial)",
+        polygon: poly,
+        confidence: Math.min(0.8, blob.score * 0.95),
+      });
+    }
+    remaining = remaining.filter(
+      (c) => !(c.x >= blob.minX - 6 && c.x <= blob.maxX + 6 && c.y >= blob.minY - 6 && c.y <= blob.maxY + 6),
+    );
+  }
+  return out;
 }
 
 function densestBlob(

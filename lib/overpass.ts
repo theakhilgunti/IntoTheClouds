@@ -64,6 +64,18 @@ function isTreeRowTags(tags: Record<string, string> | undefined): boolean {
   return tags?.natural === "tree_row";
 }
 
+/** Yard / lot barriers worth drawing as fence segments. */
+function isBarrierTags(tags: Record<string, string> | undefined): boolean {
+  if (!tags?.barrier) return false;
+  return /^(fence|wall|hedge|retaining_wall|city_wall|guard_rail|cable_barrier|handrail)$/.test(tags.barrier);
+}
+
+/** Soft green / garden rings — treat outline as a fence-like perimeter when useful. */
+function isGardenTags(tags: Record<string, string> | undefined): boolean {
+  if (!tags) return false;
+  return tags.leisure === "garden" || tags.landuse === "garden" || tags.landuse === "allotments";
+}
+
 /** Sample points along a polyline every ~spacing meters (includes endpoints). */
 function samplePolyline(pts: Point[], spacing = 4): Point[] {
   if (pts.length === 0) return [];
@@ -119,11 +131,12 @@ async function fromOsmApi(o: LatLng, radius: number): Promise<OsmFetch> {
   for (const e of j.elements) {
     if (e.type !== "way" || !e.tags) continue;
     const tags = e.tags as Record<string, string>;
-    const barrier = tags.barrier && /^(fence|wall|hedge)$/.test(tags.barrier);
+    const barrier = isBarrierTags(tags);
+    const garden = isGardenTags(tags);
     const pool = tags.leisure === "swimming_pool";
     const parking = tags.amenity === "parking" || tags.leisure === "parking";
     const treeRow = isTreeRowTags(tags);
-    if (!tags.building && !(tags.highway && ROADS.test(tags.highway)) && !barrier && !pool && !parking && !treeRow) continue;
+    if (!tags.building && !(tags.highway && ROADS.test(tags.highway)) && !barrier && !garden && !pool && !parking && !treeRow) continue;
     const geometry = (e.nodes as number[]).map((id) => nodes.get(id)).filter(Boolean) as { lat: number; lon: number }[];
     if (treeRow && geometry.length >= 2) {
       const local = geometry.map((g) => toLocal(o, { lat: g.lat, lng: g.lon }));
@@ -249,11 +262,15 @@ export async function lookupBuilding(origin: LatLng, heading?: number | null, hi
 (
   way["building"](around:${R},${origin.lat},${origin.lng});
   way["highway"~"^(residential|service|tertiary|secondary|primary|unclassified|living_street|trunk)$"](around:${R},${origin.lat},${origin.lng});
-  way["barrier"~"^(fence|wall|hedge)$"](around:${R},${origin.lat},${origin.lng});
+  way["barrier"~"^(fence|wall|hedge|retaining_wall|city_wall|guard_rail|cable_barrier|handrail)$"](around:${R},${origin.lat},${origin.lng});
+  way["leisure"="garden"](around:${R},${origin.lat},${origin.lng});
+  way["landuse"="garden"](around:${R},${origin.lat},${origin.lng});
+  way["landuse"="allotments"](around:${R},${origin.lat},${origin.lng});
   way["leisure"="swimming_pool"](around:${R},${origin.lat},${origin.lng});
   way["amenity"="parking"](around:${R},${origin.lat},${origin.lng});
   way["leisure"="parking"](around:${R},${origin.lat},${origin.lng});
   way["natural"="tree_row"](around:${R},${origin.lat},${origin.lng});
+  way["barrier"="hedge"](around:${R},${origin.lat},${origin.lng});
   node["natural"="tree"](around:${R},${origin.lat},${origin.lng});
   node["emergency"="fire_hydrant"](around:${HYDRANT_R},${origin.lat},${origin.lng});
   node["amenity"="fire_hydrant"](around:${HYDRANT_R},${origin.lat},${origin.lng});
@@ -297,8 +314,16 @@ out tags geom;`;
     } else if (w.tags?.amenity === "parking" || w.tags?.leisure === "parking") {
       const ring = pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1] ? pts.slice(0, -1) : pts;
       if (ring.length >= 3) parking.push(ring);
-    } else if (w.tags?.barrier) {
+    } else if (isBarrierTags(w.tags)) {
       fences.push(pts);
+    } else if (isGardenTags(w.tags)) {
+      // Closed garden / allotment rings → perimeter segments for backyard obstacle context.
+      const ring =
+        pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]
+          ? pts.slice(0, -1)
+          : pts;
+      if (ring.length >= 3) fences.push([...ring, ring[0]]);
+      else if (pts.length >= 2) fences.push(pts);
     }
   }
 
@@ -404,7 +429,7 @@ out tags geom;`;
       seenTree.add(key);
       return true;
     })
-    .slice(0, 60)
+    .slice(0, 90)
     .map((t) => t.p);
 
   return {

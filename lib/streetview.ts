@@ -7,7 +7,13 @@ import type { Point } from "@/packages/schema/building-model";
 import type { Image } from "./imagery";
 import { facadeHeadings } from "./streetview-cues";
 
-export { facadeHeadings, mergeGarageCue, mergeStoriesCue } from "./streetview-cues";
+export {
+  facadeHeadings,
+  frontDoorFractionFromFacade,
+  mergeGarageCue,
+  mergeStoriesCue,
+  nudgeRoomBays,
+} from "./streetview-cues";
 
 export type StreetViewShot = {
   image: Image;

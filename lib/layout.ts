@@ -15,6 +15,7 @@ import type {
 import { minAreaRect } from "./geo";
 import { roomBays } from "./compound-geom";
 import { clipPolyToRect, signedArea, wallsAlongOutline, type OutlineWall } from "./outline";
+import { frontDoorFractionFromFacade, nudgeRoomBays } from "./streetview-cues";
 
 type Rect = { x0: number; y0: number; x1: number; y1: number };
 type PlanRoom = { id: string; name: string; type: RoomType; r: Rect; zone: string };
@@ -50,6 +51,15 @@ export type HouseSpec = {
   /** Which side the driveway is on, as you stand on the street looking at the front door. */
   drivewaySide: "left" | "right" | null;
   use?: BuildingUse;
+  /** Override depth-based bay count (e.g. from Street View front windows). */
+  bays?: number | null;
+};
+
+/** Street-facade cues used to place exit doors (plan frame: +x = right when facing the house). */
+export type FacadeOpenings = {
+  /** 0 = left edge of front wall, 1 = right edge, as seen from the street. */
+  frontDoorFromLeft: number;
+  sideEntry?: "left" | "right" | "none" | "unknown";
 };
 
 const FLOOR_NAMES: Record<number, string> = { [-1]: "Basement", 0: "1st Floor", 1: "2nd Floor", 2: "3rd Floor" };
@@ -124,7 +134,7 @@ function planHouse(spec: HouseSpec, notes: string[]): PlanFloor[] {
     return out;
   }
 
-  const bays = roomBays(D);
+  const bays = Math.max(2, Math.min(4, Math.round(spec.bays ?? roomBays(D))));
   const edges = bayEdges(y0, D, bays);
   const column = (i: number): Rect => ({ x0: rx0, y0: edges[i], x1: rx1, y1: edges[i + 1] });
 
@@ -389,8 +399,22 @@ function bayEdges(y0: number, depth: number, n: number): number[] {
 
 type ZWall = Wall & { zones: [string, string | null] };
 
+/** Map a 0..1 “from left as seen from street” fraction onto wall parameter t (a→b). */
+function tFromLeftOnWall(w: Wall, fromLeft: number): number {
+  const f = Math.min(0.85, Math.max(0.15, fromLeft));
+  const leftIsA = w.a[0] <= w.b[0];
+  return leftIsA ? f : 1 - f;
+}
+
 /** Doors on walls that already follow the outline. Front and back are the long edges; the side door faces the driveway. */
-function placeDoors(prefix: string, raw: OutlineWall[], zones: string[], isGround: boolean, drivewaySide: "left" | "right" | null) {
+function placeDoors(
+  prefix: string,
+  raw: OutlineWall[],
+  zones: string[],
+  isGround: boolean,
+  drivewaySide: "left" | "right" | null,
+  facade?: FacadeOpenings | null,
+) {
   const walls: ZWall[] = raw.map((w, i) => ({
     id: `${prefix}w${i}`,
     a: w.a,
@@ -405,8 +429,14 @@ function placeDoors(prefix: string, raw: OutlineWall[], zones: string[], isGroun
   const between = (z1: string, z2: string) =>
     walls.filter((w) => !w.exterior && w.zones.includes(z1) && w.zones.includes(z2) && len(w) >= 0.7);
   const doors: Door[] = [];
-  const addDoor = (w: ZWall, width = 0.85, exit = false) =>
-    doors.push({ id: `${prefix}d${doors.length}`, wallId: w.id, t: 0.5, width: Math.min(width, Math.max(0.6, len(w) - 0.2)), exit });
+  const addDoor = (w: ZWall, width = 0.85, exit = false, t = 0.5) =>
+    doors.push({
+      id: `${prefix}d${doors.length}`,
+      wallId: w.id,
+      t: Math.min(0.9, Math.max(0.1, t)),
+      width: Math.min(width, Math.max(0.6, len(w) - 0.2)),
+      exit,
+    });
 
   const start = zones.includes("hall") ? "hall" : zones.includes("base") ? "base" : zones[0];
   const reached = new Set(start ? [start] : []);
@@ -429,7 +459,10 @@ function placeDoors(prefix: string, raw: OutlineWall[], zones: string[], isGroun
     const pick = (pred: (w: ZWall) => boolean, score: (w: ZWall) => number) =>
       ext.filter(pred).sort((a, b) => score(a) - score(b))[0];
     const frontDoor = pick((w) => across(w) && (w.zones.includes("hall") || w.zones.includes("living")), (w) => mid(w)[1]);
-    if (frontDoor) addDoor(frontDoor, 1.0, true);
+    if (frontDoor) {
+      const fromLeft = facade?.frontDoorFromLeft ?? 0.5;
+      addDoor(frontDoor, 1.0, true, tFromLeftOnWall(frontDoor, fromLeft));
+    }
     const backDoor = pick(
       (w) => across(w) && w !== frontDoor && (w.zones.includes("kitchen") || w.zones.includes("hall") || w.zones.includes("mud")),
       (w) => -mid(w)[1],
@@ -437,11 +470,15 @@ function placeDoors(prefix: string, raw: OutlineWall[], zones: string[], isGroun
     if (backDoor) addDoor(backDoor, 0.9, true);
     const garageDoor = pick((w) => across(w) && w.zones.includes("garage"), (w) => mid(w)[1]);
     if (garageDoor) addDoor(garageDoor, Math.min(4.8, len(garageDoor) - 0.2), true);
-    if (drivewaySide) {
+    const sidePref =
+      facade?.sideEntry === "left" || facade?.sideEntry === "right"
+        ? facade.sideEntry
+        : drivewaySide;
+    if (sidePref) {
       const sideWalls = ext.filter((w) => !across(w));
       const preferred = sideWalls.filter((w) => w.zones.includes("kitchen") || w.zones.includes("hall"));
       const pool = preferred.length ? preferred : sideWalls;
-      const sideDoor = pool.sort((a, b) => (drivewaySide === "right" ? mid(b)[0] - mid(a)[0] : mid(a)[0] - mid(b)[0]))[0];
+      const sideDoor = pool.sort((a, b) => (sidePref === "right" ? mid(b)[0] - mid(a)[0] : mid(a)[0] - mid(b)[0]))[0];
       if (sideDoor && sideDoor !== frontDoor && sideDoor !== backDoor) addDoor(sideDoor, 0.9, true);
     }
   }
@@ -481,6 +518,13 @@ export type BuildInput = {
   garageAt?: Point | null;
   /** Interior program from OSM building=* (house, school, office, …). */
   use?: BuildingUse;
+  /** Street View / photo facade cues for exit doors and bay rhythm. */
+  facade?: {
+    entry?: "center" | "left" | "right" | "unknown";
+    frontDoorT?: number | null;
+    frontWindows?: number | null;
+    sideEntry?: "left" | "right" | "none" | "unknown";
+  } | null;
 };
 
 export type BuildOutput = { model: BuildingModel; width: number; depth: number; facing: string; notes: string[] };
@@ -522,6 +566,23 @@ export function buildHouse(input: BuildInput): BuildOutput {
     if (Math.abs(s) > 0.4) drivewaySide = s > 0 ? "right" : "left";
   }
   const use = input.use ?? "house";
+  const facadeBays =
+    use === "house" && input.facade?.frontWindows != null
+      ? nudgeRoomBays(roomBays(depth), input.facade.frontWindows)
+      : null;
+  if (facadeBays != null && facadeBays !== roomBays(depth)) {
+    notes.push(`Street-facing window rhythm suggests about ${facadeBays} room bays along the depth.`);
+  }
+  const facadeOpenings: FacadeOpenings | null =
+    use === "house" && input.facade
+      ? {
+          frontDoorFromLeft: frontDoorFractionFromFacade({
+            entry: input.facade.entry,
+            frontDoorT: input.facade.frontDoorT,
+          }),
+          sideEntry: input.facade.sideEntry,
+        }
+      : null;
   const plan = planBuilding(
     {
       width,
@@ -531,6 +592,7 @@ export function buildHouse(input: BuildInput): BuildOutput {
       garage: use === "house" ? input.garage : "none",
       drivewaySide: use === "house" ? drivewaySide : null,
       use,
+      bays: facadeBays,
     },
     notes,
   );
@@ -548,6 +610,7 @@ export function buildHouse(input: BuildInput): BuildOutput {
       [...new Set(rooms.map((r) => r.zone))],
       pf.level === 0,
       drivewaySide,
+      facadeOpenings,
     );
     const stairs: Stairs[] = [];
     const stairPoly = rooms.find((r) => r.type === "stair")?.poly;

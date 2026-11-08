@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { facadeHeadings, mergeGarageCue, mergeStoriesCue } from "./streetview-cues.ts";
+import {
+  facadeHeadings,
+  frontDoorFractionFromFacade,
+  mergeGarageCue,
+  mergeStoriesCue,
+  nudgeRoomBays,
+} from "./streetview-cues.ts";
 
 describe("street view helpers", () => {
   it("fans facade headings left and right of the look direction", () => {
@@ -26,5 +32,16 @@ describe("street view helpers", () => {
     assert.equal(mergeStoriesCue(2, 3, { streetViewConfidence: 0.7, hadUserPhoto: true }), 2);
     assert.equal(mergeStoriesCue(2, 2, { streetViewConfidence: 0.9 }), 2);
     assert.equal(mergeStoriesCue(undefined, 1, { streetViewConfidence: 0.6 }), 1);
+  });
+
+  it("maps entry / front_door_t onto a facade fraction and nudges bay counts", () => {
+    assert.equal(frontDoorFractionFromFacade({ entry: "left" }), 0.28);
+    assert.equal(frontDoorFractionFromFacade({ entry: "right" }), 0.72);
+    assert.equal(frontDoorFractionFromFacade({ entry: "center", frontDoorT: 0.41 }), 0.41);
+    assert.equal(frontDoorFractionFromFacade({ frontDoorT: 1.4 }), 0.85);
+    assert.equal(nudgeRoomBays(3, 3), 3);
+    assert.equal(nudgeRoomBays(2, 4), 3);
+    assert.equal(nudgeRoomBays(4, 2), 3);
+    assert.equal(nudgeRoomBays(3, null), 3);
   });
 });

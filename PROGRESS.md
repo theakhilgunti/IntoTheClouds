@@ -59,6 +59,8 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 03:55 | Cursor | UI-57 | Street View front door t + window count nudge bays / exit doors (compound-v20). |
+| 03:45 | Cursor | UI-56 | Denser backyard fences/obstacles: OSM barriers, aerial fence cues, parcel soft edges (compound-v19). |
 | 03:35 | Cursor | UI-55 | Street View facade cross-check (stories/garage/entry/porch) via Gemini (compound-v18). |
 | 03:28 | Cursor | UI-54 | Drop solid house building pad; warped grid/DEM convey ground. |
 | 03:25 | Cursor | UI-53 | Flat house pad (no DEM twist) + ground grid warped to lot grade/DEM. |
@@ -145,3 +147,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 03:19 | Cursor | UI-53 | Finished task |
 | 03:22 | Cursor | UI-54 | Finished task |
 | 03:31 | Cursor | UI-55 | Finished task |
+| 03:39 | Cursor | UI-56 | Finished task |
+| 03:44 | Cursor | UI-57 | Finished task |

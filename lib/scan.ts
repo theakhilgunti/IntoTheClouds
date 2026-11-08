@@ -164,7 +164,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v18" || saved.model.roof?.basis !== "roof-v3");
+      (saved.model.compound?.basis !== "compound-v20" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -449,11 +449,45 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   }
 
   if (sure && sure.entry && sure.entry !== "unknown") {
+    const doorT = sure.front_door_t != null ? Math.round(sure.front_door_t * 100) : null;
     attributes.push({
       field: "Front entry",
-      value: sure.entry === "center" ? "Center of facade" : sure.entry === "left" ? "Left side of facade" : "Right side of facade",
+      value:
+        sure.entry === "center"
+          ? "Center of facade"
+          : sure.entry === "left"
+            ? "Left side of facade"
+            : "Right side of facade",
       from: "photos",
-      note: streetViewImages.length ? "From Street View / street photos" : "From street photos",
+      note: [
+        streetViewImages.length ? "Street View / street photos" : "Street photos",
+        doorT != null ? `door ~${doorT}% along facade` : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    });
+  }
+  if (sure && sure.front_windows != null && sure.front_windows > 0) {
+    attributes.push({
+      field: "Front windows",
+      value: String(sure.front_windows),
+      from: "photos",
+      note: streetViewImages.length
+        ? "Counted on Street View; used to nudge room bays"
+        : "Counted on street photos; used to nudge room bays",
+    });
+  }
+  if (sure && sure.side_entry && sure.side_entry !== "unknown") {
+    attributes.push({
+      field: "Side entry",
+      value:
+        sure.side_entry === "none"
+          ? "None visible"
+          : sure.side_entry === "left"
+            ? "Left flank"
+            : "Right flank",
+      from: "photos",
+      note: streetViewImages.length ? "Street View facade check" : undefined,
     });
   }
   if (sure && sure.porch && sure.porch !== "unknown") {
@@ -540,6 +574,15 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     roofPlan,
     garageAt: buildingUse === "house" ? garageAt : null,
     use: buildingUse,
+    facade:
+      buildingUse === "house" && sure
+        ? {
+            entry: sure.entry,
+            frontDoorT: sure.front_door_t ?? null,
+            frontWindows: sure.front_windows ?? null,
+            sideEntry: sure.side_entry,
+          }
+        : null,
   });
 
   if (verified) {
@@ -666,7 +709,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const entrySteps = entryStairFeatures({ streetDir, grade, exits });
   built.model.compound = {
     features: [...kept, ...access, ...entrySteps],
-    basis: "compound-v18",
+    basis: "compound-v20",
     grade: grade ?? undefined,
   };
   if (grade?.dem) {
@@ -708,6 +751,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     });
   }
   if (jpegSiteCues.length || geminiAerial.length || googleSat) {
+    const fenceCues = [...geminiAerial, ...jpegSiteCues].filter((c) => c.kind === "fence").length;
     sources.push({
       id: "site-verify",
       name: "Site structure cross-check",
@@ -715,8 +759,27 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       detail: [
         geminiAerial.length ? `${geminiAerial.length} Gemini satellite box(es)` : null,
         jpegSiteCues.length ? `${jpegSiteCues.length} Esri JPEG cue(s)` : null,
+        fenceCues ? `${fenceCues} fence/hedge cue(s)` : null,
         googleSat ? "Google Static satellite" : null,
         "OpenStreetMap outlines",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    });
+  }
+  const yardFences = built.model.compound?.features.filter((f) => f.kind === "fence") ?? [];
+  if (yardFences.length) {
+    const fromAerial = yardFences.filter((f) => f.source === "aerial").length;
+    const fromMap = yardFences.filter((f) => f.source === "map").length;
+    const fromEst = yardFences.filter((f) => f.source === "estimated").length;
+    attributes.push({
+      field: "Yard barriers",
+      value: `${yardFences.length} fence/hedge segment(s)`,
+      from: fromMap ? "map" : fromAerial ? "photos" : "estimated",
+      note: [
+        fromMap ? `${fromMap} mapped` : null,
+        fromAerial ? `${fromAerial} from aerial` : null,
+        fromEst ? `${fromEst} estimated along lot line` : null,
       ]
         .filter(Boolean)
         .join(" · "),

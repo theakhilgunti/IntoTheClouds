@@ -40,3 +40,35 @@ export function mergeStoriesCue(
   if ((opts?.streetViewConfidence ?? 0) >= 0.5) return streetView;
   return primary;
 }
+
+/**
+ * Front-door position along the street facade as seen from the road (0 = left, 1 = right).
+ * Prefers an explicit Gemini `front_door_t`; falls back to entry left/center/right.
+ */
+export function frontDoorFractionFromFacade(opts: {
+  entry?: "center" | "left" | "right" | "unknown";
+  frontDoorT?: number | null;
+}): number {
+  const t = opts.frontDoorT;
+  if (t != null && Number.isFinite(t)) return Math.min(0.85, Math.max(0.15, t));
+  if (opts.entry === "left") return 0.28;
+  if (opts.entry === "right") return 0.72;
+  return 0.5;
+}
+
+/**
+ * Soft bay count from Street View front-window rhythm, clamped near the depth-based estimate.
+ * `baseBays` is typically `roomBays(depth)`.
+ */
+export function nudgeRoomBays(baseBays: number, frontWindows: number | null | undefined): number {
+  const base = Math.max(2, Math.min(4, Math.round(baseBays)));
+  if (frontWindows == null || !Number.isFinite(frontWindows) || frontWindows < 1) return base;
+  const w = Math.round(frontWindows);
+  let fromWin = w;
+  if (w >= 7) fromWin = 4;
+  else if (w === 5 || w === 6) fromWin = 3;
+  fromWin = Math.max(2, Math.min(4, fromWin));
+  if (fromWin > base + 1) return base + 1;
+  if (fromWin < base - 1) return Math.max(2, base - 1);
+  return fromWin;
+}
