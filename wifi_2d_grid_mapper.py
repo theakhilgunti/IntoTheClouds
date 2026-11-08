@@ -39,7 +39,7 @@ import subprocess
 import asyncio
 import threading
 import webbrowser
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler  # threaded: the live SSE stream must not block other requests
 from urllib.parse import urlparse, parse_qs
 from collections import deque
 
@@ -211,6 +211,13 @@ class GlobalState:
         self.vel_y = 0.0
         self.speed = 0.0
         self.heading_deg = 0.0
+        # iPhone compass feed (MAP-02): raw compass bearing from the backend's /api/phone, and the
+        # compass bearing of map +y found when you tap "Set +X". Heading is only taken from the phone
+        # once it is aligned and fresh; otherwise it falls back to the direction of motion.
+        self.phone_compass = None
+        self.phone_t = 0.0
+        self.phone_offset = 0.0
+        self.phone_aligned = False
         self.hdop = 1.0
         self.fix_type = "INITIALIZING" # "3-ANCHOR FIX", "2-ANCHOR FIX", "DEAD RECKONING"
         self.last_update_time = time.time()
@@ -481,7 +488,7 @@ def update_kalman_filter(z_x: float, z_y: float, dt: float, hdop: float):
     STATE.vel_x = float(x_new[2])
     STATE.vel_y = float(x_new[3])
     STATE.speed = float(np.hypot(STATE.vel_x, STATE.vel_y))
-    if STATE.speed > 0.08:
+    if STATE.speed > 0.08 and not phone_heading_active():
         STATE.heading_deg = float((math.degrees(math.atan2(STATE.vel_y, STATE.vel_x)) + 360) % 360)
 
 # =============================================================================
@@ -582,12 +589,114 @@ class WindowsWlanDriver:
         return results
 
 # =============================================================================
+# macOS Wi-Fi driver (CoreWLAN) - same interface as WindowsWlanDriver (MAP-02)
+# =============================================================================
+
+class MacWlanDriver:
+    """pip install pyobjc-framework-CoreWLAN. macOS hides BSSIDs from apps, so each network is keyed
+    by SSID + channel + band. Allow your terminal in System Settings > Privacy & Security > Location
+    Services, otherwise macOS blanks every network name."""
+    def __init__(self):
+        self.iface = None
+        self.is_ready = False
+        self._hidden_warned = False
+        try:
+            import CoreWLAN
+            self.iface = CoreWLAN.CWWiFiClient.sharedWiFiClient().interface()
+            self.is_ready = self.iface is not None
+            print("[WLAN] macOS CoreWLAN interface ready" if self.is_ready else "[WLAN] No Wi-Fi interface found.")
+        except ImportError:
+            print("[WLAN] Missing pyobjc-framework-CoreWLAN: pip install pyobjc-framework-CoreWLAN")
+        except Exception as e:
+            print(f"[WLAN] Init exception: {e}")
+
+    def trigger_scan(self):
+        pass  # scanForNetworks below performs the scan
+
+    def get_bss_list(self) -> list:
+        if not self.is_ready:
+            return []
+        results = []
+        try:
+            nets, err = self.iface.scanForNetworksWithName_error_(None, None)
+            band_names = {1: "2.4 GHz", 2: "5 GHz", 3: "6 GHz"}
+            hidden = 0
+            for n in (nets or []):
+                ssid = (n.ssid() or "").strip()
+                bssid = (n.bssid() or "").lower()
+                if not ssid and not bssid:
+                    hidden += 1
+                    continue
+                ch = n.wlanChannel()
+                band = band_names.get(int(ch.channelBand()), "Wi-Fi") if ch else "Wi-Fi"
+                chan = int(ch.channelNumber()) if ch else 0
+                rssi = int(n.rssiValue())
+                if not (-110 < rssi < 0):
+                    continue
+                key = bssid or f"{ssid.lower() or 'hidden'}|ch{chan}|{band.lower()}"
+                results.append({
+                    "signal_id": f"wifi:{key}", "name": ssid or "<Hidden Hotspot>", "bssid_mac": key,
+                    "radio_type": f"Wi-Fi {band}", "rssi": rssi,
+                    "quality": max(0, min(100, int(round(2 * (rssi + 100))))),
+                    "freq_mhz": 0.0, "timestamp": time.time()})
+            if hidden and not results and not self._hidden_warned:
+                self._hidden_warned = True
+                print(f"[WLAN] {hidden} networks hidden: allow Location Services for your terminal (System Settings > Privacy & Security).")
+        except Exception as e:
+            print(f"[WLAN] scan failed: {e}")
+        return results
+
+
+# =============================================================================
+# iPhone compass feed (MAP-02): reads the IntoTheClouds backend's /api/phone
+# =============================================================================
+
+PHONE_URL = "https://[::1]:8443"
+PHONE_FRESH_S = 3.0
+
+
+def phone_heading_active() -> bool:
+    return STATE.phone_aligned and STATE.phone_compass is not None and (time.time() - STATE.phone_t) < PHONE_FRESH_S
+
+
+def compass_to_map_heading(compass_deg: float, offset_deg: float) -> float:
+    """Compass bearing (clockwise from north) -> map heading (0 = +x, counter-clockwise)."""
+    return (90.0 - (compass_deg - offset_deg)) % 360.0
+
+
+def background_phone_thread():
+    import ssl
+    import urllib.request
+    ctx = ssl.create_default_context()
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    warned = False
+    while True:
+        try:
+            with urllib.request.urlopen(PHONE_URL + "/api/phone", timeout=2, context=ctx) as r:
+                d = json.load(r)
+            comp = (d.get("latest") or {}).get("orient", {}).get("compass")
+            age = d.get("age_s")
+            if isinstance(comp, (int, float)) and age is not None and age < PHONE_FRESH_S:
+                with STATE.lock:
+                    STATE.phone_compass = float(comp)
+                    STATE.phone_t = time.time()
+                    if STATE.phone_aligned:
+                        STATE.heading_deg = compass_to_map_heading(STATE.phone_compass, STATE.phone_offset)
+            warned = False
+        except Exception as e:
+            if not warned:
+                warned = True
+                print(f"[PHONE] backend not reachable at {PHONE_URL} ({e}); heading falls back to motion direction.")
+        time.sleep(0.15)
+
+
+# =============================================================================
 # Background Scanning Loop (High-Speed <1s updates)
 # =============================================================================
 
 def background_wifi_scanner_thread():
     """Continuously polls native Windows WLAN API every 250-350ms."""
-    driver = WindowsWlanDriver()
+    driver = MacWlanDriver() if sys.platform == "darwin" else WindowsWlanDriver()
     scan_tick = 0
     
     while True:
@@ -795,6 +904,9 @@ def positioning_engine_thread():
                     "speed_mps": round(STATE.speed, 2),
                     "speed_mph": round(STATE.speed * 2.23694, 1),
                     "heading_deg": round(STATE.heading_deg, 1),
+                    "heading_source": "phone" if phone_heading_active() else "motion",
+                    "phone_aligned": STATE.phone_aligned,
+                    "phone_compass": None if STATE.phone_compass is None else round(STATE.phone_compass, 1),
                     "hdop": STATE.hdop,
                     "fix_type": STATE.fix_type,
                     "update_hz": STATE.update_rate_hz,
@@ -1493,7 +1605,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
         </div>
         <div class="hud-sub-stats">
           <div>Speed: <strong id="hudSpeed">0.0 m/s</strong></div>
-          <div>Heading: <strong id="hudHeading">0°</strong></div>
+          <div>Heading: <strong id="hudHeading">0°</strong> <span id="hudHeadingSrc" style="opacity:.7;font-size:.8em"></span> <button onclick="alignPhone()" style="margin-left:6px">🧭 Set +X</button></div>
           <div>HDOP: <strong id="hudHdop">1.0</strong></div>
           <div>Latency: <strong id="hudLatency">210 ms</strong> (< 1s)</div>
         </div>
@@ -2164,6 +2276,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
       document.getElementById('hudYFt').innerText = telemetry.pos_y_ft.toFixed(1);
       document.getElementById('hudSpeed').innerText = `${telemetry.speed_mps.toFixed(2)} m/s (${telemetry.speed_mph.toFixed(1)} mph)`;
       document.getElementById('hudHeading').innerText = `${telemetry.heading_deg.toFixed(0)}°`;
+      document.getElementById('hudHeadingSrc').innerText = telemetry.heading_source === 'phone' ? '(iPhone)' : (telemetry.phone_compass === null ? '(motion; phone not connected)' : '(motion; tap Set +X)');
       document.getElementById('hudHdop').innerText = telemetry.hdop.toFixed(2);
       document.getElementById('hudLatency').innerText = `${telemetry.latency_ms.toFixed(0)} ms`;
       document.getElementById('badgeRate').innerText = `${telemetry.update_hz.toFixed(1)} Hz (${telemetry.latency_ms.toFixed(0)} ms)`;
@@ -2483,6 +2596,12 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
       await fetch('/api/reset_trail', { method: 'POST' });
     }
 
+    async function alignPhone() {
+      const res = await fetch('/api/align', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
+      const d = await res.json();
+      alert(res.ok ? 'Phone direction set as +X. Heading now follows the iPhone compass.' : d.status);
+    }
+
     function exportCSV() {
       window.location.href = '/api/export_csv';
     }
@@ -2751,6 +2870,20 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"status": "ok"}).encode('utf-8'))
             return
 
+        # 4b. Phone alignment: the phone is pointing along the map's +X axis right now
+        if url.path == "/api/align":
+            ok = False
+            with STATE.lock:
+                if STATE.phone_compass is not None and (time.time() - STATE.phone_t) < PHONE_FRESH_S:
+                    STATE.phone_offset = (STATE.phone_compass - 90.0) % 360.0
+                    STATE.phone_aligned = True
+                    ok = True
+            self.send_response(200 if ok else 409)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "ok" if ok else "no fresh phone compass (is /walker connected?)"}).encode('utf-8'))
+            return
+
         # 5. Clear Breadcrumb Trail
         if url.path == "/api/reset_trail":
             with STATE.lock:
@@ -2780,10 +2913,12 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
 # =============================================================================
 
 def main():
+    global PHONE_URL
     import argparse
     parser = argparse.ArgumentParser(description="IntoTheClouds: 2D Tactical Grid Mapper")
     parser.add_argument("--port", type=int, default=8899, help="HTTP Server Port (default: 8899)")
     parser.add_argument("--mock", action="store_true", help="Start immediately in simulation/mock mode")
+    parser.add_argument("--phone-url", default=PHONE_URL, help="IntoTheClouds backend that receives the iPhone sensors (default %(default)s)")
     parser.add_argument("--no-browser", action="store_true", help="Do not automatically open web browser")
     args = parser.parse_args()
 
@@ -2806,6 +2941,10 @@ def main():
     t_wifi.start()
     print("[+] Background Wi-Fi Driver: ACTIVE (Native wlanapi.dll C API)")
 
+    PHONE_URL = args.phone_url.rstrip("/")
+    threading.Thread(target=background_phone_thread, daemon=True, name="PhoneCompass").start()
+    print(f"[+] iPhone compass feed: polling {PHONE_URL}/api/phone")
+
     # Start BLE Scanner thread if available
     if HAS_BLEAK:
         t_ble = threading.Thread(target=background_ble_scanner_thread, daemon=True, name="BleScanner")
@@ -2822,11 +2961,11 @@ def main():
     # Start HTTP Web Server
     server_addr = ("0.0.0.0", args.port)
     try:
-        httpd = HTTPServer(server_addr, RadarHTTPHandler)
+        httpd = ThreadingHTTPServer(server_addr, RadarHTTPHandler)
     except OSError as e:
         print(f"[!] Port {args.port} in use, trying {args.port + 1}...")
         args.port += 1
-        httpd = HTTPServer(("0.0.0.0", args.port), RadarHTTPHandler)
+        httpd = ThreadingHTTPServer(("0.0.0.0", args.port), RadarHTTPHandler)
 
     hud_url = f"http://127.0.0.1:{args.port}"
     lan_url = f"http://{STATE.lan_ip}:{args.port}"
