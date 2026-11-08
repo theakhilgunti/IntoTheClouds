@@ -2,8 +2,8 @@ import asyncio
 import json
 import logging
 import time
-from typing import Dict, List, Set
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from typing import Dict, List, Optional, Set
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from .models import BeaconAnchor, FirefighterState, HazardPin, TelemetryPayload
@@ -11,6 +11,7 @@ import numpy as np
 from .fusion.math_engine import ParticleFilterLocalizer
 from .fusion.rf_map import RFMap
 from .explored_session import build_exploration_payload, persist_exploration
+from .pro import ProSetup, ProState, build_state, local_to_site, sim_position, sim_scans
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("IntoTheClouds")
@@ -70,8 +71,103 @@ rf_map = RFMap(-2.0, -2.0, 12.0, 12.0, cell_m=0.5)
 current_state: FirefighterState = localizer.get_state("FF_Pi_Rig_1", 0.0, time.time())
 session_started_at: float = time.time()
 
+# CloudScan Pro: the 3-point setup sent from the website (None until linked).
+pro_state: Optional[ProState] = None
+sim_task: Optional[asyncio.Task] = None
+SIM_HZ = 5.0
+
 # Active dashboard WebSockets
 dashboard_clients: Set[WebSocket] = set()
+
+
+def current_bounds() -> tuple:
+    b = pro_state.bounds if pro_state else [-2.0, -2.0, 12.0, 12.0]
+    return (b[0], b[1], b[2], b[3])
+
+
+def site_position(x: float, y: float) -> Optional[dict]:
+    """Scanner-frame metres -> the website's site frame (only once a Pro setup is linked)."""
+    if pro_state is None:
+        return None
+    sx, sy = local_to_site(pro_state.frame, x, y)
+    return {"x": round(sx, 3), "y": round(sy, 3)}
+
+
+def pro_status() -> dict:
+    return {
+        "linked": pro_state is not None,
+        "simulating": sim_task is not None and not sim_task.done(),
+        "setup": pro_state.model_dump() if pro_state else None,
+        "state": current_state.model_dump(),
+        "site": site_position(current_state.x, current_state.y),
+    }
+
+
+async def stop_simulation() -> None:
+    global sim_task
+    if sim_task is not None and not sim_task.done():
+        sim_task.cancel()
+        try:
+            await sim_task
+        except asyncio.CancelledError:
+            pass
+    sim_task = None
+
+
+async def _simulate() -> None:
+    t0 = time.time()
+    while pro_state is not None:
+        t = time.time() - t0
+        lx, ly = pro_state.frame.length_x_m, pro_state.frame.length_y_m
+        px, py = sim_position(t, lx, ly)
+        await ingest_telemetry({
+            "device_id": "FF_SIM",
+            "timestamp": time.time(),
+            "pdr": {"step_detected": False},
+            "wifi_scans": sim_scans(pro_state.anchors, px, py),
+        })
+        await asyncio.sleep(1.0 / SIM_HZ)
+
+
+@app.post("/api/pro/setup")
+async def pro_setup(setup: ProSetup):
+    """Website -> backend: three typed points with device IPs. Rebuilds the scanner frame."""
+    global pro_state, localizer, rf_map, current_state, session_started_at
+    try:
+        state = build_state(setup)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    await stop_simulation()
+    pro_state = state
+    anchors.clear()
+    for a in state.anchors:
+        register_anchor(a)
+    localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=current_bounds())
+    rf_map = RFMap(*state.bounds, cell_m=0.5)
+    breadcrumbs.clear()
+    session_started_at = time.time()
+    current_state = localizer.get_state("FF_Pi_Rig_1", 0.0, session_started_at)
+    await broadcast_to_dashboards({"type": "pro_setup", "setup": state.model_dump()})
+    return pro_status()
+
+
+@app.get("/api/pro/status")
+async def get_pro_status():
+    return pro_status()
+
+
+@app.post("/api/pro/simulate")
+async def pro_simulate(body: dict):
+    """{"on": true} starts a simulated walk through the 3-point area; {"on": false} stops it."""
+    global sim_task
+    if body.get("on"):
+        if pro_state is None:
+            raise HTTPException(status_code=409, detail="Link the 3 points first")
+        if sim_task is None or sim_task.done():
+            sim_task = asyncio.create_task(_simulate())
+    else:
+        await stop_simulation()
+    return pro_status()
 
 
 @app.get("/api/health")
@@ -143,7 +239,7 @@ async def reset_session():
         session_started_at,
         time.time(),
     )
-    localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=(-2.0, -2.0, 12.0, 12.0))
+    localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=current_bounds())
     breadcrumbs.clear()
     hazards.clear()
     rf_map.reset()
@@ -170,6 +266,55 @@ async def broadcast_to_dashboards(message: dict):
         dashboard_clients.discard(ws)
 
 
+async def ingest_telemetry(payload: dict) -> None:
+    """One telemetry sample (real scanner or the simulator) -> filter -> dashboards."""
+    global current_state
+    pdr = payload.get("pdr", {})
+    wifi_scans = payload.get("wifi_scans", [])
+    device_id = payload.get("device_id", "FF_Pi_Rig_1")
+    timestamp = payload.get("timestamp", time.time())
+
+    # Particle filter prediction & update
+    localizer.predict(
+        step_detected=pdr.get("step_detected", False),
+        step_length_m=pdr.get("step_length_m", 0.75),
+        heading_deg=pdr.get("heading_deg", 0.0),
+    )
+    # No step => no motion sensor (or standing still): spread particles slightly so
+    # the filter keeps tracking from signal readings alone (BE-06).
+    if wifi_scans and not pdr.get("step_detected", False):
+        localizer.diffuse()
+    localizer.update_rssi(wifi_scans, anchors)
+
+    # Get updated state
+    current_state = localizer.get_state(
+        device_id=device_id,
+        heading_deg=pdr.get("heading_deg", 0.0),
+        timestamp=timestamp,
+    )
+
+    # BE-08: record each anchor reading at the estimated position.
+    for scan in wifi_scans:
+        anchor = anchors.get(str(scan.get("bssid") or "").lower())
+        if anchor is not None and scan.get("rssi_dbm") is not None:
+            rf_map.add(anchor.id, current_state.x, current_state.y, scan["rssi_dbm"])
+
+    # Record breadcrumbs
+    if pdr.get("step_detected", False) or len(breadcrumbs) == 0:
+        breadcrumbs.append({"x": current_state.x, "y": current_state.y, "z": current_state.z})
+        if len(breadcrumbs) > 500:
+            breadcrumbs.pop(0)
+
+    # Broadcast to 3D Three.js dashboards
+    await broadcast_to_dashboards({
+        "type": "telemetry_update",
+        "state": current_state.model_dump(),
+        "raw_scans": wifi_scans,
+        "breadcrumb": {"x": current_state.x, "y": current_state.y, "z": current_state.z},
+        "site": site_position(current_state.x, current_state.y),
+    })
+
+
 @app.websocket("/ws/telemetry")
 async def telemetry_endpoint(websocket: WebSocket):
     """Receives nmcli Wi-Fi scans and IMU/PDR vectors from Raspberry Pi."""
@@ -181,49 +326,7 @@ async def telemetry_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             try:
                 payload = json.loads(data)
-                pdr = payload.get("pdr", {})
-                wifi_scans = payload.get("wifi_scans", [])
-                device_id = payload.get("device_id", "FF_Pi_Rig_1")
-                timestamp = payload.get("timestamp", time.time())
-
-                # Particle filter prediction & update
-                localizer.predict(
-                    step_detected=pdr.get("step_detected", False),
-                    step_length_m=pdr.get("step_length_m", 0.75),
-                    heading_deg=pdr.get("heading_deg", 0.0),
-                )
-                # No step => no motion sensor (or standing still): spread particles slightly so
-                # the filter keeps tracking from signal readings alone (BE-06).
-                if wifi_scans and not pdr.get("step_detected", False):
-                    localizer.diffuse()
-                localizer.update_rssi(wifi_scans, anchors)
-
-                # Get updated state
-                current_state = localizer.get_state(
-                    device_id=device_id,
-                    heading_deg=pdr.get("heading_deg", 0.0),
-                    timestamp=timestamp,
-                )
-
-                # BE-08: record each anchor reading at the estimated position.
-                for scan in wifi_scans:
-                    anchor = anchors.get(str(scan.get("bssid") or "").lower())
-                    if anchor is not None and scan.get("rssi_dbm") is not None:
-                        rf_map.add(anchor.id, current_state.x, current_state.y, scan["rssi_dbm"])
-
-                # Record breadcrumbs
-                if pdr.get("step_detected", False) or len(breadcrumbs) == 0:
-                    breadcrumbs.append({"x": current_state.x, "y": current_state.y, "z": current_state.z})
-                    if len(breadcrumbs) > 500:
-                        breadcrumbs.pop(0)
-
-                # Broadcast to 3D Three.js dashboards
-                await broadcast_to_dashboards({
-                    "type": "telemetry_update",
-                    "state": current_state.model_dump(),
-                    "raw_scans": wifi_scans,
-                    "breadcrumb": {"x": current_state.x, "y": current_state.y, "z": current_state.z},
-                })
+                await ingest_telemetry(payload)
             except json.JSONDecodeError:
                 logger.warning("Invalid JSON received from telemetry client")
     except WebSocketDisconnect:
@@ -252,6 +355,7 @@ async def dashboard_endpoint(websocket: WebSocket):
         "state": current_state.model_dump(),
         "breadcrumbs": breadcrumbs,
         "hazards": [h.model_dump() for h in hazards],
+        "pro": pro_status(),
     }))
     
     try:
