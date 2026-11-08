@@ -4,7 +4,7 @@ import {
   type LatLng,
 } from "./geo";
 import type { Point } from "@/packages/schema/building-model";
-import { normStreet, parseStreetAddress, streetsMatch } from "./address";
+import { normStreet, parseStreetAddress, PREFER_STREET_SLACK_M, streetsMatch } from "./address";
 import { SITE_REACH_MAX_M } from "./compound-geom";
 import { geoCacheKey, ttlGet, ttlSet } from "./ttl-cache";
 
@@ -526,12 +526,20 @@ out tags geom;`;
       }
       return { dir, name, d: best };
     };
-    // Prefer the street named in the address (e.g. Yardley Court) over a nearer arterial/connector.
+    // Soft-prefer the address street when it is near the closest curb; otherwise stay nearest.
+    const nearest = pickNearest(roads);
     const named =
       wantStreet
         ? roads.filter((r) => r.name && streetsMatch(normStreet(r.name), wantStreet))
         : [];
-    const hit = named.length ? pickNearest(named) : pickNearest(roads);
+    const namedHit = named.length ? pickNearest(named) : null;
+    const hit =
+      namedHit &&
+      Number.isFinite(namedHit.d) &&
+      Number.isFinite(nearest.d) &&
+      namedHit.d <= nearest.d + PREFER_STREET_SLACK_M
+        ? namedHit
+        : nearest;
     if (hit.dir && Number.isFinite(hit.d)) {
       roadDir = hit.dir;
       roadName = hit.name;

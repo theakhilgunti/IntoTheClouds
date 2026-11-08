@@ -24,4 +24,10 @@ describe("street address parsing", () => {
   it("treats Avenue and Ave as the same street", () => {
     assert.equal(streetsMatch("simonson ave", "simonson ave"), true);
   });
+
+  it("requires matching suffixes when both names have one", () => {
+    assert.equal(streetsMatch("yardley ct", "yardley court"), true);
+    assert.equal(streetsMatch("yardley ct", "yardley dr"), false);
+    assert.equal(streetsMatch("yardley", "yardley ct"), true);
+  });
 });

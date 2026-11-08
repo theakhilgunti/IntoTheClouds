@@ -32,11 +32,28 @@ export function plutoAddress(a?: string | null): string | null {
   return `${p.num.toUpperCase()} ${[...parts.map((w) => w.toUpperCase()), suffix].join(" ")}`;
 }
 
+function streetSuffix(s: string): string | null {
+  const parts = s.split(" ").filter(Boolean);
+  const last = parts[parts.length - 1];
+  return last && STREET_SUFFIX.has(last) ? last : null;
+}
+
+/**
+ * True when two normalized street names refer to the same road.
+ * Stem-only names still match a full name (`yardley` ≈ `yardley ct`), but when both
+ * sides carry a suffix they must agree (`yardley ct` ≠ `yardley dr`).
+ */
 export function streetsMatch(a: string, b: string): boolean {
   if (a === b) return true;
+  const sa = streetSuffix(a);
+  const sb = streetSuffix(b);
+  if (sa && sb && sa !== sb) return false;
   const words = (s: string) => s.split(" ").filter((w) => w && !STREET_SUFFIX.has(w));
   const ta = words(a);
   const tb = words(b);
   if (!ta.length || !tb.length) return false;
   return ta.every((w) => tb.includes(w)) || tb.every((w) => ta.includes(w));
 }
+
+/** How much farther than the nearest curb an address street may still win (meters). */
+export const PREFER_STREET_SLACK_M = 15;

@@ -206,7 +206,7 @@ describe("street and driveway", () => {
     assert.ok(roads.length >= 3, `curb street should render, got ${roads.length}`);
   });
 
-  it("prefers the address street over a nearer arterial for ribbons and driveway", () => {
+  it("prefers the address street over a nearer arterial when within slack", () => {
     const house: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
     const features = accessFeatures({
       footprint: house,
@@ -214,7 +214,7 @@ describe("street and driveway", () => {
       roads: [
         // Closer arterial — without preferStreet this wins the driveway.
         { name: "Paoli Pike", pts: [[-80, -8], [80, -8]] },
-        // Named court a bit farther (typical cul-de-sac setback).
+        // Named court a bit farther (within PREFER_STREET_SLACK_M of nearest).
         { name: "Yardley Court", pts: [[-40, -18], [40, -18]] },
       ],
       garage: null,
@@ -226,6 +226,25 @@ describe("street and driveway", () => {
     assert.ok(drive, "driveway should attach");
     const midY = drive!.polygon.reduce((s, p) => s + p[1], 0) / drive!.polygon.length;
     assert.ok(midY < -10, `driveway should reach toward Yardley Court (y≈-18), midY=${midY}`);
+  });
+
+  it("falls back to the nearest curb when the address street is much farther", () => {
+    const house: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
+    const features = accessFeatures({
+      footprint: house,
+      streetDir: [0, -1],
+      roads: [
+        { name: "Paoli Pike", pts: [[-80, -8], [80, -8]] },
+        // Court well beyond +15 m slack vs nearest (~8 m).
+        { name: "Yardley Court", pts: [[-40, -40], [40, -40]] },
+      ],
+      garage: null,
+      preferStreet: "Yardley Ct",
+    });
+    const drive = features.find((f) => f.kind === "driveway");
+    assert.ok(drive, "driveway should attach");
+    const midY = drive!.polygon.reduce((s, p) => s + p[1], 0) / drive!.polygon.length;
+    assert.ok(midY > -20, `driveway should latch to nearer Paoli Pike (y≈-8), midY=${midY}`);
   });
 
   it("places the nearest mapped fire hydrants around the house", () => {

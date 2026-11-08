@@ -1,5 +1,5 @@
 /** Lot, outbuilding, and aerial-box geometry. No app imports, so node:test can load it. */
-import { normStreet, streetsMatch } from "./address";
+import { normStreet, PREFER_STREET_SLACK_M, streetsMatch } from "./address";
 
 export type Point = [number, number];
 
@@ -1797,17 +1797,20 @@ export function accessFeatures(opts: {
       runStart = b;
     }
   }
-  // Prefer the address street, then nearest runs (same nearest-N policy as neighbor shells).
+  // Soft-prefer the address street when near the closest curb, else nearest-first.
   // Chunk each into short ribbon quads so DEM/grade can't twist a long street into the terrain.
   const prefer = opts.preferStreet?.trim() ? normStreet(opts.preferStreet) : null;
   const namePreferred = (name: string | null) =>
     !!(prefer && name && streetsMatch(normStreet(name), prefer));
+  const dNear = roadRuns.length ? Math.min(...roadRuns.map((r) => r.d)) : Infinity;
+  const softPreferred = (name: string | null, d: number) =>
+    namePreferred(name) && d <= dNear + PREFER_STREET_SLACK_M;
   const featureCap = Math.min(MAX_ROAD_FEATURES, Math.max(ribbonCap * 3, ribbonCap));
   let roadFeat = 0;
   roadRuns
     .sort((a, b) => {
-      const ap = namePreferred(a.name) ? 0 : 1;
-      const bp = namePreferred(b.name) ? 0 : 1;
+      const ap = softPreferred(a.name, a.d) ? 0 : 1;
+      const bp = softPreferred(b.name, b.d) ? 0 : 1;
       if (ap !== bp) return ap - bp;
       return a.d - b.d;
     })
@@ -1909,12 +1912,12 @@ export function accessFeatures(opts: {
     }
   }
 
-  // Nearest segment for driveway mouth — prefer the address street when present.
+  // Nearest segment for driveway mouth — soft-prefer the address street when nearby.
   let best: { a: Point; b: Point; name: string | null; at: Point; d: number } | null = null;
   for (const s of segs) {
     const hit = nearestOn(here, s.a, s.b);
-    const pref = namePreferred(s.name);
-    const bestPref = best ? namePreferred(best.name) : false;
+    const pref = softPreferred(s.name, hit.d);
+    const bestPref = best ? softPreferred(best.name, best.d) : false;
     if (
       !best ||
       (pref && !bestPref) ||
