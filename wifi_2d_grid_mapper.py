@@ -120,6 +120,21 @@ class WLAN_BSS_ENTRY(ctypes.Structure):
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "anchors_config.json")
 
+# Phone compass/gyro settings, editable from the dashboard and saved in anchors_config.json (MAP-06)
+PHONE_CFG_DEFAULTS = {
+    "mode": "auto",            # auto: phone heading when aligned+fresh, else direction of motion | phone | motion
+    "smoothing": 0.2,          # compass EMA weight while still (lower = steadier, slower)
+    "turn_smoothing": 0.7,     # compass EMA weight while the gyro says you are turning (follow fast)
+    "turn_thresh_dps": 25.0,   # gyro rate above which you count as turning
+    "fresh_s": 3.0,            # phone samples older than this are ignored
+    "gyro_bias": [0.0, 0.0, 0.0],
+    "gyro_noise_dps": 0.0,
+    "compass_jitter_deg": 0.0,
+}
+# Map heading (0 = +x, counter-clockwise) of each axis you can face during alignment
+AXIS_HEADING = {"+x": 0.0, "+y": 90.0, "-x": 180.0, "-y": 270.0}
+
+
 def detect_lan_ip() -> str:
     """Detect LAN IPv4 address for multi-device/phone access."""
     import socket
@@ -224,6 +239,16 @@ class GlobalState:
         self.phone_t = 0.0
         self.phone_offset = 0.0
         self.phone_aligned = False
+        # Phone compass + gyro calibration (MAP-06). The phone is used ONLY for heading; position comes from beacons.
+        self.phone_age_s = None          # age of the newest phone sample reported by the backend
+        self.phone_orient = {}           # alpha / beta (front-back tilt) / gamma (left-right tilt), degrees
+        self.phone_gyro = {}             # rotation rate alpha / beta / gamma, deg/s
+        self.phone_smooth = None         # smoothed compass bearing
+        self.phone_turning = False
+        self.phone_gyro_rate = 0.0       # bias-corrected rotation rate magnitude, deg/s
+        self.phone_axis_caps = {}        # {"+x": compass_deg, ...} captured while facing each map axis
+        self.phone_capture = None        # list collecting samples during a hold-still gyro calibration
+        self.phone_cfg = dict(PHONE_CFG_DEFAULTS)
         self.hdop = 1.0
         self.fix_type = "INITIALIZING" # "3-ANCHOR FIX", "2-ANCHOR FIX", "DEAD RECKONING"
         self.last_update_time = time.time()
@@ -264,6 +289,8 @@ class GlobalState:
                     } for aid, a in self.anchors.items()
                 }
             }
+            cfg["phone"] = dict(self.phone_cfg, offset_deg=round(self.phone_offset, 2), aligned=self.phone_aligned,
+                                axis_caps=self.phone_axis_caps)
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(cfg, f, indent=2)
             print(f"[CONFIG] Saved anchor settings to {CONFIG_PATH}")
@@ -292,6 +319,13 @@ class GlobalState:
                         self.calib_points[aid] = [tuple(map(float, p)) for p in a_cfg.get("calib_points", []) if len(p) == 2]
                         self.anchors[aid]["x"] = float(a_cfg.get("x", self.anchors[aid]["x"]))
                         self.anchors[aid]["y"] = float(a_cfg.get("y", self.anchors[aid]["y"]))
+            ph = cfg.get("phone") or {}
+            for k, v in PHONE_CFG_DEFAULTS.items():
+                if k in ph:
+                    self.phone_cfg[k] = type(v)(ph[k]) if not isinstance(v, list) else [float(x) for x in ph[k]]
+            self.phone_offset = float(ph.get("offset_deg", self.phone_offset))
+            self.phone_aligned = bool(ph.get("aligned", self.phone_aligned))
+            self.phone_axis_caps = {k: float(v) for k, v in (ph.get("axis_caps") or {}).items() if k in AXIS_HEADING}
             print(f"[CONFIG] Loaded saved anchor settings from {CONFIG_PATH}")
         except Exception as e:
             print(f"[CONFIG] Load error: {e}")
@@ -595,7 +629,7 @@ def update_kalman_filter(z_x: float, z_y: float, dt: float, hdop: float):
     STATE.vel_x = float(x_new[2])
     STATE.vel_y = float(x_new[3])
     STATE.speed = float(np.hypot(STATE.vel_x, STATE.vel_y))
-    if STATE.speed > 0.08 and not phone_heading_active():
+    if STATE.speed > 0.08 and heading_uses_motion():
         STATE.heading_deg = float((math.degrees(math.atan2(STATE.vel_y, STATE.vel_x)) + 360) % 360)
 
 # =============================================================================
@@ -770,7 +804,79 @@ PHONE_FRESH_S = 3.0
 
 
 def phone_heading_active() -> bool:
-    return STATE.phone_aligned and STATE.phone_compass is not None and (time.time() - STATE.phone_t) < PHONE_FRESH_S
+    if STATE.phone_cfg["mode"] == "motion":
+        return False
+    return STATE.phone_aligned and STATE.phone_compass is not None and (time.time() - STATE.phone_t) < STATE.phone_cfg["fresh_s"]
+
+
+def heading_uses_motion() -> bool:
+    mode = STATE.phone_cfg["mode"]
+    return mode == "motion" or (mode == "auto" and not phone_heading_active())
+
+
+def angle_diff(a: float, b: float) -> float:
+    """Signed smallest difference a - b in degrees, in (-180, 180]."""
+    return (a - b + 180.0) % 360.0 - 180.0
+
+
+def circular_mean(angles) -> float:
+    r = [math.radians(a) for a in angles]
+    return math.degrees(math.atan2(sum(math.sin(x) for x in r), sum(math.cos(x) for x in r))) % 360.0
+
+
+def offset_for_axis(compass_deg: float, axis: str) -> float:
+    """Offset that makes compass_to_map_heading(compass_deg, offset) == AXIS_HEADING[axis]."""
+    return (compass_deg - 90.0 + AXIS_HEADING[axis]) % 360.0
+
+
+def fit_axis_offset(caps: dict) -> dict:
+    """Multi-axis heading calibration: offset = circular mean over captured axes; residuals show how far the
+    compass is from a true 90 deg spacing (magnetic interference, e.g. near laptops / steel)."""
+    offs = {ax: offset_for_axis(c, ax) for ax, c in caps.items()}
+    off = circular_mean(offs.values())
+    resid = {ax: round(angle_diff(o, off), 1) for ax, o in offs.items()}
+    return {"offset_deg": round(off, 2), "residuals_deg": resid,
+            "max_error_deg": round(max((abs(v) for v in resid.values()), default=0.0), 1)}
+
+
+def phone_status_dict() -> dict:
+    """Everything the dashboard's phone panel shows. Call with STATE.lock held."""
+    now = time.time()
+    since = None if not STATE.phone_t else round(now - STATE.phone_t, 1)
+    tilt = max(abs(STATE.phone_orient.get("beta", 0.0)), abs(STATE.phone_orient.get("gamma", 0.0))) if STATE.phone_orient else None
+    return {
+        "connected": STATE.phone_compass is not None and since is not None and since < STATE.phone_cfg["fresh_s"],
+        "backend_age_s": STATE.phone_age_s, "since_update_s": since, "phone_url": PHONE_URL,
+        "compass_raw": None if STATE.phone_compass is None else round(STATE.phone_compass, 1),
+        "compass_smooth": None if STATE.phone_smooth is None else round(STATE.phone_smooth, 1),
+        "orient": STATE.phone_orient, "gyro": STATE.phone_gyro, "gyro_rate_dps": STATE.phone_gyro_rate,
+        "turning": STATE.phone_turning, "tilt_deg": tilt,
+        "aligned": STATE.phone_aligned, "offset_deg": round(STATE.phone_offset, 2),
+        "heading_deg": round(STATE.heading_deg, 1), "heading_source": "motion" if heading_uses_motion() else "phone",
+        "axis_caps": STATE.phone_axis_caps, "axis_fit": fit_axis_offset(STATE.phone_axis_caps) if STATE.phone_axis_caps else None,
+        "cfg": STATE.phone_cfg,
+    }
+
+
+def phone_ingest(orient: dict, gyro: dict, now: float):
+    """One fresh phone sample: gyro-gated compass smoothing -> map heading. Call with STATE.lock held."""
+    cfg = STATE.phone_cfg
+    comp = float(orient["compass"])
+    STATE.phone_orient = {k: round(float(orient[k]), 1) for k in ("alpha", "beta", "gamma") if isinstance(orient.get(k), (int, float))}
+    rates = [float(gyro.get(k) or 0.0) for k in ("alpha", "beta", "gamma")]
+    STATE.phone_gyro = {k: round(v, 1) for k, v in zip(("alpha", "beta", "gamma"), rates)}
+    corr = [r - b for r, b in zip(rates, cfg["gyro_bias"])]
+    STATE.phone_gyro_rate = round(math.sqrt(sum(c * c for c in corr)), 1)
+    STATE.phone_turning = STATE.phone_gyro_rate > cfg["turn_thresh_dps"]
+    k = cfg["turn_smoothing"] if STATE.phone_turning else cfg["smoothing"]
+    prev = STATE.phone_smooth
+    STATE.phone_smooth = comp if prev is None else (prev + k * angle_diff(comp, prev)) % 360.0
+    STATE.phone_compass = comp
+    STATE.phone_t = now
+    if STATE.phone_capture is not None:
+        STATE.phone_capture.append((rates, comp))
+    if STATE.phone_aligned and STATE.phone_cfg["mode"] != "motion":
+        STATE.heading_deg = compass_to_map_heading(STATE.phone_smooth, STATE.phone_offset)
 
 
 def compass_to_map_heading(compass_deg: float, offset_deg: float) -> float:
@@ -788,14 +894,14 @@ def background_phone_thread():
         try:
             with urllib.request.urlopen(PHONE_URL + "/api/phone", timeout=2, context=ctx) as r:
                 d = json.load(r)
-            comp = (d.get("latest") or {}).get("orient", {}).get("compass")
+            # Only orientation + gyro are read; GPS in the same payload is deliberately ignored (beacons only).
+            latest = d.get("latest") or {}
+            orient, gyro = latest.get("orient") or {}, latest.get("gyro") or {}
             age = d.get("age_s")
-            if isinstance(comp, (int, float)) and age is not None and age < PHONE_FRESH_S:
-                with STATE.lock:
-                    STATE.phone_compass = float(comp)
-                    STATE.phone_t = time.time()
-                    if STATE.phone_aligned:
-                        STATE.heading_deg = compass_to_map_heading(STATE.phone_compass, STATE.phone_offset)
+            with STATE.lock:
+                STATE.phone_age_s = age
+                if isinstance(orient.get("compass"), (int, float)) and age is not None and age < STATE.phone_cfg["fresh_s"]:
+                    phone_ingest(orient, gyro, time.time())
             warned = False
         except Exception as e:
             if not warned:
@@ -1011,7 +1117,7 @@ def positioning_engine_thread():
                     "speed_mps": round(STATE.speed, 2),
                     "speed_mph": round(STATE.speed * 2.23694, 1),
                     "heading_deg": round(STATE.heading_deg, 1),
-                    "heading_source": "phone" if phone_heading_active() else "motion",
+                    "heading_source": "motion" if heading_uses_motion() else "phone",
                     "phone_aligned": STATE.phone_aligned,
                     "phone_compass": None if STATE.phone_compass is None else round(STATE.phone_compass, 1),
                     "hdop": STATE.hdop,
@@ -1864,6 +1970,45 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- Phone compass + gyro calibration (MAP-06). Phone = heading only; position = beacons only. -->
+      <div class="sidebar-section" id="phonePanel">
+        <div class="section-title"><span>PHONE COMPASS &amp; GYRO</span></div>
+        <div style="font-size:0.78rem;line-height:1.5">
+          <div style="display:flex;gap:10px;align-items:center">
+            <div style="width:54px;height:54px;border:1px solid #00f0ff66;border-radius:50%;position:relative;flex:none">
+              <div id="phArrow" style="position:absolute;left:25px;top:4px;width:4px;height:23px;background:#00f0ff;transform-origin:2px 23px;border-radius:2px"></div>
+              <span style="position:absolute;right:-12px;top:19px;font-size:.65rem">+X</span>
+            </div>
+            <div id="phLive" style="font-family:monospace;font-size:0.72rem;white-space:pre">phone: --</div>
+          </div>
+          <div style="margin-top:6px;padding:4px;border:1px solid #00f0ff55;border-radius:4px"><b>1. Align heading</b> (hold phone flat, top edge pointing where you face)<br>
+            I am facing <select id="phAxis"><option value="+x">+X</option><option value="+y">+Y</option><option value="-x">-X</option><option value="-y">-Y</option></select>
+            <button class="btn-calib" onclick="phCal('align',{axis:phAxis.value})">Set</button>
+            <button class="btn-calib secondary" onclick="phCal('capture_axis',{axis:phAxis.value})">➕ Capture axis</button>
+            <button class="btn-calib secondary" onclick="phCal('clear_axes')">Clear</button><br>
+            <span style="opacity:.75">Best: capture 2-4 axes; spread error shows magnetic interference.</span>
+            <div id="phAxes" style="font-family:monospace;font-size:0.72rem"></div>
+            Nudge <button class="btn-calib secondary" onclick="phCal('nudge',{deg:-5})">-5°</button><button class="btn-calib secondary" onclick="phCal('nudge',{deg:-1})">-1°</button><button class="btn-calib secondary" onclick="phCal('nudge',{deg:1})">+1°</button><button class="btn-calib secondary" onclick="phCal('nudge',{deg:5})">+5°</button>
+            offset <input id="phOff" type="number" step="0.5" style="width:60px">° <button class="btn-calib secondary" onclick="phCal('set',{offset_deg:parseFloat(phOff.value)})">Apply</button></div>
+          <div style="margin-top:6px"><b>2. Gyro still calibration</b><br>
+            Put the phone down / hold it still, then <button class="btn-calib" onclick="phStill()">✋ Hold still</button>
+            <input id="phSecs" type="number" min="1" max="10" value="3" style="width:40px"> s
+            <div id="phStillOut" style="font-family:monospace;font-size:0.72rem"></div></div>
+          <div style="margin-top:6px"><b>3. Heading filter</b><br>
+            Source <select id="phMode" onchange="phCal('set',{mode:phMode.value})"><option value="auto">auto (phone, else motion)</option><option value="phone">phone only</option><option value="motion">motion only</option></select><br>
+            Still smoothing <input id="phSm" type="range" min="0.02" max="1" step="0.02" style="width:90px" onchange="phCal('set',{smoothing:parseFloat(phSm.value)})"> <span id="phSmV"></span><br>
+            Turning smoothing <input id="phTs" type="range" min="0.05" max="1" step="0.05" style="width:90px" onchange="phCal('set',{turn_smoothing:parseFloat(phTs.value)})"> <span id="phTsV"></span><br>
+            Turn threshold <input id="phTh" type="number" step="1" style="width:50px"> °/s
+            Fresh timeout <input id="phFr" type="number" step="0.5" style="width:45px"> s
+            <button class="btn-calib secondary" onclick="phCal('set',{turn_thresh_dps:parseFloat(phTh.value),fresh_s:parseFloat(phFr.value)})">Apply</button></div>
+          <div style="margin-top:6px"><b>4. Check</b> face an axis:
+            <select id="phChkAxis"><option value="+x">+X</option><option value="+y">+Y</option><option value="-x">-X</option><option value="-y">-Y</option></select>
+            <button class="btn-calib" onclick="phCal('check',{axis:phChkAxis.value})">Check</button>
+            <button class="btn-calib secondary" onclick="if(confirm('Reset phone heading calibration?')) phCal('reset')">Reset phone calib</button></div>
+          <div id="phMsg" style="color:#fbbf24;margin-top:4px"></div>
+        </div>
+      </div>
+
       <!-- Environment & Grid Configuration -->
       <div class="sidebar-section">
         <div class="section-title">
@@ -2580,6 +2725,50 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
     }
     setInterval(refreshCalib, 1000); refreshCalib();
 
+    // ---- Phone compass + gyro panel (MAP-06)
+    let phInit = false;
+    async function phCal(action, extra) {
+      const r = await fetch('/api/phone_calib', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(Object.assign({action}, extra || {}))});
+      const d = await r.json();
+      if (!r.ok) { phMsg.innerText = 'Error: ' + d.detail; return d; }
+      let m = action + ' ok';
+      if (d.offset_deg !== undefined) m += `, offset ${d.offset_deg}°`;
+      if (d.max_error_deg !== undefined) m += `, axis spread error ${d.max_error_deg}°` + (d.max_error_deg > 15 ? ' (magnetic interference: move away from laptops/metal)' : '');
+      if (d.error_deg !== undefined) m = `heading ${d.heading_deg}° vs ${d.expected_deg}°: error ${d.error_deg}°` + (Math.abs(d.error_deg) > 10 ? ' (re-align or nudge)' : ' ✓');
+      phMsg.innerText = m;
+      phInit = false; refreshPhone();
+      return d;
+    }
+    async function phStill() {
+      const secs = parseFloat(phSecs.value) || 3;
+      phStillOut.innerText = `hold still for ${secs} s...`;
+      const r = await fetch('/api/phone_calib', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'gyro_still', seconds: secs})});
+      const d = await r.json();
+      phStillOut.innerText = !r.ok ? 'Error: ' + d.detail :
+        `${d.samples} samples  gyro bias [${d.gyro_bias.join(', ')}] °/s\nnoise ${d.gyro_noise_dps} °/s  compass jitter ${d.compass_jitter_deg}°\nturn threshold set to ${d.turn_thresh_dps} °/s` + (d.moved ? '\n⚠ phone moved; redo it' : '');
+      phInit = false; refreshPhone();
+    }
+    async function refreshPhone() {
+      try {
+        const p = await (await fetch('/api/phone_status')).json();
+        const o = p.orient || {}, g = p.gyro || {};
+        phLive.innerText = (p.connected ? '● connected' : `○ not streaming (backend age ${p.backend_age_s ?? '--'} s)`) +
+          `\ncompass raw ${p.compass_raw ?? '--'}°  smooth ${p.compass_smooth ?? '--'}°` +
+          `\nheading ${p.heading_deg}° (${p.heading_source}${p.aligned ? '' : ', not aligned'})` +
+          `\ntilt β ${o.beta ?? '--'} γ ${o.gamma ?? '--'}` + (p.tilt_deg > 35 ? ' ⚠ hold flatter' : '') +
+          `\ngyro ${p.gyro_rate_dps} °/s ${p.turning ? 'TURNING' : 'still'}`;
+        phArrow.style.transform = `rotate(${90 - p.heading_deg}deg)`;
+        phAxes.innerText = p.axis_fit ? Object.entries(p.axis_caps).map(([k, v]) => `${k}: compass ${v}° (resid ${p.axis_fit.residuals_deg[k]}°)`).join('\n') + `\nfit offset ${p.axis_fit.offset_deg}°, spread error ${p.axis_fit.max_error_deg}°` : '';
+        if (!phInit) {
+          phInit = true; const c = p.cfg;
+          phMode.value = c.mode; phSm.value = c.smoothing; phTs.value = c.turn_smoothing;
+          phTh.value = c.turn_thresh_dps; phFr.value = c.fresh_s; phOff.value = p.offset_deg;
+        }
+        phSmV.innerText = phSm.value; phTsV.innerText = phTs.value;
+      } catch (e) {}
+    }
+    setInterval(refreshPhone, 500); refreshPhone();
+
     async function calibrateAnchor(anchorId, distM) {
       const res = await fetch('/api/calibrate', {
         method: 'POST',
@@ -2884,6 +3073,15 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
             return
 
         # 3. Discovered Signals List
+        if url.path == "/api/phone_status":
+            with STATE.lock:
+                out = phone_status_dict()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(out).encode('utf-8'))
+            return
+
         if url.path == "/api/calib_status":
             with STATE.lock:
                 out = {}
@@ -3191,14 +3389,125 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"status": "ok"}).encode('utf-8'))
             return
 
+        # 4a. Phone compass + gyro calibration (MAP-06)
+        #   align        {axis}                you face +x/+y/-x/-y now: set offset from that one direction
+        #   capture_axis {axis}                add this direction to the multi-axis fit (face 2-4 axes for best result)
+        #   clear_axes                         forget captured axes
+        #   nudge        {deg}                 fine-tune offset
+        #   check        {axis}                you face this axis: how far off is the phone heading?
+        #   gyro_still   {seconds}             hold the phone still: measures gyro bias/noise + compass jitter
+        #   set          {mode, smoothing, turn_smoothing, turn_thresh_dps, fresh_s, offset_deg}
+        #   reset                              back to defaults, unaligned
+        if url.path == "/api/phone_calib":
+            code, res = 200, {"status": "ok"}
+            try:
+                act = req_data.get("action")
+                axis = req_data.get("axis", "+x")
+                if act in ("align", "capture_axis", "check") and axis not in AXIS_HEADING:
+                    raise ValueError("axis must be one of +x, +y, -x, -y")
+                if act == "gyro_still":
+                    secs = float(req_data.get("seconds", 3.0))
+                    if not (1.0 <= secs <= 10.0):
+                        raise ValueError("seconds must be 1-10")
+                    with STATE.lock:
+                        STATE.phone_capture = []
+                    time.sleep(secs)
+                    with STATE.lock:
+                        samples, STATE.phone_capture = STATE.phone_capture, None
+                        if len(samples) < 5:
+                            raise ValueError(f"only {len(samples)} phone samples in {secs:.0f} s; is /walker streaming?")
+                        g = np.array([r for r, _ in samples], dtype=float)
+                        comps = [c for _, c in samples]
+                        bias = g.mean(axis=0)
+                        noise = float(np.linalg.norm(g.std(axis=0)))
+                        mean_c = circular_mean(comps)
+                        jitter = float(np.sqrt(np.mean([angle_diff(c, mean_c) ** 2 for c in comps])))
+                        cfg = STATE.phone_cfg
+                        cfg["gyro_bias"] = [round(float(b), 2) for b in bias]
+                        cfg["gyro_noise_dps"] = round(noise, 2)
+                        cfg["compass_jitter_deg"] = round(jitter, 2)
+                        # turning threshold: well above the still-noise, never below 10 deg/s
+                        cfg["turn_thresh_dps"] = round(max(10.0, 3.0 * float(np.linalg.norm(g - bias, axis=1).max())), 1)
+                        res.update(samples=len(samples), gyro_bias=cfg["gyro_bias"], gyro_noise_dps=cfg["gyro_noise_dps"],
+                                   compass_jitter_deg=cfg["compass_jitter_deg"], turn_thresh_dps=cfg["turn_thresh_dps"],
+                                   moved=bool(noise > 15.0 or jitter > 10.0))
+                        STATE.save_config()
+                else:
+                    with STATE.lock:
+                        fresh = STATE.phone_compass is not None and (time.time() - STATE.phone_t) < STATE.phone_cfg["fresh_s"]
+                        cur = STATE.phone_smooth if STATE.phone_smooth is not None else STATE.phone_compass
+                        if act in ("align", "capture_axis", "check") and not fresh:
+                            raise ValueError("no fresh phone compass (open /walker on the iPhone and start streaming)")
+                        if act == "align":
+                            STATE.phone_offset = offset_for_axis(cur, axis)
+                            STATE.phone_aligned = True
+                            res["offset_deg"] = round(STATE.phone_offset, 2)
+                        elif act == "capture_axis":
+                            STATE.phone_axis_caps[axis] = round(cur, 2)
+                            fit = fit_axis_offset(STATE.phone_axis_caps)
+                            STATE.phone_offset = fit["offset_deg"]
+                            STATE.phone_aligned = True
+                            res.update(fit, axes=dict(STATE.phone_axis_caps))
+                        elif act == "clear_axes":
+                            STATE.phone_axis_caps = {}
+                        elif act == "nudge":
+                            deg = float(req_data.get("deg", 0.0))
+                            if abs(deg) > 90:
+                                raise ValueError("nudge must be within +-90 deg")
+                            # +deg turns the shown heading counter-clockwise by deg
+                            STATE.phone_offset = (STATE.phone_offset + deg) % 360.0
+                            res["offset_deg"] = round(STATE.phone_offset, 2)
+                        elif act == "check":
+                            if not STATE.phone_aligned:
+                                raise ValueError("align first")
+                            h = compass_to_map_heading(cur, STATE.phone_offset)
+                            res.update(heading_deg=round(h, 1), expected_deg=AXIS_HEADING[axis],
+                                       error_deg=round(angle_diff(h, AXIS_HEADING[axis]), 1))
+                        elif act == "set":
+                            cfg = STATE.phone_cfg
+                            if "mode" in req_data:
+                                if req_data["mode"] not in ("auto", "phone", "motion"):
+                                    raise ValueError("mode must be auto, phone or motion")
+                                cfg["mode"] = req_data["mode"]
+                            for key, lo, hi in (("smoothing", 0.02, 1.0), ("turn_smoothing", 0.05, 1.0),
+                                                ("turn_thresh_dps", 1.0, 360.0), ("fresh_s", 0.5, 30.0)):
+                                if key in req_data:
+                                    v = float(req_data[key])
+                                    if not (lo <= v <= hi):
+                                        raise ValueError(f"{key} must be {lo}-{hi}")
+                                    cfg[key] = v
+                            if "offset_deg" in req_data:
+                                STATE.phone_offset = float(req_data["offset_deg"]) % 360.0
+                                STATE.phone_aligned = True
+                        elif act == "reset":
+                            STATE.phone_cfg = dict(PHONE_CFG_DEFAULTS, gyro_bias=[0.0, 0.0, 0.0])
+                            STATE.phone_offset, STATE.phone_aligned, STATE.phone_axis_caps = 0.0, False, {}
+                            STATE.phone_smooth = None
+                        else:
+                            raise ValueError(f"unknown action {act!r}")
+                        if act != "check":
+                            if STATE.phone_aligned and cur is not None and STATE.phone_cfg["mode"] != "motion":
+                                STATE.heading_deg = compass_to_map_heading(cur, STATE.phone_offset)
+                            STATE.save_config()
+                        res["phone"] = phone_status_dict()
+            except (ValueError, KeyError, TypeError) as e:
+                code, res = 400, {"status": "error", "detail": str(e)}
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode('utf-8'))
+            return
+
         # 4b. Phone alignment: the phone is pointing along the map's +X axis right now
         if url.path == "/api/align":
             ok = False
             with STATE.lock:
-                if STATE.phone_compass is not None and (time.time() - STATE.phone_t) < PHONE_FRESH_S:
-                    STATE.phone_offset = (STATE.phone_compass - 90.0) % 360.0
+                if STATE.phone_compass is not None and (time.time() - STATE.phone_t) < STATE.phone_cfg["fresh_s"]:
+                    STATE.phone_offset = offset_for_axis(STATE.phone_smooth if STATE.phone_smooth is not None else STATE.phone_compass, "+x")
                     STATE.phone_aligned = True
                     ok = True
+            if ok:
+                STATE.save_config()
             self.send_response(200 if ok else 409)
             self.send_header("Content-Type", "application/json")
             self.end_headers()

@@ -35,7 +35,7 @@ class FitMath(unittest.TestCase):
         self.assertEqual(M.rssi_stats([])["n"], 0)
 
 
-class CalibApi(unittest.TestCase):
+class ServerCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
@@ -48,8 +48,8 @@ class CalibApi(unittest.TestCase):
     def tearDownClass(cls):
         cls.srv.shutdown()
 
-    def post(self, body):
-        req = urllib.request.Request(self.url + "/api/calib", json.dumps(body).encode(), {"Content-Type": "application/json"})
+    def post(self, body, path="/api/calib"):
+        req = urllib.request.Request(self.url + path, json.dumps(body).encode(), {"Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, json.load(r)
@@ -64,6 +64,8 @@ class CalibApi(unittest.TestCase):
     def setUp(self):
         self.post({"action": "reset", "anchor_id": "all"})
 
+
+class CalibApi(ServerCase):
     def test_capture_two_distances_fits_A_and_n(self):
         self.feed(1, rssi(-47, 3.0, 1))
         s, d = self.post({"action": "capture", "anchor_id": 1, "distance_m": 1})
@@ -163,6 +165,107 @@ class Solver(unittest.TestCase):
         self.assertEqual(fix, "3-ANCHOR FIX")
         self.assertLess(math.hypot(x - 2.5, y - 4.0), 0.3)
         self.assertLess(hdop, 5.0)
+
+
+def phone_feed(compass, gyro=(0.0, 0.0, 0.0), n=1):
+    with M.STATE.lock:
+        for _ in range(n):
+            M.phone_ingest({"compass": compass, "alpha": 0, "beta": 5, "gamma": -3},
+                           dict(zip(("alpha", "beta", "gamma"), gyro)), M.time.time())
+
+
+class PhoneMath(unittest.TestCase):
+    def test_axis_offset_round_trip(self):
+        for axis, h in M.AXIS_HEADING.items():
+            off = M.offset_for_axis(123.0, axis)
+            self.assertAlmostEqual(abs(M.angle_diff(M.compass_to_map_heading(123.0, off), h)), 0.0, places=6)
+
+    def test_multi_axis_fit_wraps_and_reports_interference(self):
+        # +x faces compass 350 deg -> +y is 260, -x 170, -y 80; -y disturbed by 10 deg
+        fit = M.fit_axis_offset({"+x": 350.0, "+y": 260.0, "-x": 170.0, "-y": 90.0})
+        self.assertAlmostEqual(abs(M.angle_diff(fit["offset_deg"], M.offset_for_axis(350.0, "+x") + 2.5)), 0.0, delta=0.6)
+        self.assertGreater(fit["max_error_deg"], 6.0)
+
+    def test_gyro_gates_smoothing(self):
+        with M.STATE.lock:
+            M.STATE.phone_cfg = dict(M.PHONE_CFG_DEFAULTS, gyro_bias=[0.0, 0.0, 0.0])
+            M.STATE.phone_smooth = None
+        phone_feed(10.0)
+        phone_feed(50.0)  # still: moves only `smoothing` of the way
+        with M.STATE.lock:
+            self.assertAlmostEqual(M.STATE.phone_smooth, 10.0 + 40.0 * M.PHONE_CFG_DEFAULTS["smoothing"], places=3)
+            self.assertFalse(M.STATE.phone_turning)
+        phone_feed(90.0, gyro=(80.0, 0.0, 0.0))  # turning fast: follows quickly
+        with M.STATE.lock:
+            self.assertTrue(M.STATE.phone_turning)
+            prev = 10.0 + 40.0 * M.PHONE_CFG_DEFAULTS["smoothing"]
+            self.assertAlmostEqual(M.STATE.phone_smooth, prev + (90.0 - prev) * M.PHONE_CFG_DEFAULTS["turn_smoothing"], places=3)
+
+    def test_smoothing_wraps_through_north(self):
+        with M.STATE.lock:
+            M.STATE.phone_smooth = None
+        phone_feed(355.0)
+        phone_feed(5.0)
+        with M.STATE.lock:
+            self.assertLess(abs(M.angle_diff(M.STATE.phone_smooth, 357.0)), 0.01)
+
+
+class PhoneApi(ServerCase):
+
+    def setUp(self):
+        self.post({"action": "reset"}, "/api/phone_calib")
+
+    def test_align_any_axis_then_check(self):
+        phone_feed(200.0, n=40)
+        s, d = self.post({"action": "align", "axis": "+y"}, "/api/phone_calib")
+        self.assertEqual(s, 200, d)
+        self.assertEqual(d["phone"]["heading_source"], "phone")
+        self.assertAlmostEqual(d["phone"]["heading_deg"], 90.0, delta=0.5)
+        s, d = self.post({"action": "check", "axis": "+y"}, "/api/phone_calib")
+        self.assertAlmostEqual(d["error_deg"], 0.0, delta=0.5)
+        s, d = self.post({"action": "nudge", "deg": 5}, "/api/phone_calib")
+        s, d = self.post({"action": "check", "axis": "+y"}, "/api/phone_calib")
+        self.assertAlmostEqual(d["error_deg"], 5.0, delta=0.5)
+
+    def test_capture_axes_and_persist(self):
+        for axis, comp in (("+x", 100.0), ("-x", 280.0)):
+            phone_feed(comp, n=60)
+            s, d = self.post({"action": "capture_axis", "axis": axis}, "/api/phone_calib")
+            self.assertEqual(s, 200, d)
+        self.assertLess(d["max_error_deg"], 0.5)
+        with open(M.CONFIG_PATH) as f:
+            self.assertEqual(set(json.load(f)["phone"]["axis_caps"]), {"+x", "-x"})
+
+    def test_settings_and_validation(self):
+        s, d = self.post({"action": "set", "mode": "motion", "smoothing": 0.5}, "/api/phone_calib")
+        self.assertEqual((s, d["phone"]["cfg"]["mode"], d["phone"]["heading_source"]), (200, "motion", "motion"))
+        self.assertEqual(self.post({"action": "set", "mode": "gps"}, "/api/phone_calib")[0], 400)
+        self.assertEqual(self.post({"action": "set", "smoothing": 5}, "/api/phone_calib")[0], 400)
+        self.assertEqual(self.post({"action": "align", "axis": "up"}, "/api/phone_calib")[0], 400)
+
+    def test_stale_phone_refuses_align(self):
+        with M.STATE.lock:
+            M.STATE.phone_t = M.time.time() - 60
+        s, d = self.post({"action": "align", "axis": "+x"}, "/api/phone_calib")
+        self.assertEqual(s, 400)
+
+    def test_gyro_still_measures_bias(self):
+        stop = threading.Event()
+
+        def pump():
+            while not stop.is_set():
+                phone_feed(45.0, gyro=(1.5, -0.5, 0.2))
+                M.time.sleep(0.05)
+        t = threading.Thread(target=pump, daemon=True)
+        t.start()
+        try:
+            s, d = self.post({"action": "gyro_still", "seconds": 1}, "/api/phone_calib")
+        finally:
+            stop.set()
+        self.assertEqual(s, 200, d)
+        self.assertEqual(d["gyro_bias"], [1.5, -0.5, 0.2])
+        self.assertEqual(d["turn_thresh_dps"], 10.0)
+        self.assertFalse(d["moved"])
 
 
 if __name__ == "__main__":
