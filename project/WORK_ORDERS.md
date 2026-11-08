@@ -157,32 +157,17 @@ Each card says what to build (**Steps**) and how to know it's finished (**Done w
 - `GET /api/anchors` matches the physical layout.
 - The laptop sees all three anchors from the middle of the room.
 
-### LC-01: Run the Windows Wi-Fi + Bluetooth scan spike
-**Est.** 1 h · **Depends on** none · GitHub issue #28 · Scripts are in `project/laptop_client/` (merged; needs a run on the Windows laptop)
-**Steps**
-1. Pull that branch. Follow `project/laptop_client/README.md`: set up the 3 phone hotspots (and optionally Bluetooth beacons with the same names).
-2. Run `win_scan_benchmark.py` and `ble_scan_benchmark.py` at 1 m, 3 m and 6 m from one phone.
-3. Fill in the results table in the README and commit it.
-4. Post the rate, ID stability, noise (std dB) and whether signal falls with distance on issue #28, and state the decision: Wi-Fi, Bluetooth, both, or zones only.
+### LC-01: Run the Windows Wi-Fi + Bluetooth scan spike *(done)*
+**Est.** 1 h · **Depends on** none · GitHub issue #28 · Benchmark data and hybrid decision committed to `project/laptop_client/README.md`.
 
-**Done when**
-- The results table has real numbers for Wi-Fi and Bluetooth at 1, 3 and 6 m.
-- All 3 phones were seen and IDs stayed stable (or the problem is written down).
-- The decision is posted: which signal(s) LC-02 should use.
-
-### LC-02: Laptop scanner (Wi-Fi + Bluetooth)
+### LC-02: Laptop scanner (Wi-Fi + Bluetooth) *(done)*
 **Est.** 3 h · **Depends on** LC-01, BE-07 · GitHub issue #29 · **File** `project/laptop_client/scanner.py`
-**Steps**
-1. Reuse `parse_netsh` and the `bleak` callback pattern from the LC-01 scripts.
-2. Run the Wi-Fi scan and the Bluetooth scan as separate `asyncio` tasks so a slow scan never blocks the other.
-3. Keep the last 5 readings per anchor and send the **median**.
-4. Identify anchors by id: Wi-Fi by BSSID, Bluetooth by advertised name. Take the anchor list from `GET http://localhost:8000/api/anchors`.
-5. Send only new data, in the existing telemetry format, to `ws://localhost:8000/ws/telemetry`. Reconnect automatically. Add a `--mock` option.
-
-**Done when**
-- The marker settles and stays within about 3 m while standing still for 2 minutes.
-- A slow Wi-Fi scan does not delay Bluetooth updates.
-- `--mock` works and the README has run instructions.
+**Implemented:**
+- Decoupled `asyncio` workers: native `netsh` Wi-Fi scanning in thread and `bleak` Bluetooth LE ingestion.
+- 5-sample rolling median filter (`--window 5`) per anchor.
+- Anchor resolution via `GET /api/anchors` supporting both Wi-Fi BSSID and Bluetooth advertised names (`ITC-A1..A3`).
+- Auto-reconnecting WebSocket client streaming to `ws://localhost:8000/ws/telemetry`.
+- Realistic synthetic walk / path loss `--mock` mode with unit and integration tests in `project/laptop_client/tests/`.
 
 ### HW-02a: Optional, phone as motion sensor (stream setup)
 **Est.** 1.5-3 h · **Depends on** none · GitHub issue #4 · Not needed for the base demo
