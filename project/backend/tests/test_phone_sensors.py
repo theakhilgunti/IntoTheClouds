@@ -49,3 +49,12 @@ def test_poor_gps_is_not_usable_and_not_used_as_origin():
 def test_walker_page_streams_sensors():
     t = client.get("/walker").text
     assert "watchPosition" in t and "sensors" in t
+
+
+def test_step_events_logged_with_peak():
+    main.phone_log.clear()
+    with client.websocket_connect("/ws/pdr") as ws:
+        ws.send_json({"compass_deg": 10.0, "step": True, "step_length_m": 0.7, "peak": 2.34, "threshold": 1.6})
+        ws.send_json({"compass_deg": 10.0, "step": True, "step_length_m": 0.7, "peak": "x"})
+    steps = [e for e in main.phone_log if e.get("step")]
+    assert len(steps) == 1 and steps[0]["peak"] == 2.34 and steps[0]["threshold"] == 1.6

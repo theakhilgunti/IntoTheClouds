@@ -101,3 +101,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 05:27 | Claude Code | LC-05 | Finished task |
 | 05:32 | Claude Code | BE-12 | Finished task |
 | 07:30 | Claude Code | BE-12 | iPhone telemetry: /walker now streams GPS (+accuracy), 3D orientation, gyro rate, accel via /ws/pdr; backend records them (fusion/geo.py), GET /api/phone and /api/phone/log, GPS->local metres gated on accuracy <= 15 m; 5 new tests (38 pass); not fused into position; untested on a real iPhone |
+| 06:01 | Claude Code | BE-13 | Finished task |
+| 08:10 | Claude Code | BE-13 | Step detector: low-pass + peak-only counting, 0.4 s gap, on-page sensitivity box (default 1.6), step events with peak logged to /api/phone/log; 1 new test (39 pass); not yet retested on iPhone |

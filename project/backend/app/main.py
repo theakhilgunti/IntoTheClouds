@@ -217,6 +217,9 @@ async def pdr_endpoint(websocket: WebSocket):
                 pdr_state["map_heading"] = compass_to_map_heading(float(compass), pdr_state["offset"])
                 pdr_state["last"] = time.time()
             if msg.get("step") is True:
+                if valid_angle(msg.get("peak")):
+                    phone_log.append({"t": round(time.time(), 3), "step": True, "peak": round(float(msg["peak"]), 2),
+                                      "threshold": msg.get("threshold") if valid_angle(msg.get("threshold")) else None})
                 length = msg.get("step_length_m", 0.7)
                 length = min(max(float(length), 0.3), 1.2) if valid_angle(length) else 0.7
                 localizer.predict(True, length, pdr_state["map_heading"])
