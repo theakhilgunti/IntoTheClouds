@@ -158,7 +158,8 @@ class GlobalState:
                 "dist_ci_low": None,
                 "dist_ci_high": None,
                 "samples_count": 0,
-                "history": deque(maxlen=30)
+                "history": deque(maxlen=30),
+                "last_fresh_t": 0.0, "ema_rssi": None, "fit_rmse": None, "stale": True
             },
             2: {
                 "id": 2,
@@ -175,7 +176,8 @@ class GlobalState:
                 "dist_ci_low": None,
                 "dist_ci_high": None,
                 "samples_count": 0,
-                "history": deque(maxlen=30)
+                "history": deque(maxlen=30),
+                "last_fresh_t": 0.0, "ema_rssi": None, "fit_rmse": None, "stale": True
             },
             3: {
                 "id": 3,
@@ -192,7 +194,8 @@ class GlobalState:
                 "dist_ci_low": None,
                 "dist_ci_high": None,
                 "samples_count": 0,
-                "history": deque(maxlen=30)
+                "history": deque(maxlen=30),
+                "last_fresh_t": 0.0, "ema_rssi": None, "fit_rmse": None, "stale": True
             }
         }
         
@@ -301,7 +304,74 @@ STATE = GlobalState()
 
 DEFAULT_A_REF = -42.0
 DEFAULT_N_EXP = 2.4
-CALIB_MIN_SAMPLES = 5
+# MAP-05: a real macOS CoreWLAN scan takes ~8 s (measured); calls in between return a cached copy with
+# "Resource busy". So on a Mac each anchor gets one fresh reading every ~8-20 s and the windows below
+# are counted in fresh scans, not polls. Windows' wlanapi refreshes far faster.
+_IS_MAC = sys.platform == "darwin"
+CALIB_MIN_SAMPLES = 2 if _IS_MAC else 4
+CALIB_WINDOW = 3 if _IS_MAC else 6      # newest fresh scans used for a calibration sample
+ANCHOR_STALE_S = 30.0 if _IS_MAC else 6.0  # anchor drops out of the fix if no fresh scan for this long
+MAC_SCAN_INTERVAL_S = 1.5   # poll interval; duplicates (cached copies) are discarded
+SMOOTH_MEDIAN_N = 3 if _IS_MAC else 5  # median over the last N fresh scans...
+EMA_ALPHA = 0.4             # ...then an exponential moving average
+N_FIT_MIN, N_FIT_MAX = 1.6, 4.0  # clamp fitted path-loss exponent so one bad point cannot wreck the fit
+
+
+def scan_fingerprint(items) -> tuple:
+    """Identity of one scan result. macOS / Windows return the same cached table when polled too fast;
+    an identical fingerprint means nothing new was measured."""
+    return tuple(sorted((b["signal_id"], b["rssi"]) for b in items))
+
+
+def apply_anchor_reading(anchor: dict, rssi: float, now: float):
+    """Record one fresh RSSI reading: median of the last fresh scans, then EMA, then distance."""
+    anchor["last_rssi"] = rssi
+    anchor["samples_count"] += 1
+    anchor["history"].append(rssi)
+    anchor["last_fresh_t"] = now
+    med = float(np.median(list(anchor["history"])[-SMOOTH_MEDIAN_N:]))
+    prev = anchor.get("ema_rssi")
+    anchor["ema_rssi"] = med if prev is None else EMA_ALPHA * med + (1.0 - EMA_ALPHA) * prev
+    d_m, lo, hi = rssi_to_distance(anchor["ema_rssi"], anchor["A_ref"], anchor["n_exp"])
+    anchor["distance_m"], anchor["dist_ci_low"], anchor["dist_ci_high"] = round(d_m, 2), round(lo, 2), round(hi, 2)
+
+
+def expire_stale_anchors(anchors: dict, now: float):
+    """Anchors with no fresh scan for ANCHOR_STALE_S stop feeding the position solver."""
+    for a in anchors.values():
+        a["stale"] = (now - a.get("last_fresh_t", 0.0)) > ANCHOR_STALE_S
+        if a["stale"]:
+            a["distance_m"] = a["dist_ci_low"] = a["dist_ci_high"] = None
+            a["ema_rssi"] = None
+
+
+def calibrate_at_spot(tx: float, ty: float) -> list:
+    """Known-spot calibration (MAP-05). You stand at (tx, ty); each anchor's true distance is known from
+    its fixed position, so its live median RSSI becomes one (distance, rssi) point. Points accumulate per
+    anchor and A / n are refit. Call with STATE.lock held."""
+    rows = []
+    for aid, a in STATE.anchors.items():
+        st = rssi_stats(list(a["history"])[-CALIB_WINDOW:])
+        true_d = round(max(math.hypot(tx - a["x"], ty - a["y"]), 0.3), 2)
+        row = {"anchor_id": aid, "true_m": true_d, "rssi": st["median"], "std": st["std"], "n": st["n"]}
+        if a.get("stale", True) or st["n"] < CALIB_MIN_SAMPLES:
+            row["skipped"] = f"only {st['n']} fresh samples (signal assigned and live?)"
+            rows.append(row)
+            continue
+        STATE.calib_points[aid].append((true_d, st["median"]))
+        A, n, rmse = fit_path_loss(STATE.calib_points[aid])
+        if A is None:  # one distance so far: set A with current n
+            a["A_ref"] = round(st["median"] + 10.0 * a["n_exp"] * math.log10(true_d), 1)
+        else:
+            n = float(np.clip(n, N_FIT_MIN, N_FIT_MAX))
+            # refit A with n fixed at its clamped value
+            a["n_exp"] = round(n, 2)
+            a["A_ref"] = round(float(np.mean([r + 10.0 * n * math.log10(d) for d, r in STATE.calib_points[aid]])), 1)
+            a["fit_rmse"] = rmse
+            row["rmse_db"] = rmse
+        row.update(A_ref=a["A_ref"], n_exp=a["n_exp"], points=len(STATE.calib_points[aid]))
+        rows.append(row)
+    return rows
 
 
 def rssi_stats(values):
@@ -392,10 +462,12 @@ def solve_trilateration(anchors_data: list[dict], grid_w: float, grid_h: float) 
             y_closed = (Ly**2 + d1**2 - d3**2) / (2.0 * Ly)
             
             # Non-Linear Refinement with Scipy
+            # Range error grows with distance and with how badly the anchor's calibration fits (MAP-05)
+            sig_db = np.array([max(1.0, a.get("fit_rmse") or 2.5) for a in valid], dtype=float)
+            weights = 1.0 / ((dists + 0.1) * sig_db)
+
             def cost_fun(p):
                 residuals = np.linalg.norm(pts - p, axis=1) - dists
-                # Weight by inverse distance to balance far anchors
-                weights = 1.0 / (dists + 0.1)
                 return residuals * weights
             
             x_init = np.clip(x_closed, 0.0, grid_w)
@@ -415,9 +487,10 @@ def solve_trilateration(anchors_data: list[dict], grid_w: float, grid_h: float) 
             
             # Calculate HDOP (Horizontal Dilution of Precision)
             # Matrix H_i = [(x - xi)/di, (y - yi)/di]
-            H = np.zeros((3, 2))
-            for i in range(3):
-                denom = max(0.1, dists[i])
+            # Geometry uses true ranges from the estimate, not the (noisy) measured distances
+            H = np.zeros((len(pts), 2))
+            for i in range(len(pts)):
+                denom = max(0.1, float(np.hypot(x_est - pts[i, 0], y_est - pts[i, 1])))
                 H[i, 0] = (x_est - pts[i, 0]) / denom
                 H[i, 1] = (y_est - pts[i, 1]) / denom
             try:
@@ -737,22 +810,32 @@ def background_phone_thread():
 
 def background_wifi_scanner_thread():
     """Continuously polls native Windows WLAN API every 250-350ms."""
-    driver = MacWlanDriver() if sys.platform == "darwin" else WindowsWlanDriver()
+    is_mac = sys.platform == "darwin"
+    driver = MacWlanDriver() if is_mac else WindowsWlanDriver()
+    cycle_s = MAC_SCAN_INTERVAL_S if is_mac else 0.25
     scan_tick = 0
-    
+    last_fp = None
+
     while True:
         try:
             t0 = time.time()
-            
+
             # Periodically issue hardware scan request
             if scan_tick % 2 == 0:
                 driver.trigger_scan()
             scan_tick += 1
-            
+
             # Read fresh BSS table directly from driver memory
             bss_items = driver.get_bss_list()
             now = time.time()
-            
+            # MAP-05: a byte-identical table is a cached copy, not a new measurement. Counting it again
+            # froze the median and reported a fake 0.0 dB spread.
+            fp = scan_fingerprint(bss_items)
+            if not bss_items or fp == last_fp:
+                time.sleep(max(0.05, cycle_s - (time.time() - t0)))
+                continue
+            last_fp = fp
+
             with STATE.lock:
                 # Update discovered signals registry
                 for item in bss_items:
@@ -784,25 +867,12 @@ def background_wifi_scanner_thread():
                     
                     matched_item = next((b for b in bss_items if b["signal_id"] == target_sig_id), None)
                     if matched_item:
-                        rssi = matched_item["rssi"]
-                        anchor["last_rssi"] = rssi
                         anchor["signal_name"] = matched_item["name"]
-                        anchor["samples_count"] += 1
-                        anchor["history"].append(rssi)
-                        
-                        # Moving median of recent readings for multipath noise reduction
-                        recent_vals = list(anchor["history"])[-7:]
-                        filtered_rssi = float(np.median(recent_vals)) if recent_vals else rssi
-                        
-                        # Compute distance via ITU-R P.1238 inversion
-                        d_m, ci_low, ci_high = rssi_to_distance(filtered_rssi, anchor["A_ref"], anchor["n_exp"])
-                        anchor["distance_m"] = round(d_m, 2)
-                        anchor["dist_ci_low"] = round(ci_low, 2)
-                        anchor["dist_ci_high"] = round(ci_high, 2)
-            
-            # Sleep remainder of 250ms cycle
+                        apply_anchor_reading(anchor, matched_item["rssi"], now)
+
+            # Sleep remainder of the scan cycle
             elapsed = time.time() - t0
-            time.sleep(max(0.05, 0.25 - elapsed))
+            time.sleep(max(0.05, cycle_s - elapsed))
             
         except Exception as e:
             time.sleep(0.5)
@@ -842,15 +912,7 @@ def background_ble_scanner_thread():
                 # Check assigned anchors
                 for a_id, anchor in STATE.anchors.items():
                     if anchor["signal_id"] == sig_id:
-                        anchor["last_rssi"] = rssi
-                        anchor["samples_count"] += 1
-                        anchor["history"].append(rssi)
-                        recent_vals = list(anchor["history"])[-7:]
-                        filtered_rssi = float(np.median(recent_vals)) if recent_vals else rssi
-                        d_m, ci_low, ci_high = rssi_to_distance(filtered_rssi, anchor["A_ref"], anchor["n_exp"])
-                        anchor["distance_m"] = round(d_m, 2)
-                        anchor["dist_ci_low"] = round(ci_low, 2)
-                        anchor["dist_ci_high"] = round(ci_high, 2)
+                        apply_anchor_reading(anchor, rssi, now)
 
         try:
             scanner = BleakScanner(detection_callback=detection_cb)
@@ -906,7 +968,11 @@ def positioning_engine_thread():
                         anchor["distance_m"] = round(d_m, 2)
                         anchor["dist_ci_low"] = round(ci_low, 2)
                         anchor["dist_ci_high"] = round(ci_high, 2)
-                
+                        anchor["last_fresh_t"] = t_now
+
+                # MAP-05: anchors with no fresh scan stop feeding the solver
+                expire_stale_anchors(STATE.anchors, t_now)
+
                 # Run Trilateration
                 anchors_list = list(STATE.anchors.values())
                 meas_x, meas_y, fix_type, hdop = solve_trilateration(
@@ -968,6 +1034,7 @@ def positioning_engine_thread():
                             "ci_high": a["dist_ci_high"],
                             "A_ref": a["A_ref"],
                             "n_exp": a["n_exp"],
+                            "stale": a.get("stale", True),
                             "color": a["color"]
                         } for aid, a in STATE.anchors.items()
                     },
@@ -1767,6 +1834,12 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
           <span id="calName" style="opacity:.8"></span>
           <div id="calLive" style="margin:4px 0">live: --</div>
           <div>A (1 m ref): <strong id="calA">--</strong> dBm &nbsp; n: <strong id="calN">--</strong></div>
+          <div style="margin-top:6px;padding:4px;border:1px solid #00f0ff55;border-radius:4px"><b>0. Calibrate at this spot (all anchors, recommended)</b><br>
+            Stand still until the live line shows 2+ fresh scans (~20-40 s on a Mac), then click. Repeat at 4-5 spots.<br>
+            x <input id="calHX" type="number" step="0.1" value="1" style="width:55px"> y <input id="calHY" type="number" step="0.1" value="1" style="width:55px"> m
+            <select id="calHPreset" onchange="calHerePreset()"><option value="">presets</option><option value="c">center</option><option value="a1">1 m from A1</option><option value="a2">1 m from A2</option><option value="a3">1 m from A3</option><option value="far">far corner</option></select>
+            <button class="btn-calib" onclick="calibHere()">📍 Calibrate here</button>
+            <div id="calHere" style="white-space:pre;font-family:monospace;font-size:0.72rem"></div></div>
           <div style="margin-top:6px"><b>1. Distance capture</b> (stand still ~3 s first)<br>
             distance <input id="calDist" type="number" step="0.1" value="1.0" style="width:60px"> m
             <button class="btn-calib" onclick="calib('capture')">➕ Capture point &amp; fit</button>
@@ -2470,6 +2543,21 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
       [['A_ref', calSetA], ['n_exp', calSetN], ['x', calSetX], ['y', calSetY]].forEach(([k, el]) => { if (el.value !== '') b[k] = parseFloat(el.value); });
       calib('set', b);
     }
+    async function calHerePreset() {
+      const all = await (await fetch('/api/calib_status')).json();
+      const A = k => all[k], v = calHPreset.value;
+      const pick = {c: [(A(2).x)/2, (A(3).y)/2], a1: [A(1).x + 0.7, A(1).y + 0.7], a2: [A(2).x - 1, A(2).y + 0.3],
+                    a3: [A(3).x + 0.3, A(3).y - 1], far: [A(2).x - 1, A(3).y - 1]}[v];
+      if (pick) { calHX.value = pick[0].toFixed(2); calHY.value = pick[1].toFixed(2); }
+    }
+    async function calibHere() {
+      const r = await fetch('/api/calib', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'calibrate_here', x: parseFloat(calHX.value), y: parseFloat(calHY.value)})});
+      const d = await r.json();
+      if (!r.ok) { calHere.innerText = 'Error: ' + d.detail; return; }
+      calHere.innerText = d.anchors.map(a => a.skipped ? `A${a.anchor_id}: skipped (${a.skipped})`
+        : `A${a.anchor_id}: ${a.true_m} m @ ${a.rssi} dBm (sd ${a.std}) -> A ${a.A_ref}, n ${a.n_exp}, ${a.points} pts` + (a.rmse_db !== undefined ? `, fit err ${a.rmse_db} dB` : '')).join('\n');
+      refreshCalib();
+    }
     async function calibVerify() {
       const r = await fetch('/api/calib', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'verify', x: parseFloat(calVX.value), y: parseFloat(calVY.value)})});
       const d = await r.json();
@@ -2483,7 +2571,8 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
         const a = all[calAnchor.value];
         calName.innerText = a.signal_name || '';
         calA.innerText = a.A_ref; calN.innerText = a.n_exp;
-        calLive.innerText = a.live.n ? `live: median ${a.live.median} dBm, sd ${a.live.std} dB, ${a.live.n} samples` + (a.live.std > 4 ? '  (noisy: hold still)' : '') : 'live: no samples (assign a live signal)';
+        calLive.innerText = (a.stale ? 'STALE (no fresh scan ' + (a.fresh_age_s ?? '--') + ' s)  ' : '') +
+          (a.live.n ? `live: median ${a.live.median} dBm, sd ${a.live.std} dB, ${a.live.n} fresh scans` + (a.live.std > 4 ? '  (noisy: hold still)' : '') : 'live: no samples (assign a live signal)');
         calPts.innerText = a.points.length ? a.points.map(p => `${p[0]}m@${p[1]}`).join(', ') : 'none';
         if (document.activeElement !== calSetX) calSetX.placeholder = a.x;
         if (document.activeElement !== calSetY) calSetY.placeholder = a.y;
@@ -2799,9 +2888,11 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
             with STATE.lock:
                 out = {}
                 for aid, a in STATE.anchors.items():
-                    st = rssi_stats(list(a["history"])[-15:])
+                    st = rssi_stats(list(a["history"])[-CALIB_WINDOW:])
+                    age = time.time() - a.get("last_fresh_t", 0.0)
                     out[str(aid)] = {"signal_name": a["signal_name"], "A_ref": a["A_ref"], "n_exp": a["n_exp"],
-                                     "x": a["x"], "y": a["y"], "live": st,
+                                     "x": a["x"], "y": a["y"], "live": st, "fit_rmse": a.get("fit_rmse"),
+                                     "stale": a.get("stale", True), "fresh_age_s": round(age, 1) if age < 1e6 else None,
                                      "points": [list(p) for p in STATE.calib_points.get(aid, [])]}
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2927,6 +3018,7 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
         #   set      {anchor_id, A_ref?, n_exp?, x?, y?}  manual values
         #   reset    {anchor_id | "all"}     defaults (A -42, n 2.4), points cleared
         #   set_n_all {n_exp}                one exponent for every anchor
+        #   calibrate_here {x, y}            you stand at a known spot: one point per anchor at its true distance, refit (MAP-05)
         #   verify   {x, y}                  you stand at a known spot: per-anchor predicted vs true distance
         if url.path == "/api/calib":
             act = req_data.get("action")
@@ -2942,7 +3034,7 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
                         d = float(req_data.get("distance_m", 1.0))
                         if not (0.1 <= d <= 100):
                             raise ValueError("distance_m must be 0.1-100")
-                        st = rssi_stats(list(a["history"])[-15:])
+                        st = rssi_stats(list(a["history"])[-CALIB_WINDOW:])
                         if st["n"] < CALIB_MIN_SAMPLES:
                             raise ValueError(f"only {st['n']} recent samples for this anchor; wait for {CALIB_MIN_SAMPLES} (is its signal assigned and live?)")
                         if act == "one_point":
@@ -2954,6 +3046,7 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
                                 a["A_ref"] = round(st["median"] + 10.0 * a["n_exp"] * math.log10(d), 1)
                             else:
                                 a["A_ref"], a["n_exp"] = A, float(np.clip(n, 1.2, 6.0))
+                                a["fit_rmse"] = rmse
                                 res["rmse_db"] = rmse
                         res["sample"] = st
                     elif act == "fit":
@@ -2986,16 +3079,23 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
                         for i in (STATE.anchors if aid is None else [aid]):
                             STATE.anchors[i]["A_ref"], STATE.anchors[i]["n_exp"] = DEFAULT_A_REF, DEFAULT_N_EXP
                             STATE.calib_points[i] = []
+                            STATE.anchors[i]["fit_rmse"] = None
                     elif act == "set_n_all":
                         v = float(req_data["n_exp"])
                         if not (1.0 <= v <= 6.0): raise ValueError("n_exp must be 1.0-6.0")
                         for x in STATE.anchors.values():
                             x["n_exp"] = round(v, 2)
+                    elif act == "calibrate_here":
+                        tx, ty = float(req_data["x"]), float(req_data["y"])
+                        rows = calibrate_at_spot(tx, ty)
+                        if all("skipped" in r for r in rows):
+                            raise ValueError("no anchor had enough fresh samples; stand still until 2+ fresh scans arrive (~20-40 s on a Mac) and retry")
+                        res["anchors"] = rows
                     elif act == "verify":
                         tx, ty = float(req_data["x"]), float(req_data["y"])
                         rows = []
                         for i, x in STATE.anchors.items():
-                            st = rssi_stats(list(x["history"])[-15:])
+                            st = rssi_stats(list(x["history"])[-CALIB_WINDOW:])
                             true_d = math.hypot(tx - x["x"], ty - x["y"])
                             est = rssi_to_distance(st["median"], x["A_ref"], x["n_exp"])[0] if st["n"] else None
                             # A that would make this reading exact at the true distance

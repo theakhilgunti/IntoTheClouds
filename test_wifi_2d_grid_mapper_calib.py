@@ -100,6 +100,70 @@ class CalibApi(unittest.TestCase):
         self.assertAlmostEqual(row["est_m"], 2.0, delta=0.05)
         self.assertAlmostEqual(row["A_that_fits"], -40.0, delta=0.2)
 
+    def test_calibrate_here_recovers_A_and_n_per_anchor(self):
+        # Beacons stay at their fixed positions; only the walker moves between known spots.
+        truth = {1: (-46, 2.2), 2: (-52, 2.6), 3: (-56, 3.0)}
+        with M.STATE.lock:
+            for aid, (x, y) in {1: (0, 0), 2: (7.3, 0), 3: (0, 7.3)}.items():
+                M.STATE.anchors[aid]["x"], M.STATE.anchors[aid]["y"] = float(x), float(y)
+        for sx, sy in [(0.7, 0.7), (3.65, 3.65), (6.3, 1.0), (1.0, 6.3)]:
+            now = M.time.time()
+            with M.STATE.lock:
+                for aid, (A, n) in truth.items():
+                    a = M.STATE.anchors[aid]
+                    d = max(math.hypot(sx - a["x"], sy - a["y"]), 0.3)
+                    a["history"].clear()
+                    a["history"].extend([round(rssi(A, n, round(d, 2)), 3)] * 6)
+                    a["last_fresh_t"], a["stale"] = now, False
+            s, d = self.post({"action": "calibrate_here", "x": sx, "y": sy})
+            self.assertEqual(s, 200, d)
+        with M.STATE.lock:
+            for aid, (A, n) in truth.items():
+                self.assertAlmostEqual(M.STATE.anchors[aid]["A_ref"], A, delta=1.0)
+                self.assertAlmostEqual(M.STATE.anchors[aid]["n_exp"], n, delta=0.1)
+                self.assertEqual(len(M.STATE.calib_points[aid]), 4)
+
+    def test_calibrate_here_skips_stale_anchors(self):
+        with M.STATE.lock:
+            for a in M.STATE.anchors.values():
+                a["stale"] = True
+        s, d = self.post({"action": "calibrate_here", "x": 1, "y": 1})
+        self.assertEqual(s, 400)
+
+
+def fresh_anchor():
+    return {"x": 0.0, "y": 0.0, "A_ref": -40.0, "n_exp": 2.0, "history": M.deque(maxlen=30), "samples_count": 0,
+            "last_fresh_t": 0.0, "ema_rssi": None, "distance_m": None, "dist_ci_low": None, "dist_ci_high": None}
+
+
+class Freshness(unittest.TestCase):
+    def test_duplicate_scan_has_same_fingerprint(self):
+        a = [{"signal_id": "wifi:x", "rssi": -50}, {"signal_id": "wifi:y", "rssi": -60}]
+        self.assertEqual(M.scan_fingerprint(a), M.scan_fingerprint(list(reversed(a))))
+        self.assertNotEqual(M.scan_fingerprint(a), M.scan_fingerprint([{"signal_id": "wifi:x", "rssi": -51}, a[1]]))
+
+    def test_anchor_goes_stale(self):
+        a = fresh_anchor()
+        M.apply_anchor_reading(a, rssi(-40, 2.0, 2.0), now=100.0)
+        self.assertAlmostEqual(a["distance_m"], 2.0, delta=0.05)
+        M.expire_stale_anchors({1: a}, now=103.0)
+        self.assertFalse(a["stale"])
+        self.assertIsNotNone(a["distance_m"])
+        M.expire_stale_anchors({1: a}, now=100.0 + M.ANCHOR_STALE_S + 0.1)
+        self.assertTrue(a["stale"])
+        self.assertIsNone(a["distance_m"])
+
+
+class Solver(unittest.TestCase):
+    def test_noiseless_fix_hits_true_point(self):
+        anchors = []
+        for i, (x, y) in enumerate([(0.0, 0.0), (7.3, 0.0), (0.0, 7.3)], start=1):
+            anchors.append({"id": i, "x": x, "y": y, "fit_rmse": None, "distance_m": math.hypot(2.5 - x, 4.0 - y)})
+        x, y, fix, hdop = M.solve_trilateration(anchors, 7.3, 7.3)
+        self.assertEqual(fix, "3-ANCHOR FIX")
+        self.assertLess(math.hypot(x - 2.5, y - 4.0), 0.3)
+        self.assertLess(hdop, 5.0)
+
 
 if __name__ == "__main__":
     unittest.main()
