@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 const barlow = Barlow_Condensed({
   variable: "--font-barlow",
   subsets: ["latin"],
-  weight: "500",
+  weight: ["500", "700"],
 });
 
 const jetbrains = JetBrains_Mono({

@@ -26,10 +26,10 @@ export default function Home() {
       </header>
 
       <section className="relative z-10 flex w-full flex-1 flex-col items-center justify-center gap-4 text-center">
-        <h1 className="font-display text-5xl uppercase leading-[0.94] tracking-[0.02em] text-white sm:text-7xl">
-          See the plan.
+        <h1 className="font-display text-5xl font-medium uppercase leading-[0.94] tracking-[0.02em] text-white sm:text-7xl">
+          Scan the cloud.
           <br />
-          <span className="text-bp-red">Then go in.</span>
+          <span className="text-bp-red">Know the plan.</span>
         </h1>
 
         <OpenHouse />
