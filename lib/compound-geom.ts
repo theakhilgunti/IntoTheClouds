@@ -1,4 +1,6 @@
 /** Lot, outbuilding, and aerial-box geometry. No app imports, so node:test can load it. */
+import { normStreet, streetsMatch } from "./address";
+
 export type Point = [number, number];
 
 export type CompoundKind =
@@ -1723,6 +1725,8 @@ export function accessFeatures(opts: {
   radiusM?: number;
   /** Building pads streets must not cut through (focus + neighbors + sheds). */
   avoidRings?: Point[][];
+  /** Normalized or raw street name from the scanned address — keep that curb first. */
+  preferStreet?: string | null;
 }): SiteFeature[] {
   const here: Point = ringCentroid(opts.footprint);
   // Prefer an explicit outdoor disc; never fall below roadReach for streets/signs.
@@ -1793,12 +1797,20 @@ export function accessFeatures(opts: {
       runStart = b;
     }
   }
-  // Nearest runs first (same nearest-N policy as neighbor shells). Chunk each into short
-  // ribbon quads so DEM/grade can't twist a long street into the terrain.
+  // Prefer the address street, then nearest runs (same nearest-N policy as neighbor shells).
+  // Chunk each into short ribbon quads so DEM/grade can't twist a long street into the terrain.
+  const prefer = opts.preferStreet?.trim() ? normStreet(opts.preferStreet) : null;
+  const namePreferred = (name: string | null) =>
+    !!(prefer && name && streetsMatch(normStreet(name), prefer));
   const featureCap = Math.min(MAX_ROAD_FEATURES, Math.max(ribbonCap * 3, ribbonCap));
   let roadFeat = 0;
   roadRuns
-    .sort((a, b) => a.d - b.d)
+    .sort((a, b) => {
+      const ap = namePreferred(a.name) ? 0 : 1;
+      const bp = namePreferred(b.name) ? 0 : 1;
+      if (ap !== bp) return ap - bp;
+      return a.d - b.d;
+    })
     .slice(0, Math.min(MAX_ROAD_RIBBONS, ribbonCap))
     .forEach((r) => {
       segs.push({ a: r.a, b: r.b, name: r.name });
@@ -1897,11 +1909,19 @@ export function accessFeatures(opts: {
     }
   }
 
-  // Nearest segment for driveway mouth.
+  // Nearest segment for driveway mouth — prefer the address street when present.
   let best: { a: Point; b: Point; name: string | null; at: Point; d: number } | null = null;
   for (const s of segs) {
     const hit = nearestOn(here, s.a, s.b);
-    if (!best || hit.d < best.d) best = { a: s.a, b: s.b, name: s.name, at: hit.at, d: hit.d };
+    const pref = namePreferred(s.name);
+    const bestPref = best ? namePreferred(best.name) : false;
+    if (
+      !best ||
+      (pref && !bestPref) ||
+      (pref === bestPref && hit.d < best.d)
+    ) {
+      best = { a: s.a, b: s.b, name: s.name, at: hit.at, d: hit.d };
+    }
   }
   if (!best || best.d > roadMax) {
     // Keep roads / hydrants / signs even when the driveway cannot attach.

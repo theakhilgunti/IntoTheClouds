@@ -508,18 +508,34 @@ out tags geom;`;
   let roadDir: Point | null = null, roadName: string | null = null, roadDistance: number | null = null;
   if (roads.length) {
     const c = building ? polygonCentroid(building.ring) : here;
-    let best = Infinity;
-    for (const r of roads) {
-      for (let i = 0; i < r.pts.length - 1; i++) {
-        const n = nearestOnSegment(c, r.pts[i], r.pts[i + 1]);
-        const d = dist(c, n);
-        if (d < best) {
-          best = d;
-          roadDir = [(n[0] - c[0]) / (d || 1), (n[1] - c[1]) / (d || 1)];
-          roadName = r.name;
-          roadDistance = d;
+    const wantStreet = want?.street ?? null;
+    const pickNearest = (pool: typeof roads) => {
+      let best = Infinity;
+      let dir: Point | null = null;
+      let name: string | null = null;
+      for (const r of pool) {
+        for (let i = 0; i < r.pts.length - 1; i++) {
+          const n = nearestOnSegment(c, r.pts[i], r.pts[i + 1]);
+          const d = dist(c, n);
+          if (d < best) {
+            best = d;
+            dir = [(n[0] - c[0]) / (d || 1), (n[1] - c[1]) / (d || 1)];
+            name = r.name;
+          }
         }
       }
+      return { dir, name, d: best };
+    };
+    // Prefer the street named in the address (e.g. Yardley Court) over a nearer arterial/connector.
+    const named =
+      wantStreet
+        ? roads.filter((r) => r.name && streetsMatch(normStreet(r.name), wantStreet))
+        : [];
+    const hit = named.length ? pickNearest(named) : pickNearest(roads);
+    if (hit.dir && Number.isFinite(hit.d)) {
+      roadDir = hit.dir;
+      roadName = hit.name;
+      roadDistance = hit.d;
     }
   }
 

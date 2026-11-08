@@ -4,6 +4,7 @@
  */
 import { fromLocal, pointInPolygon, polygonArea, polygonCentroid, toLocal, type LatLng } from "./geo";
 import { geocode, nominatimBuildingId } from "./geocode";
+import { parseStreetAddress } from "./address";
 import { lookupBuilding, type OsmContext } from "./overpass";
 import { pinnedWayId } from "./pins";
 import { verifiedInterior } from "./interiors";
@@ -104,13 +105,20 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   let origin: LatLng;
   let geocodedWay: number | null = null;
   let address = input.address?.trim() ?? "";
+  let streetOnlyGeocode = false;
   if (address) {
     const g = await geocode(address, sources);
     if (!g) throw new ScanError("We couldn't find that address. Check the spelling and include the city and state.");
     origin = g;
     geocodedWay = g.wayId ?? null;
+    streetOnlyGeocode = !!g.streetOnly;
     address = g.matched;
     step("locate", "done", g.matched);
+    if (streetOnlyGeocode) {
+      warnings.push(
+        "The map only matched the street name — not this house number — so the pin sits on the road and we use the closest mapped building. Confirm it's yours; the curb follows that building.",
+      );
+    }
   } else if (input.lat != null && input.lng != null) {
     origin = { lat: input.lat, lng: input.lng };
     sources.push({
@@ -155,7 +163,11 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     });
     step("outline", "done", `${Math.round(b.area)} m² outline`);
     if (input.address && osm!.chosenBy === "nearest") {
-      warnings.push("We couldn't match this address to a specific mapped building, so we used the closest one. It may be a neighbor. Check it against the aerial photo.");
+      warnings.push(
+        streetOnlyGeocode
+          ? "No building is tagged with this house number on OpenStreetMap, so we used the closest outline to the street. It may be a neighbor — use Wrong house? if needed."
+          : "We couldn't match this address to a specific mapped building, so we used the closest one. It may be a neighbor. Check it against the aerial photo.",
+      );
     }
     if (NOT_A_HOUSE.has(b.tags.building)) {
       const useHint = buildingUseFromTags(b.tags);
@@ -983,6 +995,11 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       .filter((f) => f.kind === "neighbor" || f.kind === "garage" || f.kind === "shed")
       .map((f) => f.polygon),
   ].filter((ring) => ring.length >= 3);
+  const preferStreet =
+    osm?.roadName ??
+    parseStreetAddress(input.address)?.street ??
+    parseStreetAddress(address)?.street ??
+    null;
   const access = accessFeatures({
     footprint: built.model.footprint,
     streetDir,
@@ -995,6 +1012,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     stopSigns: (osm?.stopSigns ?? []).map((p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point),
     radiusM: compound.outdoorReach,
     avoidRings,
+    preferStreet,
   });
   const verifiedSite = crossVerifySiteFeatures({
     features: compound.features,

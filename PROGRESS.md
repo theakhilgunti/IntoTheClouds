@@ -54,6 +54,7 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 08:33 | Cursor | UI-147 | Ignore Nominatim highway wayIds; prefer address street for roadDir/ribbons/driveway; warn on street-only geocode. |
 | 08:25 | Cursor | UI-146 | Fix homepage sheet anim skip: sheetGo from nearby overlay; restart go() mid-transition instead of bare push. |
 | 08:20 | Cursor | UI-145 | Wrong house? lists street addresses for known OSM neighbors (compound + nearby merge). |
 | 08:18 | Cursor | UI-144 | Wrong-house overlay always visible; hold ~450ms + carry across route change until viewer ready. |

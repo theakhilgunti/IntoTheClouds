@@ -13,9 +13,46 @@ async function getJson(url: string, ms = 10000): Promise<any> {
 export type Geocoded = LatLng & {
   matched: string;
   provider: string;
-  /** OSM way id when the address search points at a building outline. */
+  /** OSM building way id when the address search points at a building outline (never a highway). */
   wayId?: number | null;
+  /** True when Nominatim only matched a road / place, not a house number. */
+  streetOnly?: boolean;
 };
+
+/** Nominatim way ids are only useful as building outlines — never treat a highway as a house. */
+export function nominatimBuildingWayId(hit: {
+  osm_type?: string;
+  osm_id?: number | string;
+  class?: string;
+  type?: string;
+  addresstype?: string;
+} | null | undefined): number | null {
+  if (!hit || hit.osm_type !== "way") return null;
+  const id = Number(hit.osm_id);
+  if (!Number.isFinite(id)) return null;
+  const cls = String(hit.class ?? "").toLowerCase();
+  if (cls === "highway" || cls === "railway" || cls === "waterway" || cls === "aeroway") return null;
+  if (cls === "building") return id;
+  // Building-like POIs sometimes lack class=building but still carry a footprint way.
+  if (cls === "amenity" || cls === "office" || cls === "shop" || cls === "tourism" || cls === "leisure") return id;
+  return null;
+}
+
+export function isNominatimStreetOnly(hit: {
+  class?: string;
+  type?: string;
+  addresstype?: string;
+} | null | undefined): boolean {
+  if (!hit) return false;
+  const cls = String(hit.class ?? "").toLowerCase();
+  const addr = String(hit.addresstype ?? "").toLowerCase();
+  if (cls === "highway") return true;
+  if (addr === "road" || addr === "residential" || addr === "street") {
+    // "residential" addresstype is used for both houses and named residential roads.
+    return cls === "highway" || cls === "" || cls === "place";
+  }
+  return false;
+}
 
 function metersApart(a: LatLng, b: LatLng): number {
   const dy = (a.lat - b.lat) * 111320;
@@ -51,11 +88,23 @@ export async function geocode(address: string, report: SourceReport[]): Promise<
     );
     const hit = j[0];
     if (hit) {
-      const wayId = hit.osm_type === "way" ? Number(hit.osm_id) : null;
-      nominatim = { lat: +hit.lat, lng: +hit.lon, matched: hit.display_name, provider: "nominatim", wayId };
+      const wayId = nominatimBuildingWayId(hit);
+      const streetOnly = isNominatimStreetOnly(hit) || wayId == null && String(hit.class ?? "") === "highway";
+      nominatim = {
+        lat: +hit.lat,
+        lng: +hit.lon,
+        matched: hit.display_name,
+        provider: "nominatim",
+        wayId,
+        streetOnly: streetOnly || undefined,
+      };
       report.push({
-        id: "nominatim", name: "OpenStreetMap Nominatim", status: "used",
-        detail: `Matched "${hit.display_name}".`,
+        id: "nominatim",
+        name: "OpenStreetMap Nominatim",
+        status: "used",
+        detail: streetOnly
+          ? `Only matched the street "${hit.display_name}" — no house number outline.`
+          : `Matched "${hit.display_name}".`,
       });
     } else {
       report.push({ id: "nominatim", name: "OpenStreetMap Nominatim", status: "failed", detail: "No match." });
@@ -66,8 +115,14 @@ export async function geocode(address: string, report: SourceReport[]): Promise<
 
   if (census && nominatim && metersApart(census, nominatim) < 150) {
     // Census drops the point on the street centerline, often closer to the neighbor.
-    // Nominatim's point sits on the building. Keep Census's cleaned address string.
-    return { ...census, lat: nominatim.lat, lng: nominatim.lng, wayId: nominatim.wayId ?? null };
+    // Nominatim's point sits on the building when it has one. Keep Census's cleaned address string.
+    return {
+      ...census,
+      lat: nominatim.streetOnly ? census.lat : nominatim.lat,
+      lng: nominatim.streetOnly ? census.lng : nominatim.lng,
+      wayId: nominatim.wayId ?? null,
+      streetOnly: nominatim.streetOnly,
+    };
   }
   // When the two disagree by a long way, trust the Census street match.
   return census ?? nominatim;
@@ -77,7 +132,7 @@ export async function geocode(address: string, report: SourceReport[]): Promise<
 export async function nominatimBuildingId(address: string): Promise<number | null> {
   try {
     const j = await getJson(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=jsonv2&limit=1`);
-    return j[0]?.osm_type === "way" ? Number(j[0].osm_id) : null;
+    return nominatimBuildingWayId(j[0]);
   } catch {
     return null;
   }
@@ -128,7 +183,7 @@ export async function suggestAddresses(query: string, limit = 6): Promise<Addres
         secondary,
         lat: +hit.lat,
         lng: +hit.lon,
-        wayId: hit.osm_type === "way" ? Number(hit.osm_id) : null,
+        wayId: nominatimBuildingWayId(hit),
       });
     }
     return out;
