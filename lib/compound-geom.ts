@@ -475,13 +475,14 @@ export function siteReach(mainRing: Point[]): number {
 }
 
 /**
- * Shared outdoor disc for neighbor shells, streets, hydrants, DEM mesh, and map grid.
+ * Search ceiling for neighbor shells (OSM candidates). Streets/grid use
+ * neighborCloudReach after the nearest-N cap is applied.
  */
 export function neighborReach(mainRing: Point[]): number {
   return Math.max(170, Math.round(siteReach(mainRing) * 0.94));
 }
 
-/** Streets / hydrants / signs — same disc as neighbors. */
+/** Streets / hydrants / signs — prefer neighborCloudReach when shells are known. */
 export function roadReach(mainRing: Point[]): number {
   return neighborReach(mainRing);
 }
@@ -498,6 +499,46 @@ export function neighborShellCap(mainRing: Point[]): number {
 /** How many nearest street runs to keep — mirrors neighborShellCap. */
 export function roadRibbonCap(mainRing: Point[]): number {
   return neighborShellCap(mainRing);
+}
+
+/**
+ * Estimate outdoor disc from the neighbor shell cap (urban lot packing),
+ * clamped to the neighbor search ceiling. Used when no shells are loaded yet
+ * and as a floor so sparse sites don't shrink streets too far.
+ */
+export function estimateNeighborCloudReach(mainRing: Point[]): number {
+  const search = neighborReach(mainRing);
+  const cap = neighborShellCap(mainRing);
+  const ext = foundationExtent(mainRing);
+  // Typical center-to-center pitch for house-sized pads around this footprint.
+  const lotPitch = Math.max(18, Math.min(34, ext * 0.85 + 14));
+  // Pack `cap` peers in a disc: r ≈ pitch × √(n/π), plus a little street margin.
+  const packed = Math.round(lotPitch * Math.sqrt(cap / Math.PI) * 1.2 + 14);
+  return Math.min(search, Math.max(90, packed));
+}
+
+/**
+ * Outdoor disc for streets / DEM / grid from the kept neighbor shells (after cap).
+ * Takes the farthest shell vertex from the focus, pads for curb/street, and
+ * floors with the cap-based estimate so 0–2 neighbors don't collapse the scene.
+ */
+export function neighborCloudReach(mainRing: Point[], neighborRings: Point[][]): number {
+  const search = neighborReach(mainRing);
+  const estimated = estimateNeighborCloudReach(mainRing);
+  if (!neighborRings.length) return estimated;
+  const mainC: Point = mainRing.length >= 3 ? ringCentroid(mainRing) : [0, 0];
+  let maxR = 0;
+  for (const ring of neighborRings) {
+    for (const p of ring) maxR = Math.max(maxR, dist(p, mainC));
+  }
+  const observed = Math.round(maxR + 16);
+  return Math.min(search, Math.max(estimated, observed, 90));
+}
+
+/** Derive outdoor disc from compound neighbor features (viewer / DEM clip). */
+export function outdoorReachFromNeighbors(footprint: Point[], features: { kind: string; polygon: Point[] }[]): number {
+  const rings = features.filter((f) => f.kind === "neighbor").map((f) => f.polygon);
+  return neighborCloudReach(footprint, rings);
 }
 
 /** Distance used for neighbor radius: ring gap, falling back to centroid→foundation. */
@@ -742,20 +783,22 @@ export function assembleCompound(site: {
   streetDir?: Point | null;
   /** Mapped OSM tree trunks (local meters). */
   trees?: Point[];
-}): { features: SiteFeature[] } {
+}): { features: SiteFeature[]; outdoorReach: number } {
   const features: SiteFeature[] = [];
   const main = site.mainRing.length >= 3 ? site.mainRing : null;
   const mainC: Point = main ? ringCentroid(main) : [0, 0];
   const streetDir = site.streetDir ?? null;
   const neighborR = neighborReach(site.mainRing);
-  const siteR = neighborR;
-  const reach = neighborR;
   const accessoryR = accessoryReach(site.mainRing);
   const neighborCap = neighborShellCap(site.mainRing);
   const lotSoft = Math.min(6, Math.max(2.5, foundationExtent(site.mainRing) * 0.12));
   const maxOut = Math.max(120, Math.min(500, accessoryR * accessoryR * 0.12));
   const maxNeighborArea = Math.max(1200, Math.min(14000, foundationExtent(site.mainRing) * foundationExtent(site.mainRing) * 6));
-  const inScene = (p: Point) => dist(p, mainC) <= neighborR;
+  // Temporary disc until neighborHits land — then outdoorReach replaces this.
+  let outdoorReach = estimateNeighborCloudReach(site.mainRing);
+  let siteR = outdoorReach;
+  let reach = outdoorReach;
+  let inScene = (p: Point) => dist(p, mainC) <= outdoorReach;
 
   // Prefer the tax lot; otherwise hull the house + nearby tagged outbuildings/parking.
   const hasParcel = !!(site.parcel && site.parcel.length >= 3);
@@ -840,6 +883,11 @@ export function assembleCompound(site: {
     .sort((a, b) => a.d - b.d)
     .slice(0, neighborCap);
   const neighborRings = neighborHits.map((h) => h.s.ring);
+  // Streets / fences / terrain / DEM share the disc implied by capped neighbor shells.
+  outdoorReach = neighborCloudReach(site.mainRing, neighborRings);
+  siteR = outdoorReach;
+  reach = outdoorReach;
+  inScene = (p: Point) => dist(p, mainC) <= outdoorReach;
   const neighborSoft = Math.min(45, Math.max(18, accessoryR * 0.95));
   const nearNeighborhood = (p: Point) =>
     onSite(p) || neighborRings.some((r) => nearFoundation(p, r, neighborSoft));
@@ -1156,9 +1204,9 @@ export function assembleCompound(site: {
   }
 
   // Graded ground for the full neighbor render radius + pads under each building.
-  features.unshift(...neighborhoodTerrainFeatures(main, neighborRings, siteR));
+  features.unshift(...neighborhoodTerrainFeatures(main, neighborRings, outdoorReach));
 
-  return { features: features.slice(0, 360) };
+  return { features: features.slice(0, 360), outdoorReach };
 }
 
 /**
@@ -1376,10 +1424,12 @@ export function accessFeatures(opts: {
   trafficSignals?: Point[];
   /** OSM highway=stop nodes (model frame meters). */
   stopSigns?: Point[];
+  /** Override disc (prefer neighborCloudReach from assembleCompound). */
+  radiusM?: number;
 }): SiteFeature[] {
   const here: Point = ringCentroid(opts.footprint);
-  // Streets / hydrants / signs share the neighbor outdoor disc + nearest-N cap.
-  const keepR = roadReach(opts.footprint);
+  // Streets / hydrants / signs share the neighbor-cloud outdoor disc + nearest-N cap.
+  const keepR = opts.radiusM ?? roadReach(opts.footprint);
   const ribbonCap = roadRibbonCap(opts.footprint);
   const roadMax = Math.max(70, keepR * 0.95);
   const width = Math.min(12, Math.max(7.2, ringExtent(opts.footprint) * 0.15));

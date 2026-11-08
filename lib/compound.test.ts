@@ -19,9 +19,12 @@ import {
   MAX_ROAD_FEATURES,
   MAX_ROAD_RIBBONS,
   neighborhoodTerrainFeatures,
+  estimateNeighborCloudReach,
+  neighborCloudReach,
   neighborReach,
   neighborShellCap,
   neighborShellHeight,
+  outdoorReachFromNeighbors,
   pointInRing,
   ringSeparation,
   roadReach,
@@ -140,13 +143,27 @@ describe("street and driveway", () => {
     assert.ok(Rc > Rh, "larger footprint should get a wider scene disc");
     assert.ok(Rc <= SITE_REACH_MAX_M);
     assert.ok(neighborReach(campus) < Rc, "neighbor disc stays inside siteReach fetch ceiling");
-    assert.equal(roadReach(campus), neighborReach(campus), "streets share the neighbor disc");
+    assert.equal(roadReach(campus), neighborReach(campus), "search ceiling still aligns");
     assert.equal(compoundReach(house), Rh);
     assert.ok(accessoryReach(house) >= 45, "garage/shed base reach was increased");
     assert.ok(accessoryReach(house) < neighborReach(house), "garage/shed lot radius stays tighter than neighbors");
     assert.ok(neighborShellCap(house) <= neighborShellCap(campus));
     assert.ok(neighborShellCap(campus) <= MAX_NEIGHBOR_SHELLS);
     assert.equal(roadRibbonCap(campus), neighborShellCap(campus), "street run cap mirrors neighbor shell cap");
+    const estH = estimateNeighborCloudReach(house);
+    const estC = estimateNeighborCloudReach(campus);
+    assert.ok(estH <= neighborReach(house) && estH >= 90);
+    assert.ok(estC >= estH, "larger cap/footprint → larger estimated cloud");
+    const closeNbr: [number, number][] = [[12, -3], [20, -3], [20, 3], [12, 3]];
+    const farNbr: [number, number][] = [[80, -4], [90, -4], [90, 4], [80, 4]];
+    const cloud = neighborCloudReach(house, [closeNbr, farNbr]);
+    assert.ok(cloud <= neighborReach(house));
+    assert.ok(cloud >= Math.hypot(90, 4) + 16 - 0.5, "cloud reach covers farthest kept shell + curb pad");
+    assert.ok(cloud >= estH, "cloud never shrinks below cap-based estimate");
+    assert.equal(
+      outdoorReachFromNeighbors(house, [{ kind: "neighbor", polygon: farNbr }]),
+      neighborCloudReach(house, [farNbr]),
+    );
   });
 
   it("places mapped stop signs and traffic signals along loaded roads", () => {

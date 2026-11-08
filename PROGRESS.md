@@ -54,6 +54,7 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 09:55 | Cursor | UI-90 | Outdoor street/grid/DEM radius from capped neighbor cloud (compound-v45). |
 | 09:45 | Cursor | UI-89 | Home scan progress: Cancel aborts in-flight house lookup. |
 | 09:35 | Cursor | UI-88 | Wrong-house neighbor switch reframes compound/DEM locally (no full rescan). |
 | 09:20 | Cursor | UI-87 | Wrong-house overlay progress bar tracks real scan steps. |
@@ -195,3 +196,4 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 07:48 | Cursor | UI-87 | Finished task |
 | 07:54 | Cursor | UI-88 | Finished task |
 | 07:56 | Cursor | UI-89 | Finished task |
+| 08:00 | Cursor | UI-90 | Finished task |

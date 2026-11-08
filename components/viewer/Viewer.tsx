@@ -23,7 +23,7 @@ import {
   demExtent,
   demHeightfieldBuffers,
   gradeHeight,
-  neighborReach,
+  outdoorReachFromNeighbors,
   terrainGridLinePositions,
 } from "@/lib/compound-geom";
 import { buildNav, routeToMarker, type Route } from "@/lib/route";
@@ -503,12 +503,14 @@ function groundMat(color: string, hovered: boolean, opts?: { transparent?: boole
 function DemTerrainMesh({
   grade,
   footprint,
+  features,
   hovered,
   onOver,
   onOut,
 }: {
   grade: LotGrade;
   footprint: Point[];
+  features: CompoundFeature[];
   hovered: boolean;
   onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
   onOut: (id: string) => void;
@@ -520,7 +522,7 @@ function DemTerrainMesh({
       footprint.length >= 3
         ? footprint
         : ([[-10, -10], [10, -10], [10, 10], [-10, 10]] as Point[]);
-    const radius = neighborReach(fp);
+    const radius = outdoorReachFromNeighbors(fp, features);
     const buf = demHeightfieldBuffers(dem, { yBias: LAYER_Y.terrain, radiusM: radius });
     if (!buf) return null;
     const g = new THREE.BufferGeometry();
@@ -528,7 +530,7 @@ function DemTerrainMesh({
     g.setIndex(new THREE.BufferAttribute(buf.indices, 1));
     g.computeVertexNormals();
     return g;
-  }, [grade.dem, footprint]);
+  }, [grade.dem, footprint, features]);
   if (!geo || !grade.dem) return null;
   const src = grade.dem.source;
   return (
@@ -1768,6 +1770,7 @@ export default function Viewer({
                 <DemTerrainMesh
                   grade={lotGrade}
                   footprint={model.footprint}
+                  features={model.compound?.features ?? []}
                   hovered={tip?.id === "terrain-dem"}
                   onOver={showTip}
                   onOut={hideTip}
@@ -1916,8 +1919,16 @@ export default function Viewer({
 
         <TerrainGrid
           grade={model.compound?.grade ?? null}
-          size={neighborReach(model.footprint) * 2}
-          divisions={Math.max(20, Math.min(40, Math.round(neighborReach(model.footprint) / 6)))}
+          size={
+            outdoorReachFromNeighbors(model.footprint, model.compound?.features ?? []) * 2
+          }
+          divisions={Math.max(
+            20,
+            Math.min(
+              40,
+              Math.round(outdoorReachFromNeighbors(model.footprint, model.compound?.features ?? []) / 6),
+            ),
+          )}
         />
         <OrbitControls
           ref={controlsRef}

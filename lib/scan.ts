@@ -17,7 +17,6 @@ import {
   crossVerifySiteFeatures,
   entryStairFeatures,
   pickGarage,
-  neighborReach,
   SITE_REACH_MIN_M,
   siteReach,
 } from "./compound-geom";
@@ -223,7 +222,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v44" || saved.model.roof?.basis !== "roof-v3");
+      (saved.model.compound?.basis !== "compound-v45" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -882,17 +881,6 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
 
   const originShift = b ? polygonCentroid(b.ring) : ([0, 0] as Point);
   const shift = (ring: Point[]) => ring.map(([x, y]) => [x - originShift[0], y - originShift[1]] as Point);
-  const access = accessFeatures({
-    footprint: built.model.footprint,
-    streetDir,
-    roads: (osm?.roads ?? []).map((r) => ({ name: r.name, pts: shift(r.pts) })),
-    garage: garageRing ? shift(garageRing) : null,
-    hydrants: (osm?.hydrants ?? []).map((p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point),
-    trafficSignals: (osm?.trafficSignals ?? []).map(
-      (p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point,
-    ),
-    stopSigns: (osm?.stopSigns ?? []).map((p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point),
-  });
   const geminiAerial = siteBoxes.flatMap((box) => {
     const polygon = boxToPolygon(box, aerialHalf);
     return polygon ? [{ kind: box.kind, label: box.label, polygon, confidence: 0.7 }] : [];
@@ -906,6 +894,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     ? aboveGrade.reduce((a, b) => (a.level >= b.level ? a : b))
     : null;
   const mainEaveHeight = topFloor ? topFloor.elevation + topFloor.height : Math.max(2.7, stories * 2.75);
+  // Assemble neighbors first so street/DEM radius matches the capped neighbor cloud.
   const compound = assembleCompound({
     mainId: b?.id ?? null,
     mainRing: built.model.footprint,
@@ -934,6 +923,18 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     streetDir,
     trees: (osm?.trees ?? []).map((p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point),
   });
+  const access = accessFeatures({
+    footprint: built.model.footprint,
+    streetDir,
+    roads: (osm?.roads ?? []).map((r) => ({ name: r.name, pts: shift(r.pts) })),
+    garage: garageRing ? shift(garageRing) : null,
+    hydrants: (osm?.hydrants ?? []).map((p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point),
+    trafficSignals: (osm?.trafficSignals ?? []).map(
+      (p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point,
+    ),
+    stopSigns: (osm?.stopSigns ?? []).map((p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point),
+    radiusM: compound.outdoorReach,
+  });
   const verifiedSite = crossVerifySiteFeatures({
     features: compound.features,
     aerialCues: [...geminiAerial, ...jpegSiteCues],
@@ -945,8 +946,8 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const planeGrade = buildLotGrade(built.model.footprint, streetDir);
   // Model (0,0) is the building centroid — sample DEM in that frame.
   const modelGeoOrigin = fromLocal(origin, originShift);
-  // Cover the full neighbor radius (+ a little edge padding) with ~18 m samples.
-  const demHalf = neighborReach(built.model.footprint);
+  // DEM matches the neighbor-cloud outdoor disc used for streets/grid.
+  const demHalf = compound.outdoorReach;
   let dem = null as Awaited<ReturnType<typeof fetchSiteDem>>;
   try {
     dem = await fetchSiteDem({ geoOrigin: modelGeoOrigin, halfExtentM: demHalf, cellM: 18 });
@@ -970,7 +971,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const entrySteps = entryStairFeatures({ streetDir, grade, exits });
   built.model.compound = {
     features: [...kept, ...access, ...entrySteps],
-    basis: "compound-v44",
+    basis: "compound-v45",
     grade: grade ?? undefined,
   };
   if (grade?.dem) {
