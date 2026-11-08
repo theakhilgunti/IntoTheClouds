@@ -301,6 +301,54 @@ function wingFromPoly(poly: Pt[], shape: "gable" | "hip" | "flat", alongLong: bo
   return { polygon: ccw(poly), ridge: ridge ?? undefined, height, shape };
 }
 
+function longSpan(poly: Pt[]): number {
+  const r = minAreaRect(poly);
+  return Math.max(r.wU, r.wV);
+}
+
+function nearestOnSegSimple(p: Pt, a: Pt, b: Pt): Pt {
+  const dx = b[0] - a[0],
+    dy = b[1] - a[1];
+  const l2 = dx * dx + dy * dy || 1;
+  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2));
+  return [a[0] + t * dx, a[1] + t * dy];
+}
+
+/**
+ * L roofs: primary (longer) gable runs full length and sits taller; secondary ridge
+ * ends on the primary ridge so the short wing joins cleanly into the main body.
+ */
+export function joinIntersectingLWings(parts: Pt[][]): RoofWingPlan[] {
+  const ranked = [...parts].sort((a, b) => longSpan(b) - longSpan(a) || polygonArea(b) - polygonArea(a));
+  const primaryPoly = ranked[0];
+  const secondaryPoly = ranked[1];
+  const extras = ranked.slice(2);
+
+  const primary = wingFromPoly(primaryPoly, "gable", true);
+  const secondary = wingFromPoly(secondaryPoly, "gable", true);
+  primary.height = Math.max(primary.height, secondary.height * 1.12, 1.8);
+  secondary.height = Math.min(secondary.height, primary.height * 0.9);
+  secondary.shape = "gable";
+  primary.shape = "gable";
+
+  if (primary.ridge && secondary.ridge) {
+    const pc = minAreaRect(primaryPoly).center;
+    const [s0, s1] = secondary.ridge;
+    // Outer end of the short wing stays; inner end snaps onto the tall ridge.
+    const outer = Math.hypot(s0[0] - pc[0], s0[1] - pc[1]) >= Math.hypot(s1[0] - pc[0], s1[1] - pc[1]) ? s0 : s1;
+    const join = nearestOnSegSimple(outer === s0 ? s1 : s0, primary.ridge[0], primary.ridge[1]);
+    secondary.ridge = [outer, join];
+    // Nudge secondary height to the primary peak at the join so valleys meet cleanly.
+    secondary.height = primary.height * 0.92;
+  }
+
+  const more = extras.map((p) => {
+    const arm = classifyFootprint(p);
+    return wingFromPoly(p, arm.kind === "square" || arm.aspect < 1.28 ? "hip" : "gable", true);
+  });
+  return [primary, secondary, ...more];
+}
+
 function bearingDiff(a: number, b: number): number {
   const d = Math.abs(a - b) % 180;
   return d > 90 ? 180 - d : d;
@@ -391,12 +439,7 @@ export function inferRoofPlan(opts: {
   if (foot.kind === "L") {
     const parts = splitLWings(poly);
     if (parts.length >= 2) {
-      // Intersecting wing roofs (common in FS/city builders): each arm is its own roof.
-      const wings = parts.map((p) => {
-        const arm = classifyFootprint(p);
-        const armShape = arm.kind === "square" || arm.aspect < 1.28 ? "hip" : "gable";
-        return wingFromPoly(p, armShape, true);
-      });
+      const wings = joinIntersectingLWings(parts);
       return { kind: "wings", wings, source: source === "footprint" ? "footprint" : source, shape: "gable", ridgeAlong };
     }
     // Failed split → treat whole L as an offset hip (games-style skeleton roof).

@@ -134,7 +134,19 @@ export const Interior = z.object({
   notes: z.array(z.string()).default([]).describe("Caveats, e.g. placement unconfirmed"),
 });
 
-export const CompoundKind = z.enum(["yard", "garage", "shed", "driveway", "patio", "pool", "fence", "trees", "road"]);
+export const CompoundKind = z.enum([
+  "yard",
+  "garage",
+  "shed",
+  "driveway",
+  "patio",
+  "pool",
+  "fence",
+  "trees",
+  "road",
+  "signal",
+  "hydrant",
+]);
 
 /** A lot, outbuilding, or surface around the house. Approximate: map lot, mapped shed, or an aerial box. */
 export const CompoundFeature = z.object({

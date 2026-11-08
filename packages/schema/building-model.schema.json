@@ -593,7 +593,9 @@
                   "pool",
                   "fence",
                   "trees",
-                  "road"
+                  "road",
+                  "signal",
+                  "hydrant"
                 ]
               },
               "label": {

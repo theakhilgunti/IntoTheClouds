@@ -40,6 +40,8 @@ export type OsmContext = {
   parking: Point[][];
   /** Road centerlines near the house, in meters from the search point. */
   roads: { name: string | null; pts: Point[] }[];
+  /** Mapped fire hydrants near the house (local meters). */
+  hydrants: Point[];
 };
 
 const NON_HOUSE = new Set(["garage", "garages", "shed", "roof", "carport", "service", "hut", "cabin", "greenhouse", "barn"]);
@@ -47,8 +49,15 @@ const NON_HOUSE = new Set(["garage", "garages", "shed", "roof", "carport", "serv
 const UA = "CloudScan-HackRPI/0.1 (hackathon project)";
 const ROADS = /^(residential|service|tertiary|secondary|primary|unclassified|living_street|trunk)$/;
 
+function isHydrantTags(tags: Record<string, string> | undefined): boolean {
+  if (!tags) return false;
+  return tags.emergency === "fire_hydrant" || tags.amenity === "fire_hydrant";
+}
+
+type OsmFetch = { ways: OsmWay[]; hydrants: Point[] };
+
 /** Main OpenStreetMap API: everything in a small box around the point. Fast and reliable for tiny areas. */
-async function fromOsmApi(o: LatLng, radius: number): Promise<OsmWay[]> {
+async function fromOsmApi(o: LatLng, radius: number): Promise<OsmFetch> {
   const dLat = radius / 111320;
   const dLng = radius / (111320 * Math.cos((o.lat * Math.PI) / 180));
   const bbox = [o.lng - dLng, o.lat - dLat, o.lng + dLng, o.lat + dLat].map((n) => n.toFixed(6)).join(",");
@@ -59,7 +68,14 @@ async function fromOsmApi(o: LatLng, radius: number): Promise<OsmWay[]> {
   if (!res.ok) throw new Error(`OSM API HTTP ${res.status}`);
   const j = await res.json();
   const nodes = new Map<number, { lat: number; lon: number }>();
-  for (const e of j.elements) if (e.type === "node") nodes.set(e.id, { lat: e.lat, lon: e.lon });
+  const hydrants: Point[] = [];
+  for (const e of j.elements) {
+    if (e.type !== "node") continue;
+    nodes.set(e.id, { lat: e.lat, lon: e.lon });
+    if (isHydrantTags(e.tags as Record<string, string> | undefined)) {
+      hydrants.push(toLocal(o, { lat: e.lat, lng: e.lon }));
+    }
+  }
   const ways: OsmWay[] = [];
   for (const e of j.elements) {
     if (e.type !== "way" || !e.tags) continue;
@@ -71,20 +87,20 @@ async function fromOsmApi(o: LatLng, radius: number): Promise<OsmWay[]> {
     const geometry = (e.nodes as number[]).map((id) => nodes.get(id)).filter(Boolean) as { lat: number; lon: number }[];
     ways.push({ id: e.id, tags: e.tags, geometry });
   }
-  return ways;
+  return { ways, hydrants };
 }
 
 /** Try the main OSM API first, then the Overpass mirrors. */
-async function fetchWays(origin: LatLng, overpassQuery: string, radius = 150): Promise<OsmWay[]> {
+async function fetchMap(origin: LatLng, overpassQuery: string, radius = 150): Promise<OsmFetch> {
   try {
     return await fromOsmApi(origin, radius);
   } catch (e) {
     console.warn("OSM API failed, trying Overpass", e);
-    return runQuery(overpassQuery);
+    return runQuery(origin, overpassQuery);
   }
 }
 
-async function runQuery(query: string): Promise<OsmWay[]> {
+async function runQuery(origin: LatLng, query: string): Promise<OsmFetch> {
   let lastErr: unknown;
   for (const url of ENDPOINTS) {
     try {
@@ -96,7 +112,23 @@ async function runQuery(query: string): Promise<OsmWay[]> {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const j = await res.json();
-      return j.elements as OsmWay[];
+      const ways: OsmWay[] = [];
+      const hydrants: Point[] = [];
+      for (const e of j.elements as Array<{
+        type: string;
+        id: number;
+        tags?: Record<string, string>;
+        lat?: number;
+        lon?: number;
+        geometry?: { lat: number; lon: number }[];
+      }>) {
+        if (e.type === "node" && e.lat != null && e.lon != null && isHydrantTags(e.tags)) {
+          hydrants.push(toLocal(origin, { lat: e.lat, lng: e.lon }));
+        } else if (e.type === "way" && e.geometry) {
+          ways.push({ id: e.id, tags: e.tags, geometry: e.geometry });
+        }
+      }
+      return { ways, hydrants };
     } catch (e) {
       lastErr = e;
     }
@@ -125,7 +157,7 @@ function houseLabel(b: OsmBuilding): string {
  */
 export async function lookupBuilding(origin: LatLng, heading?: number | null, hint?: AddressHint): Promise<OsmContext> {
   // Wide enough for a full house lot / small campus; denser cities still stay under Overpass limits.
-  const R = 150;
+  const R = 220;
   const q = `[out:json][timeout:25];
 (
   way["building"](around:${R},${origin.lat},${origin.lng});
@@ -134,9 +166,11 @@ export async function lookupBuilding(origin: LatLng, heading?: number | null, hi
   way["leisure"="swimming_pool"](around:${R},${origin.lat},${origin.lng});
   way["amenity"="parking"](around:${R},${origin.lat},${origin.lng});
   way["leisure"="parking"](around:${R},${origin.lat},${origin.lng});
+  node["emergency"="fire_hydrant"](around:${R},${origin.lat},${origin.lng});
+  node["amenity"="fire_hydrant"](around:${R},${origin.lat},${origin.lng});
 );
 out tags geom;`;
-  const els = await fetchWays(origin, q, R);
+  const { ways: els, hydrants: rawHydrants } = await fetchMap(origin, q, R);
 
   const buildings: OsmBuilding[] = [];
   const roads: { name: string | null; pts: Point[] }[] = [];
@@ -245,8 +279,16 @@ out tags geom;`;
     nearby.unshift({ id: building.id, label: houseLabel(building) });
   }
 
+  // Nearest mapped hydrants (keep a handful for the SAR scene).
+  const hydrants = rawHydrants
+    .map((p) => ({ p, d: dist(here, p) }))
+    .filter((h) => h.d < R)
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 8)
+    .map((h) => h.p);
+
   return {
     building, chosenBy, buildingCount: buildings.length, nearby, roadDir, roadName, roadDistance,
-    structures: buildings, fences, pools, parking, roads,
+    structures: buildings, fences, pools, parking, roads, hydrants,
   };
 }

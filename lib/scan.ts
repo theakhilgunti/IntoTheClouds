@@ -7,12 +7,20 @@ import { geocode, nominatimBuildingId } from "./geocode";
 import { lookupBuilding, type OsmContext } from "./overpass";
 import { pinnedWayId } from "./pins";
 import { verifiedInterior } from "./interiors";
-import { aerialImage, type Image } from "./imagery";
+import { aerialImage, googleSatelliteImage, type Image } from "./imagery";
 import { describeHouse, describeSite, geminiAvailable, geminiModel, type HouseFacts } from "./vision";
-import { accessFeatures, assembleCompound, boxToPolygon, compoundReach, pickGarage } from "./compound-geom";
+import {
+  accessFeatures,
+  assembleCompound,
+  boxToPolygon,
+  compoundReach,
+  crossVerifySiteFeatures,
+  pickGarage,
+} from "./compound-geom";
 import { inNyc, lookupParcel, type ParcelHit } from "./parcel";
 import { buildHouse, type GarageSide } from "./layout";
 import { analyzeAerialRoof } from "./aerial-roof";
+import { analyzeAerialSite } from "./aerial-site";
 import { inferRoofPlan } from "./roof-infer";
 import { store } from "./store";
 import type { AttributeReport, ScanEvent, ScanResult, SourceReport, StepKey } from "./sources";
@@ -143,7 +151,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   if (!input.rescan) {
     const saved = await store.get(id);
     // Empty shells, and address scans from before the lot was drawn, get rebuilt.
-    const stale = !!saved && (saved.model.source === "address" || saved.model.source === "photo") && saved.model.compound?.basis !== "compound-v2";
+    const stale = !!saved && (saved.model.source === "address" || saved.model.source === "photo") && saved.model.compound?.basis !== "compound-v4";
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -218,11 +226,32 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     tags["building:material"] ? `Material: ${tags["building:material"]}` : null,
   ].filter(Boolean).join("\n");
 
+  // Optional Google Maps Static satellite for structure cross-check (same place as Esri).
+  let googleSat: Image | null = null;
+  if (aerial) {
+    googleSat = await googleSatelliteImage(center, aerialHalf).catch(() => null);
+    if (googleSat) {
+      sources.push({
+        id: "google-sat",
+        name: "Google Maps satellite",
+        status: "used",
+        detail: "Static satellite tile used to cross-check site structures with Esri imagery.",
+      });
+    } else if (process.env.GOOGLE_MAPS_API_KEY) {
+      sources.push({
+        id: "google-sat",
+        name: "Google Maps satellite",
+        status: "failed",
+        detail: "GOOGLE_MAPS_API_KEY is set but the static map request failed.",
+      });
+    }
+  }
+
   // 4. Read the house from the photos (Gemini). The site boxes run alongside that, and a missing key just skips both.
   step("vision", "active");
   let facts: HouseFacts | null = null;
   const sitePromise = geminiAvailable() && aerial
-    ? describeSite(aerial).catch((e) => {
+    ? describeSite(aerial, googleSat).catch((e) => {
         console.warn("aerial site read failed", e);
         return [];
       })
@@ -241,7 +270,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       facts = await describeHouse({ photo: input.photo ?? null, aerial, facts: mapFacts });
       sources.push({
         id: "gemini", name: `Google Gemini (${geminiModel()})`, status: "used",
-        detail: `Read ${[input.photo && "your photo", aerial && "the aerial photo"].filter(Boolean).join(" and ")}. ` +
+        detail: `Read ${[input.photo && "your photo", aerial && "the aerial photo", googleSat && "Google satellite"].filter(Boolean).join(" and ")}. ` +
           `Looks like a ${facts.stories}-story ${facts.style} with ${facts.exterior_material}.`,
       });
       if (facts.photo_matches_aerial === "no") {
@@ -254,6 +283,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     }
   }
   const siteBoxes = await sitePromise;
+  const jpegSiteCues = aerial ? analyzeAerialSite(aerial, aerialHalf) : [];
   const sure = facts && facts.confidence >= 0.35 ? facts : null;
   const plutoStories = buildingOnLot && lot?.numFloors != null ? storiesFromPluto(lot.numFloors) : null;
 
@@ -447,7 +477,16 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     streetDir,
     roads: (osm?.roads ?? []).map((r) => ({ name: r.name, pts: shift(r.pts) })),
     garage: garageRing ? shift(garageRing) : null,
+    hydrants: (osm?.hydrants ?? []).map((p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point),
   });
+  const geminiAerial = siteBoxes.flatMap((box) => {
+    const polygon = boxToPolygon(box, aerialHalf);
+    return polygon ? [{ kind: box.kind, label: box.label, polygon, confidence: 0.7 }] : [];
+  });
+  const aerialForAssemble = [
+    ...geminiAerial.map(({ kind, label, polygon }) => ({ kind, label, polygon })),
+    ...jpegSiteCues.map((c) => ({ kind: c.kind, label: c.label, polygon: c.polygon })),
+  ];
   const compound = assembleCompound({
     mainId: b?.id ?? null,
     mainRing: built.model.footprint,
@@ -456,15 +495,32 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     pools: (osm?.pools ?? []).map(shift),
     parking: (osm?.parking ?? []).map(shift),
     parcel: lot ? shift(lot.ring.map((p) => toLocal(origin, p))) : null,
-    aerial: siteBoxes.flatMap((box) => {
-      const polygon = boxToPolygon(box, aerialHalf);
-      return polygon ? [{ kind: box.kind, label: box.label, polygon }] : [];
-    }),
+    aerial: aerialForAssemble,
+  });
+  const verifiedSite = crossVerifySiteFeatures({
+    features: compound.features,
+    aerialCues: [...geminiAerial, ...jpegSiteCues],
+    geminiGarage: sure?.garage,
   });
   const kept = access.some((f) => f.kind === "driveway")
-    ? compound.features.filter((f) => !(f.kind === "driveway" && f.source === "aerial"))
-    : compound.features;
-  built.model.compound = { features: [...kept, ...access], basis: "compound-v2" };
+    ? verifiedSite.filter((f) => !(f.kind === "driveway" && f.source === "aerial"))
+    : verifiedSite;
+  built.model.compound = { features: [...kept, ...access], basis: "compound-v5" };
+  if (jpegSiteCues.length || geminiAerial.length || googleSat) {
+    sources.push({
+      id: "site-verify",
+      name: "Site structure cross-check",
+      status: "used",
+      detail: [
+        geminiAerial.length ? `${geminiAerial.length} Gemini satellite box(es)` : null,
+        jpegSiteCues.length ? `${jpegSiteCues.length} Esri JPEG cue(s)` : null,
+        googleSat ? "Google Static satellite" : null,
+        "OpenStreetMap outlines",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    });
+  }
   if (!verified && built.model.interior) {
     if (compound.features.some((f) => f.kind === "yard" && f.source === "parcel")) {
       built.model.interior.notes.push("The yard is the city tax lot. The street and driveway follow the mapped road.");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyFootprint, inferRoofPlan, splitLWings } from "./roof-infer.ts";
+import { classifyFootprint, inferRoofPlan, joinIntersectingLWings, splitLWings } from "./roof-infer.ts";
 import { buildRoofPositions } from "./roof-geom.ts";
 
 const rect: [number, number][] = [
@@ -45,6 +45,32 @@ test("L footprints split into two gable wings", () => {
   assert.equal(plan.kind, "wings");
   assert.ok(plan.wings.length >= 2);
   for (const w of plan.wings) assert.ok(w.ridge);
+});
+
+test("L roofs: taller primary runs through; shorter ridge joins its body", () => {
+  const parts = splitLWings(ell);
+  assert.ok(parts.length >= 2);
+  const wings = joinIntersectingLWings(parts);
+  assert.ok(wings[0].height >= wings[1].height);
+  assert.ok(wings[0].ridge && wings[1].ridge);
+  const [a, b] = wings[1].ridge!;
+  const [p0, p1] = wings[0].ridge!;
+  // One end of the short ridge should sit on the tall ridge.
+  const distSeg = (p: [number, number], a0: [number, number], a1: [number, number]) => {
+    const dx = a1[0] - a0[0], dy = a1[1] - a0[1];
+    const l2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((p[0] - a0[0]) * dx + (p[1] - a0[1]) * dy) / l2));
+    return Math.hypot(p[0] - (a0[0] + t * dx), p[1] - (a0[1] + t * dy));
+  };
+  const joinOk = distSeg(a, p0, p1) < 0.35 || distSeg(b, p0, p1) < 0.35;
+  assert.ok(joinOk, "short wing ridge should T-join the primary ridge");
+  const pos = buildRoofPositions(ell, {
+    shape: "gable",
+    ridgeAlong: "depth",
+    height: wings[0].height,
+    wings,
+  });
+  assert.ok(pos.length > 40);
 });
 
 test("OSM flat overrides footprint", () => {

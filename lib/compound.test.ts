@@ -5,6 +5,7 @@ import {
   assembleCompound,
   boxToPolygon,
   compoundReach,
+  crossVerifySiteFeatures,
   pointInRing,
   roomBays,
   siteHull,
@@ -29,6 +30,41 @@ describe("street and driveway", () => {
     assert.ok(drive);
     const midX = drive!.polygon.reduce((s, p) => s + p[0], 0) / drive!.polygon.length;
     assert.ok(midX > 4, `driveway should sit east of the house, was ${midX}`);
+  });
+
+  it("keeps a long road stretch plus a connector and a traffic light at the cross", () => {
+    const features = accessFeatures({
+      footprint: [[-4, -6], [4, -6], [4, 6], [-4, 6]],
+      streetDir: [0, -1],
+      roads: [
+        { name: "Simonson Avenue", pts: [[-90, -14], [90, -14]] },
+        { name: "Cross Street", pts: [[12, -80], [12, 80]] },
+      ],
+      garage: null,
+    });
+    const roads = features.filter((f) => f.kind === "road");
+    assert.ok(roads.length >= 2, `expected main + connector, got ${roads.length}`);
+    assert.ok(features.some((f) => f.kind === "signal"), "crossing should spawn a traffic light");
+  });
+
+  it("places the nearest mapped fire hydrants around the house", () => {
+    const features = accessFeatures({
+      footprint: [[-4, -6], [4, -6], [4, 6], [-4, 6]],
+      streetDir: [0, -1],
+      roads: [{ name: "Simonson Avenue", pts: [[-20, -14], [20, -14]] }],
+      garage: null,
+      hydrants: [
+        [8, -12],
+        [40, -10],
+        [200, 0],
+        [-6, -16],
+      ],
+    });
+    const hydrants = features.filter((f) => f.kind === "hydrant");
+    assert.equal(hydrants.length, 3, "far hydrant should be dropped");
+    assert.equal(hydrants[0].label, "Nearest hydrant");
+    const c0 = hydrants[0].polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((n) => n / 4);
+    assert.ok(Math.hypot(c0[0] - 8, c0[1] + 12) < 0.5 || Math.hypot(c0[0] + 6, c0[1] + 16) < 0.5);
   });
 });
 
@@ -109,5 +145,37 @@ describe("compound assembly", () => {
     assert.ok(hull && hull.length >= 4);
     assert.ok(pointInRing([0, 0], hull!));
     assert.ok(pointInRing([8, 19], hull!));
+  });
+
+  it("cross-verify keeps OSM garage when aerial agrees and fills a missing driveway", () => {
+    const features = crossVerifySiteFeatures({
+      features: [
+        {
+          id: "g1",
+          kind: "garage",
+          label: "Garage",
+          polygon: [[6, 16], [11, 16], [11, 22], [6, 22]],
+          height: 2.6,
+          source: "map",
+        },
+      ],
+      aerialCues: [
+        {
+          kind: "garage",
+          label: "Garage",
+          polygon: [[6.5, 16.5], [10.5, 16.5], [10.5, 21.5], [6.5, 21.5]],
+          confidence: 0.7,
+        },
+        {
+          kind: "driveway",
+          label: "Driveway",
+          polygon: [[-2, -12], [2, -12], [2, -20], [-2, -20]],
+          confidence: 0.55,
+        },
+      ],
+      geminiGarage: "detached",
+    });
+    assert.ok(features.some((f) => f.kind === "garage" && f.source === "map"));
+    assert.ok(features.some((f) => f.kind === "driveway" && f.source === "aerial"));
   });
 });
