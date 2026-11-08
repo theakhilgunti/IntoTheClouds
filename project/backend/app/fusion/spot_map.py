@@ -8,7 +8,7 @@ A wall should show up as a band of high-score cells. With few anchors the band
 is blurry: this is an obstacle hint, not a floor plan.
 """
 import math
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -31,22 +31,28 @@ class SpotMap2D:
         d = max(math.dist(anchor_xy, spot_xy), 0.1)
         return (p0 - 10.0 * n * math.log10(d)) - rssi
 
-    def add(self, anchor_xy: Sequence[float], spot_xy: Sequence[float], rssi: float, p0: float, n: float) -> bool:
-        """Add one averaged reading. Returns False if it was ignored."""
+    def add(self, anchor_xy: Sequence[float], spot_xy: Sequence[float], rssi: float, p0: float, n: float,
+            baseline_rssi: Optional[float] = None) -> bool:
+        """Add one averaged reading. Returns False if it was ignored.
+
+        baseline_rssi: RSSI measured at this same spot and anchor in the baseline (empty / before)
+        scan. When given, shortfall = baseline - rssi, i.e. the drop caused by what changed, and the
+        path-loss model (p0, n) is not used. This cancels the model error and static clutter."""
         try:
             ax, ay = float(anchor_xy[0]), float(anchor_xy[1])
             sx, sy = float(spot_xy[0]), float(spot_xy[1])
             rssi = float(rssi)
+            base = None if baseline_rssi is None else float(baseline_rssi)
         except (TypeError, ValueError, IndexError):
             return False
-        if not all(math.isfinite(v) for v in (ax, ay, sx, sy, rssi)):
+        if not all(math.isfinite(v) for v in (ax, ay, sx, sy, rssi)) or (base is not None and not math.isfinite(base)):
             return False
         if not (self.min_x <= sx < self.max_x and self.min_y <= sy < self.max_y):
             return False  # spot is off the map, so the ray is meaningless
         length = math.hypot(sx - ax, sy - ay)
         if length < self.min_ray_m:
             return False
-        short = self.shortfall_db((ax, ay), (sx, sy), rssi, p0, n)
+        short = (base - rssi) if base is not None else self.shortfall_db((ax, ay), (sx, sy), rssi, p0, n)
         steps = max(2, int(length / (self.cell_m * 0.5)))
         t = np.linspace(0.0, 1.0, steps)
         i = np.floor((ax + (sx - ax) * t - self.min_x) / self.cell_m).astype(int)
@@ -57,7 +63,7 @@ class SpotMap2D:
             return False
         target = self.blocked if short >= self.blocked_db else self.clear
         target[cells[:, 0], cells[:, 1]] += 1.0
-        self.rays.append({"a": [ax, ay], "s": [sx, sy], "rssi": rssi, "short_db": round(short, 1)})
+        self.rays.append({"a": [ax, ay], "s": [sx, sy], "rssi": rssi, "short_db": round(short, 1), "baseline": base is not None})
         return True
 
     def score(self) -> np.ndarray:

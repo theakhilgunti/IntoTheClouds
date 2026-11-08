@@ -3,22 +3,28 @@
 
 1) Stand on a taped spot whose x,y (metres) you measured, then record it:
      python spot_survey.py collect --anchors anchors.json --spot 2,1.5 --seconds 10 --out survey.json
-   Averages the radar's RSSI for each anchor over the time and appends a spot to survey.json.
-   Needs the radar dashboard running (unified_rf_distance_radar.py).
+   Averages each anchor's RSSI over the time and appends a spot to survey.json.
+   Bluetooth anchors are scanned directly with bleak (the radar's BLE feed stalls after a few
+   minutes), matched by address or name. Wi-Fi anchors come from the radar dashboard
+   (unified_rf_distance_radar.py must be running). Needs numpy + bleak, e.g. the radar venv.
 2) Build the map once you have spots on both sides of the wall:
      python spot_survey.py map --anchors anchors.json --survey survey.json --png map.png \
          [--p0 -55] [--n 2.5] [--blocked-db 6] [--wall 2,-2,2,6]
    Prints an ASCII map and writes a PNG. Red = rays through that cell were mostly weaker than
    the model predicts (possible obstacle), blue = mostly clear, grey = no rays.
+   --baseline empty.json: use a survey of the SAME spots taken first without the obstacle, so the
+   shortfall is (baseline - now) in dB instead of (model - now). Spots within 0.2 m are matched.
    --wall draws the real wall (x1,y1,x2,y2) so you can compare. Obstacle HINT, not a floor plan.
 anchors.json: [{"id":"A1","match":"8b0e81fd","x":4,"y":0,"p0":-55}, ...] (same file as radar_bridge.py)
 """
 import argparse
+import asyncio
 import json
 import math
 import os
 import struct
 import sys
+import threading
 import time
 import zlib
 
@@ -33,15 +39,51 @@ def xy(text):
     return [float(v) for v in text.split(",")]
 
 
+def match_bt(address, name, anchors):
+    """Anchor ids whose `match` is a case-insensitive substring of a BLE address or name."""
+    hay = f"{address} {name or ''}".lower()
+    return [x["id"] for x in anchors if x["match"].lower() in hay]
+
+
+async def scan_bt(anchors, seconds):
+    from bleak import BleakScanner  # imported late so `map` works without bleak
+    out = {x["id"]: [] for x in anchors}
+
+    def cb(device, adv):
+        if adv.rssi is None:
+            return
+        for aid in match_bt(device.address, adv.local_name or device.name, anchors):
+            out[aid].append(adv.rssi)
+
+    async with BleakScanner(detection_callback=cb):
+        await asyncio.sleep(seconds)
+    return out
+
+
 def cmd_collect(a):
     anchors = json.load(open(a.anchors))
     samples = {x["id"]: [] for x in anchors}
-    end = time.time() + a.seconds
-    while time.time() < end:
-        matched = match_devices(get_json(a.radar + "/api/telemetry")["all_devices"], anchors)
-        for aid, d in matched.items():
-            samples[aid].append(d["rssi"])
-        time.sleep(0.5)
+    # Wi-Fi comes from the radar, polled while the Bluetooth scan runs. Only Wi-Fi devices count
+    # here, so a stale radar Bluetooth entry can never match a Bluetooth anchor.
+    stop = threading.Event()
+
+    def poll_wifi():
+        while not stop.is_set():
+            try:
+                devs = [d for d in get_json(a.radar + "/api/telemetry")["all_devices"] if d["radio_type"] == "wifi"]
+                for aid, d in match_devices(devs, anchors).items():
+                    samples[aid].append(d["rssi"])
+            except Exception as e:  # radar not running: Wi-Fi anchors just get no readings
+                print(f"[wifi] radar unavailable: {e}", file=sys.stderr)
+                return
+            stop.wait(1.0)
+
+    t = threading.Thread(target=poll_wifi, daemon=True)
+    t.start()
+    for aid, vals in asyncio.run(scan_bt(anchors, a.seconds)).items():
+        samples[aid].extend(vals)
+    stop.set()
+    t.join(timeout=2)
     spot = {"xy": xy(a.spot), "readings": {}}
     for aid, vals in samples.items():
         if len(vals) >= 3:
@@ -54,7 +96,20 @@ def cmd_collect(a):
           for k, v in spot["readings"].items()) or "NO readings (anchors not seen)"))
 
 
-def build_map(anchors, survey, p0=None, n=2.5, blocked_db=6.0, margin=2.0, cell_m=0.25):
+def baseline_lookup(baseline, tol=0.2):
+    """Function (spot xy, anchor id) -> baseline RSSI of the baseline spot within tol metres, or None."""
+    def look(xy_, aid):
+        for b in baseline or []:
+            if math.dist(b["xy"], xy_) <= tol and aid in b["readings"]:
+                return b["readings"][aid]["rssi"]
+        return None
+    return look
+
+
+def build_map(anchors, survey, p0=None, n=2.5, blocked_db=6.0, margin=2.0, cell_m=0.25, baseline=None):
+    """baseline: survey of the same spots taken first with nothing in the way (the empty scene).
+    Spots/anchors found there use shortfall = baseline - now; others fall back to the path-loss model."""
+    look = baseline_lookup(baseline)
     pts = [s["xy"] for s in survey] + [[x["x"], x["y"]] for x in anchors]
     xs, ys = [p[0] for p in pts], [p[1] for p in pts]
     m = SpotMap2D((min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin),
@@ -64,7 +119,8 @@ def build_map(anchors, survey, p0=None, n=2.5, blocked_db=6.0, margin=2.0, cell_
         for aid, r in s["readings"].items():
             if aid in by_id:
                 an = by_id[aid]
-                m.add((an["x"], an["y"]), s["xy"], r["rssi"], p0 if p0 is not None else an.get("p0", -55.0), n)
+                m.add((an["x"], an["y"]), s["xy"], r["rssi"], p0 if p0 is not None else an.get("p0", -55.0), n,
+                      baseline_rssi=look(s["xy"], aid))
     return m
 
 
@@ -115,7 +171,8 @@ def ascii_map(m):
 
 def cmd_map(a):
     anchors, survey = json.load(open(a.anchors)), json.load(open(a.survey))
-    m = build_map(anchors, survey, a.p0, a.n, a.blocked_db)
+    baseline = json.load(open(a.baseline)) if a.baseline else None
+    m = build_map(anchors, survey, a.p0, a.n, a.blocked_db, baseline=baseline)
     render(m, anchors, survey, a.png, xy(a.wall) if a.wall else None)
     blocked = int((m.blocked > 0).sum())
     print(ascii_map(m))
@@ -142,6 +199,7 @@ def main():
     d.add_argument("--p0", type=float, help="override every anchor's 1 m RSSI")
     d.add_argument("--n", type=float, default=2.5, help="path-loss exponent")
     d.add_argument("--blocked-db", type=float, default=6.0)
+    d.add_argument("--baseline", help="survey.json of the same spots taken with nothing in the way")
     d.add_argument("--wall", help="true wall x1,y1,x2,y2 to draw for comparison")
     d.set_defaults(fn=cmd_map)
     a = p.parse_args()

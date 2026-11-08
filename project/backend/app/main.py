@@ -11,6 +11,9 @@ import numpy as np
 from .fusion.math_engine import ParticleFilterLocalizer
 from .fusion.rf_map import RFMap
 from .fusion.tomography import VoxelGrid
+from .fusion.heading import compass_to_map_heading, offset_from_plus_x, valid_angle
+from fastapi.responses import FileResponse
+import os
 from .explored_session import build_exploration_payload, persist_exploration
 
 logging.basicConfig(level=logging.INFO)
@@ -74,6 +77,15 @@ voxel_grid = VoxelGrid()
 current_state: FirefighterState = localizer.get_state("FF_Pi_Rig_1", 0.0, time.time())
 session_started_at: float = time.time()
 
+# BE-10: phone compass + step feed (GET /walker, ws /ws/pdr). `offset` = compass bearing of map +y.
+pdr_state = {"offset": 0.0, "map_heading": 0.0, "last": 0.0, "aligned": False}
+PDR_FRESH_S = 3.0
+
+
+def pdr_fresh() -> bool:
+    return (time.time() - pdr_state["last"]) < PDR_FRESH_S
+
+
 # Active dashboard WebSockets
 dashboard_clients: Set[WebSocket] = set()
 
@@ -135,6 +147,63 @@ async def get_rf_map():
         "height": rf_map.ny,
         "cells": cells,
     }
+
+
+@app.get("/walker")
+async def walker_page():
+    """Phone page: streams compass heading + steps to /ws/pdr. iOS needs HTTPS for motion sensors."""
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "walker.html"))
+
+
+@app.websocket("/ws/pdr")
+async def pdr_endpoint(websocket: WebSocket):
+    """Phone sensor feed. Messages (JSON):
+    {"compass_deg": 123.4}                      heading, degrees clockwise from north
+    {"compass_deg": 123.4, "step": true, "step_length_m": 0.7}
+    {"type": "align", "compass_deg": 123.4}     phone is pointing along the map's +x axis
+    {"type": "start", "x": 2.0, "y": 1.0}       known start position (metres)
+    """
+    global current_state
+    await websocket.accept()
+    logger.info("Phone PDR client connected")
+    last_heading_push = 0.0
+    try:
+        while True:
+            try:
+                msg = json.loads(await websocket.receive_text())
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(msg, dict):
+                continue
+            compass = msg.get("compass_deg")
+            if msg.get("type") == "align" and valid_angle(compass):
+                pdr_state["offset"] = offset_from_plus_x(float(compass))
+                pdr_state["aligned"] = True
+            elif msg.get("type") == "start" and valid_angle(msg.get("x")) and valid_angle(msg.get("y")):
+                localizer.set_start(float(msg["x"]), float(msg["y"]))
+                current_state = localizer.get_state(current_state.device_id, pdr_state["map_heading"], time.time())
+                breadcrumbs.append({"x": current_state.x, "y": current_state.y, "z": current_state.z})
+                await broadcast_to_dashboards({"type": "telemetry_update", "state": current_state.model_dump(),
+                                               "breadcrumb": breadcrumbs[-1]})
+            if valid_angle(compass):
+                pdr_state["map_heading"] = compass_to_map_heading(float(compass), pdr_state["offset"])
+                pdr_state["last"] = time.time()
+            if msg.get("step") is True:
+                length = msg.get("step_length_m", 0.7)
+                length = min(max(float(length), 0.3), 1.2) if valid_angle(length) else 0.7
+                localizer.predict(True, length, pdr_state["map_heading"])
+                current_state = localizer.get_state(current_state.device_id, pdr_state["map_heading"], time.time())
+                breadcrumbs.append({"x": current_state.x, "y": current_state.y, "z": current_state.z})
+                if len(breadcrumbs) > 500:
+                    breadcrumbs.pop(0)
+                await broadcast_to_dashboards({"type": "telemetry_update", "state": current_state.model_dump(),
+                                               "breadcrumb": breadcrumbs[-1]})
+            elif valid_angle(compass) and time.time() - last_heading_push > 0.2:
+                last_heading_push = time.time()
+                current_state = current_state.model_copy(update={"heading_deg": round(pdr_state["map_heading"], 1)})
+                await broadcast_to_dashboards({"type": "telemetry_update", "state": current_state.model_dump()})
+    except WebSocketDisconnect:
+        logger.info("Phone PDR client disconnected")
 
 
 @app.get("/api/mesh")
@@ -207,14 +276,14 @@ async def telemetry_endpoint(websocket: WebSocket):
                 )
                 # No step => no motion sensor (or standing still): spread particles slightly so
                 # the filter keeps tracking from signal readings alone (BE-06).
-                if wifi_scans and not pdr.get("step_detected", False):
+                if wifi_scans and not pdr.get("step_detected", False) and not pdr_fresh():
                     localizer.diffuse()
                 localizer.update_rssi(wifi_scans, anchors)
 
                 # Get updated state
                 current_state = localizer.get_state(
                     device_id=device_id,
-                    heading_deg=pdr.get("heading_deg", 0.0),
+                    heading_deg=pdr_state["map_heading"] if pdr_fresh() else pdr.get("heading_deg", 0.0),
                     timestamp=timestamp,
                 )
 

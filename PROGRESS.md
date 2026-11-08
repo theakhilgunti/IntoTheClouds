@@ -88,3 +88,9 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 22:00 | Claude-Anchors | LC-02 | Added laptop_client/IPHONE_ANCHORS.md, anchors.example.json and offline test_radar_bridge.py (7 tests pass); match_devices verified for BLE name/stale/rotated keys |
 | 00:59 | Claude Code | FE-01 | Finished task |
 | 02:24 | Claude Code | BE-09 | Finished task |
+| 03:41 | Claude Code | BE-09b | Finished task |
+| 04:08 | Claude Code | BE-10 | Finished task |
+| 04:21 | Claude Code | BE-11 | Finished task |
+| 05:10 | Claude Code | BE-11 | Baseline-differential RSSI: SpotMap2D.add(baseline_rssi=) and spot_survey.py map --baseline empty.json (shortfall = baseline - now, model fallback); 3 new tests |
+| 04:36 | Claude Code | DOC-09 | Finished task |
+| 05:40 | Claude Code | DOC-09 | Docs for 3 laptop beacons + walker laptop + iPhone heading: new laptop_client/LAPTOP_ANCHORS.md (untested on hardware), updated README, DEMO_GUIDE, PITCH_OUTLINE, laptop_client/README; IPHONE_ANCHORS.md marked alternative |

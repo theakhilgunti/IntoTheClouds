@@ -37,3 +37,26 @@ def test_bad_and_short_readings_ignored():
     assert not m.add(A, (500, 500), -60, P0, N)
     assert not m.add(A, None, -60, P0, N)
     assert m.rays == []
+
+
+def test_baseline_cancels_model_error():
+    # Real environment is 15 dB weaker than the model everywhere (clutter). Model-only calls
+    # everything blocked; baseline-differential sees only the real 12 dB wall loss.
+    ys = np.arange(-1, 4.1, 0.5)
+    m_model, m_base = SpotMap2D(), SpotMap2D()
+    for y in ys:
+        for spot, wall in (((4.0, y), 12.0), ((-1.5, y), 0.0)):
+            base = rssi(A, spot, 15.0)
+            now = rssi(A, spot, 15.0 + wall)
+            m_model.add(A, spot, now, P0, N)
+            m_base.add(A, spot, now, P0, N, baseline_rssi=base)
+    assert not (np.nan_to_num(m_model.score(), nan=0) < 0).any()  # model: no clear rays at all
+    s = m_base.score()
+    assert s[int((0.0 - m_base.min_y) // m_base.cell_m), int((2.0 - m_base.min_x) // m_base.cell_m)] > 0.5
+    assert s[int((0.0 - m_base.min_y) // m_base.cell_m), int((-1.25 - m_base.min_x) // m_base.cell_m)] < 0
+    assert all(r["baseline"] for r in m_base.rays)
+
+
+def test_nonfinite_baseline_ignored():
+    m = SpotMap2D()
+    assert not m.add(A, (3, 3), -60, P0, N, baseline_rssi=float("nan"))

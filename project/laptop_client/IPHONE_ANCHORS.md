@@ -1,3 +1,5 @@
+> **Not our current setup.** Our beacons are 3 laptops (`LAPTOP_ANCHORS.md`) and the iPhone carries heading and steps. This guide is kept only as an alternative if you use phones as beacons.
+
 # Using iPhones as Bluetooth anchors
 
 Three iPhones each broadcast a fixed Bluetooth name (ITC-A1, ITC-A2, ITC-A3). The Mac radar hears them, and `radar_bridge.py` turns their signal strength into anchors for the backend. No iOS app is needed.
