@@ -17,6 +17,7 @@ import {
   crossVerifySiteFeatures,
   entryStairFeatures,
   pickGarage,
+  neighborReach,
   SITE_REACH_MIN_M,
   siteReach,
 } from "./compound-geom";
@@ -222,7 +223,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v39" || saved.model.roof?.basis !== "roof-v3");
+      (saved.model.compound?.basis !== "compound-v44" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -468,11 +469,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       : buildingUseFromTags(b?.tags);
   const storyCap = maxStoriesForUse(buildingUsePreview);
   if (stories > storyCap) {
-    warnings.push(
-      storyCap === 3
-        ? `This building has ${stories} floors; the model shows the first 3.`
-        : `This building has ${stories} floors; the model shows the first ${storyCap}.`,
-    );
+    warnings.push(`This building has ${stories} floors; the model shows the first ${storyCap}.`);
     attributes[attributes.length - 1].value = `${stories} (showing ${storyCap})`;
     stories = storyCap;
   }
@@ -949,7 +946,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   // Model (0,0) is the building centroid — sample DEM in that frame.
   const modelGeoOrigin = fromLocal(origin, originShift);
   // Cover the full neighbor radius (+ a little edge padding) with ~18 m samples.
-  const demHalf = siteReach(built.model.footprint);
+  const demHalf = neighborReach(built.model.footprint);
   let dem = null as Awaited<ReturnType<typeof fetchSiteDem>>;
   try {
     dem = await fetchSiteDem({ geoOrigin: modelGeoOrigin, halfExtentM: demHalf, cellM: 18 });
@@ -973,7 +970,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const entrySteps = entryStairFeatures({ streetDir, grade, exits });
   built.model.compound = {
     features: [...kept, ...access, ...entrySteps],
-    basis: "compound-v39",
+    basis: "compound-v44",
     grade: grade ?? undefined,
   };
   if (grade?.dem) {

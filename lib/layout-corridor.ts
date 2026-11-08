@@ -63,51 +63,59 @@ export function planCorridorUnits(spec: CorridorSpec, notes: string[], kind: Cor
   for (let lv = 0; lv < spec.stories; lv++) {
     const prefix = `${kind[0]}${lv}`;
     const rooms: CorridorPlanRoom[] = [];
-    if (stair) rooms.push({ id: `${prefix}-stair`, name: "Stairs", type: "stair", r: stair, zone: "hall" });
+    if (stair) rooms.push({ id: `${prefix}-stair`, name: "Stairs", type: "stair", r: stair, zone: "stair" });
 
     if (lv === 0) {
       if (kind === "hotel") {
         const mid = y0 + frontD + (y1 - y0 - frontD) * 0.45;
+        const bathY1 = mid + Math.min(3.2, (y1 - mid) * 0.4);
         rooms.push(
           { id: `${prefix}-lobby`, name: "Lobby / Reception", type: "hallway", r: { x0, y0, x1, y1: y0 + frontD }, zone: "lobby" },
-          { id: `${prefix}-hall`, name: "Ground Corridor", type: "hallway", r: { x0: hx0, y0: y0 + frontD, x1: hx1, y1 }, zone: "hall" },
+          // Corridor above the bath band only — bath sits in the hall strip without nesting.
+          { id: `${prefix}-hall`, name: "Ground Corridor", type: "hallway", r: { x0: hx0, y0: y0 + frontD, x1: hx1, y1: mid }, zone: "hall" },
+          { id: `${prefix}-hall2`, name: "Ground Corridor", type: "hallway", r: { x0: hx0, y0: bathY1, x1: hx1, y1 }, zone: "hall" },
           { id: `${prefix}-rest`, name: "Restaurant / Bar", type: "other", r: { x0, y0: y0 + frontD, x1: hx0, y1: mid }, zone: "rest" },
           { id: `${prefix}-meet`, name: "Meeting / Ballroom", type: "other", r: { x0: hx1, y0: y0 + frontD, x1, y1: mid }, zone: "meet" },
           { id: `${prefix}-kit`, name: "Kitchen / Service", type: "utility", r: { x0, y0: mid, x1: hx0, y1 }, zone: "kit" },
           { id: `${prefix}-boh`, name: "Back of House", type: "utility", r: { x0: hx1, y0: mid, x1, y1 }, zone: "boh" },
-          { id: `${prefix}-bath`, name: "Restrooms", type: "bathroom", r: { x0: hx0, y0: mid, x1: hx1, y1: mid + Math.min(3.2, (y1 - mid) * 0.4) }, zone: "bath" },
+          { id: `${prefix}-bath`, name: "Restrooms", type: "bathroom", r: { x0: hx0, y0: mid, x1: hx1, y1: bathY1 }, zone: "bath" },
         );
       } else if (kind === "hospital") {
         const mid = y0 + frontD + (y1 - y0 - frontD) * 0.4;
         const rear = mid + (y1 - mid) * 0.55;
+        const bathY1 = mid + Math.min(3.2, (rear - mid) * 0.5);
         rooms.push(
           { id: `${prefix}-lobby`, name: "Lobby / Admitting", type: "hallway", r: { x0, y0, x1, y1: y0 + frontD }, zone: "lobby" },
-          { id: `${prefix}-hall`, name: "Ground Corridor", type: "hallway", r: { x0: hx0, y0: y0 + frontD, x1: hx1, y1 }, zone: "hall" },
+          { id: `${prefix}-hall`, name: "Ground Corridor", type: "hallway", r: { x0: hx0, y0: y0 + frontD, x1: hx1, y1: mid }, zone: "hall" },
+          { id: `${prefix}-hall2`, name: "Ground Corridor", type: "hallway", r: { x0: hx0, y0: bathY1, x1: hx1, y1 }, zone: "hall" },
           { id: `${prefix}-ed`, name: "Emergency / Triage", type: "other", r: { x0, y0: y0 + frontD, x1: hx0, y1: mid }, zone: "ed" },
           { id: `${prefix}-img`, name: "Imaging / Labs", type: "other", r: { x0: hx1, y0: y0 + frontD, x1, y1: mid }, zone: "img" },
           { id: `${prefix}-clinicL`, name: "Outpatient Clinic", type: "office", r: { x0, y0: mid, x1: hx0, y1: rear }, zone: "clinicL" },
           { id: `${prefix}-clinicR`, name: "Consultation", type: "office", r: { x0: hx1, y0: mid, x1, y1: rear }, zone: "clinicR" },
           { id: `${prefix}-pharm`, name: "Pharmacy", type: "other", r: { x0, y0: rear, x1: hx0, y1 }, zone: "pharm" },
           { id: `${prefix}-admin`, name: "Admin / Records", type: "office", r: { x0: hx1, y0: rear, x1, y1 }, zone: "admin" },
-          { id: `${prefix}-bath`, name: "Restrooms", type: "bathroom", r: { x0: hx0, y0: mid, x1: hx1, y1: mid + Math.min(3.2, (rear - mid) * 0.5) }, zone: "bath" },
+          { id: `${prefix}-bath`, name: "Restrooms", type: "bathroom", r: { x0: hx0, y0: mid, x1: hx1, y1: bathY1 }, zone: "bath" },
         );
       } else if (kind === "dormitory") {
         const mid = y0 + frontD + (y1 - y0 - frontD) * 0.5;
+        const bathY1 = mid + Math.min(3, (y1 - mid) * 0.4);
         rooms.push(
           { id: `${prefix}-lounge`, name: "Lounge / Common Room", type: "living", r: { x0, y0, x1: hx0, y1: y0 + frontD }, zone: "lounge" },
           { id: `${prefix}-ra`, name: "RA / Front Desk", type: "office", r: { x0: hx1, y0, x1, y1: y0 + frontD }, zone: "ra" },
-          { id: `${prefix}-hall`, name: "Ground Corridor", type: "hallway", r: { x0: hx0, y0, x1: hx1, y1 }, zone: "hall" },
+          { id: `${prefix}-hall`, name: "Ground Corridor", type: "hallway", r: { x0: hx0, y0, x1: hx1, y1: mid }, zone: "hall" },
+          { id: `${prefix}-hall2`, name: "Ground Corridor", type: "hallway", r: { x0: hx0, y0: bathY1, x1: hx1, y1 }, zone: "hall" },
           { id: `${prefix}-study`, name: "Study Lounge", type: "other", r: { x0, y0: y0 + frontD, x1: hx0, y1: mid }, zone: "study" },
           { id: `${prefix}-laundry`, name: "Laundry", type: "utility", r: { x0: hx1, y0: y0 + frontD, x1, y1: mid }, zone: "laundry" },
           { id: `${prefix}-kit`, name: "Kitchenette", type: "kitchen", r: { x0, y0: mid, x1: hx0, y1 }, zone: "kit" },
           { id: `${prefix}-mail`, name: "Mail / Storage", type: "utility", r: { x0: hx1, y0: mid, x1, y1 }, zone: "mail" },
-          { id: `${prefix}-bath`, name: "Shared Bath", type: "bathroom", r: { x0: hx0, y0: mid, x1: hx1, y1: mid + Math.min(3, (y1 - mid) * 0.4) }, zone: "bath" },
+          { id: `${prefix}-bath`, name: "Shared Bath", type: "bathroom", r: { x0: hx0, y0: mid, x1: hx1, y1: bathY1 }, zone: "bath" },
         );
       } else {
+        const mailY1 = y0 + frontD + Math.min(3, D * 0.1);
         rooms.push(
           { id: `${prefix}-lobby`, name: "Lobby / Entry", type: "hallway", r: { x0, y0, x1, y1: y0 + frontD }, zone: "lobby" },
-          { id: `${prefix}-hall`, name: "Ground Corridor", type: "hallway", r: { x0: hx0, y0: y0 + frontD, x1: hx1, y1 }, zone: "hall" },
-          { id: `${prefix}-mail`, name: "Mail / Package", type: "utility", r: { x0: hx0, y0: y0 + frontD, x1: hx1, y1: y0 + frontD + Math.min(3, D * 0.1) }, zone: "mail" },
+          { id: `${prefix}-hall`, name: "Ground Corridor", type: "hallway", r: { x0: hx0, y0: mailY1, x1: hx1, y1 }, zone: "hall" },
+          { id: `${prefix}-mail`, name: "Mail / Package", type: "utility", r: { x0: hx0, y0: y0 + frontD, x1: hx1, y1: mailY1 }, zone: "mail" },
         );
         const gRows = Math.max(1, Math.min(3, Math.floor(unitRows / 2)));
         const edges = depthEdges(y0 + frontD + 0.5, y1, gRows);
@@ -129,7 +137,6 @@ export function planCorridorUnits(spec: CorridorSpec, notes: string[], kind: Cor
         }
       }
     } else {
-      rooms.push({ id: `${prefix}-hall`, name: "Corridor", type: "hallway", r: { x0: hx0, y0, x1: hx1, y1 }, zone: "hall" });
       const edges = depthEdges(y0, y1, unitRows);
       let unitNo = 1;
       for (let i = 0; i < unitRows; i++) {
@@ -184,30 +191,27 @@ export function planCorridorUnits(spec: CorridorSpec, notes: string[], kind: Cor
           unitNo++;
         }
       }
+      // Corridor carved around end-of-hall pods so walls don't span through nested rooms.
       if (kind === "dormitory") {
-        rooms.push({
-          id: `${prefix}-bath`,
-          name: "Shared Bath",
-          type: "bathroom",
-          r: { x0: hx0, y0: y1 - 3.0, x1: hx1, y1 },
-          zone: "bath",
-        });
+        const bathY0 = y1 - 3.0;
+        rooms.push(
+          { id: `${prefix}-hall`, name: "Corridor", type: "hallway", r: { x0: hx0, y0, x1: hx1, y1: bathY0 }, zone: "hall" },
+          { id: `${prefix}-bath`, name: "Shared Bath", type: "bathroom", r: { x0: hx0, y0: bathY0, x1: hx1, y1 }, zone: "bath" },
+        );
       } else if (kind === "hotel") {
-        rooms.push({
-          id: `${prefix}-svc`,
-          name: "Service / Linen",
-          type: "utility",
-          r: { x0: hx0, y0: y1 - 2.8, x1: hx1, y1 },
-          zone: "svc",
-        });
+        const svcY0 = y1 - 2.8;
+        rooms.push(
+          { id: `${prefix}-hall`, name: "Corridor", type: "hallway", r: { x0: hx0, y0, x1: hx1, y1: svcY0 }, zone: "hall" },
+          { id: `${prefix}-svc`, name: "Service / Linen", type: "utility", r: { x0: hx0, y0: svcY0, x1: hx1, y1 }, zone: "svc" },
+        );
       } else if (kind === "hospital") {
-        rooms.push({
-          id: `${prefix}-nurse`,
-          name: "Nurse Station",
-          type: "office",
-          r: { x0: hx0, y0: y0 + 1, x1: hx1, y1: y0 + Math.min(4, D * 0.12) },
-          zone: "nurse",
-        });
+        const nurseY1 = y0 + Math.min(4, D * 0.12);
+        rooms.push(
+          { id: `${prefix}-nurse`, name: "Nurse Station", type: "office", r: { x0: hx0, y0: y0 + 1, x1: hx1, y1: nurseY1 }, zone: "nurse" },
+          { id: `${prefix}-hall`, name: "Corridor", type: "hallway", r: { x0: hx0, y0: nurseY1, x1: hx1, y1 }, zone: "hall" },
+        );
+      } else {
+        rooms.push({ id: `${prefix}-hall`, name: "Corridor", type: "hallway", r: { x0: hx0, y0, x1: hx1, y1 }, zone: "hall" });
       }
     }
 

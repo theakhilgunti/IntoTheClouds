@@ -16,13 +16,16 @@ import {
   foundationExtent,
   gradeHeight,
   MAX_NEIGHBOR_SHELLS,
+  MAX_ROAD_FEATURES,
   MAX_ROAD_RIBBONS,
   neighborhoodTerrainFeatures,
   neighborReach,
+  neighborShellCap,
   neighborShellHeight,
   pointInRing,
   ringSeparation,
   roadReach,
+  roadRibbonCap,
   roomBays,
   sampleDemHeight,
   SITE_REACH_MAX_M,
@@ -89,9 +92,25 @@ describe("street and driveway", () => {
     assert.ok(features.some((f) => f.kind === "driveway"), "driveway should still attach to the street");
   });
 
+  it("chunks long street runs into short ribbon quads", () => {
+    const features = accessFeatures({
+      footprint: [[-4, -6], [4, -6], [4, 6], [-4, 6]],
+      streetDir: [0, -1],
+      roads: [{ name: "Long Avenue", pts: [[-400, -14], [400, -14]] }],
+      garage: null,
+    });
+    const roads = features.filter((f) => f.kind === "road" && f.label === "Long Avenue");
+    assert.ok(roads.length >= 4, `expected chunked ribbons, got ${roads.length}`);
+    for (const r of roads) {
+      const xs = r.polygon.map((p) => p[0]);
+      const span = Math.max(...xs) - Math.min(...xs);
+      assert.ok(span < 60, `chunk should be short, span=${span}`);
+    }
+  });
+
   it("places the nearest mapped fire hydrants around the house", () => {
     const house: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
-    const R = siteReach(house);
+    const R = roadReach(house);
     const features = accessFeatures({
       footprint: house,
       streetDir: [0, -1],
@@ -106,21 +125,28 @@ describe("street and driveway", () => {
       ],
     });
     const hydrants = features.filter((f) => f.kind === "hydrant");
-    assert.equal(hydrants.length, 4, `hydrants outside siteReach (${R} m) should be dropped`);
+    assert.equal(hydrants.length, 4, `hydrants outside roadReach (${R} m) should be dropped`);
     assert.equal(hydrants[0].label, "Nearest hydrant");
     const c0 = hydrants[0].polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((n) => n / 4);
     assert.ok(Math.hypot(c0[0] - 8, c0[1] + 12) < 0.5 || Math.hypot(c0[0] + 6, c0[1] + 16) < 0.5);
   });
 
-  it("uses one shared outdoor radius for neighbors, roads, and terrain", () => {
+  it("scales site reach with complex size; neighbors/roads stay slightly tighter", () => {
     const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
-    const R = siteReach(house);
-    assert.equal(neighborReach(house), R);
-    assert.equal(roadReach(house), R);
-    assert.equal(compoundReach(house), R);
-    assert.ok(R >= SITE_REACH_MIN_M && R <= SITE_REACH_MAX_M);
+    const campus: [number, number][] = [[-40, -35], [40, -35], [40, 35], [-40, 35]];
+    const Rh = siteReach(house);
+    const Rc = siteReach(campus);
+    assert.ok(Rh >= SITE_REACH_MIN_M && Rh <= SITE_REACH_MAX_M);
+    assert.ok(Rc > Rh, "larger footprint should get a wider scene disc");
+    assert.ok(Rc <= SITE_REACH_MAX_M);
+    assert.ok(neighborReach(campus) < Rc, "neighbor disc stays inside siteReach fetch ceiling");
+    assert.equal(roadReach(campus), neighborReach(campus), "streets share the neighbor disc");
+    assert.equal(compoundReach(house), Rh);
     assert.ok(accessoryReach(house) >= 45, "garage/shed base reach was increased");
-    assert.ok(accessoryReach(house) < R, "garage/shed lot radius stays tighter than the scene");
+    assert.ok(accessoryReach(house) < neighborReach(house), "garage/shed lot radius stays tighter than neighbors");
+    assert.ok(neighborShellCap(house) <= neighborShellCap(campus));
+    assert.ok(neighborShellCap(campus) <= MAX_NEIGHBOR_SHELLS);
+    assert.equal(roadRibbonCap(campus), neighborShellCap(campus), "street run cap mirrors neighbor shell cap");
   });
 
   it("places mapped stop signs and traffic signals along loaded roads", () => {
@@ -167,20 +193,25 @@ describe("street and driveway", () => {
   });
 
   it("keeps farther connecting streets but caps road ribbon count", () => {
+    const footprint: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
+    const ribbonCap = roadRibbonCap(footprint);
     const roads = [];
     for (let i = 0; i < 40; i++) {
       const y = -20 - i * 4;
       roads.push({ name: `Grid ${i}`, pts: [[-200, y], [200, y]] as [number, number][] });
     }
     const features = accessFeatures({
-      footprint: [[-4, -6], [4, -6], [4, 6], [-4, 6]],
+      footprint,
       streetDir: [0, -1],
       roads,
       garage: null,
     });
     const drawn = features.filter((f) => f.kind === "road");
-    assert.ok(drawn.length <= MAX_ROAD_RIBBONS, `expected ≤${MAX_ROAD_RIBBONS} roads, got ${drawn.length}`);
-    assert.ok(drawn.length >= 8, `expanded road reach should keep several near ribbons, got ${drawn.length}`);
+    const uniqueRuns = new Set(drawn.map((f) => f.label));
+    assert.ok(uniqueRuns.size <= ribbonCap, `expected ≤${ribbonCap} street runs, got ${uniqueRuns.size}`);
+    assert.ok(uniqueRuns.size <= MAX_ROAD_RIBBONS);
+    assert.ok(drawn.length <= MAX_ROAD_FEATURES, `expected ≤${MAX_ROAD_FEATURES} road chunks, got ${drawn.length}`);
+    assert.ok(drawn.length >= 8, `neighbor-matched road reach should keep several near ribbons, got ${drawn.length}`);
   });
 });
 
@@ -260,7 +291,8 @@ describe("compound assembly", () => {
     assert.ok(siteReach(house) >= SITE_REACH_MIN_M);
     assert.ok(siteReach(house) <= SITE_REACH_MAX_M);
     assert.ok(neighborReach(house) >= accessoryReach(house));
-    assert.equal(roadReach(house), siteReach(house));
+    assert.equal(roadReach(house), neighborReach(house));
+    assert.ok(roadReach(house) <= siteReach(house));
     const { features } = assembleCompound({
       mainId: 1,
       mainRing: house,
@@ -339,11 +371,12 @@ describe("compound assembly", () => {
     assert.ok(neighbors.length >= 3, `expected across/side/yes within ${r} m, got ${neighbors.length}`);
   });
 
-  it("caps neighbor shells to MAX_NEIGHBOR_SHELLS (nearest first)", () => {
+  it("caps neighbor shells to neighborShellCap (nearest first)", () => {
     const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const cap = neighborShellCap(house);
     const structures = [{ id: 1, tag: "house", ring: house, area: 80 }];
     // Pack many house-like pads well inside neighborReach so the max-count clamp fires.
-    for (let i = 0; i < MAX_NEIGHBOR_SHELLS + 8; i++) {
+    for (let i = 0; i < cap + 8; i++) {
       const x = 11 + i * 3.2;
       structures.push({
         id: i + 2,
@@ -363,7 +396,8 @@ describe("compound assembly", () => {
       streetDir: [0, -1],
     });
     const neighbors = features.filter((f) => f.kind === "neighbor");
-    assert.equal(neighbors.length, MAX_NEIGHBOR_SHELLS);
+    assert.equal(neighbors.length, cap);
+    assert.ok(cap <= MAX_NEIGHBOR_SHELLS);
     const firstX = Math.min(...neighbors[0].polygon.map((p) => p[0]));
     assert.ok(firstX < 15, "nearest neighbor should be kept first");
   });

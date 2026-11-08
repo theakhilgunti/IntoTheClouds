@@ -85,3 +85,69 @@ test("rectifyRoomPoly snaps near-axis jogs to straight H/V edges", () => {
     assert.ok(dx < 0.05 || dy < 0.05, `edge ${a}->${b} should be axis-aligned`);
   }
 });
+
+test("large-extent rectify snaps steeper slants that small houses leave alone", () => {
+  // ~18° off horizontal — outside house tol (~12°) but inside campus tol (~24°).
+  const slant: [number, number][] = [
+    [0, 0],
+    [10, Math.tan((18 * Math.PI) / 180) * 10],
+    [10, 8],
+    [0, 8],
+  ];
+  const house = rectifyRoomPoly(slant, 12, 0.13);
+  const campus = rectifyRoomPoly(slant, 24, 0.28);
+  const edge0 = (poly: [number, number][]) => {
+    const a = poly[0];
+    const b = poly[1];
+    return Math.abs(b[1] - a[1]);
+  };
+  assert.ok(edge0(house) > 0.5, "house tol should leave the 18° edge slanted");
+  assert.ok(edge0(campus) < 0.08, "campus tol should flatten the 18° edge");
+});
+
+test("corridor edges split per neighbor — no wall spans through stacked rooms", () => {
+  const rooms = [
+    { zone: "hall", poly: [[0, 0], [2, 0], [2, 20], [0, 20]] as [number, number][] },
+    { zone: "r0", poly: [[-5, 0], [0, 0], [0, 6], [-5, 6]] as [number, number][] },
+    { zone: "r1", poly: [[-5, 6], [0, 6], [0, 12], [-5, 12]] as [number, number][] },
+    { zone: "r2", poly: [[-5, 12], [0, 12], [0, 20], [-5, 20]] as [number, number][] },
+    { zone: "bath", poly: [[0, 17], [2, 17], [2, 20], [0, 20]] as [number, number][] },
+  ];
+  const walls = wallsAlongOutline(rooms);
+  const leftInterior = walls.filter(
+    (w) => !w.exterior && Math.abs(w.a[0]) < 0.05 && Math.abs(w.b[0]) < 0.05,
+  );
+  // Must not keep one 20 m hall wall labeled against a single neighbor.
+  assert.equal(
+    leftInterior.some((w) => Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]) > 12),
+    false,
+    "no left wall longer than ~one room bay",
+  );
+  // Neighbor-specific segments for each stacked room.
+  for (const z of ["r0", "r1", "r2"]) {
+    assert.ok(
+      leftInterior.some((w) => w.zones.includes("hall") && w.zones.includes(z)),
+      `expected hall↔${z} partition`,
+    );
+  }
+  // No remaining wall sample should sit inside a foreign room.
+  const pip = (p: [number, number], ring: [number, number][]) => {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i];
+      const [xj, yj] = ring[j];
+      if ((yi > p[1]) !== (yj > p[1]) && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  };
+  for (const w of walls) {
+    for (let s = 1; s <= 5; s++) {
+      const t = s / 6;
+      const p: [number, number] = [w.a[0] + (w.b[0] - w.a[0]) * t, w.a[1] + (w.b[1] - w.a[1]) * t];
+      for (const r of rooms) {
+        if (w.zones[0] === r.zone || w.zones[1] === r.zone) continue;
+        assert.equal(pip(p, r.poly), false, `wall ${w.zones} must not pass through ${r.zone}`);
+      }
+    }
+  }
+});

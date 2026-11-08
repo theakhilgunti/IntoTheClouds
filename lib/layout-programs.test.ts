@@ -36,15 +36,15 @@ describe("building programs", () => {
   });
 
   it("raises story caps for multi-unit and institutional uses", () => {
-    assert.equal(maxStoriesForUse("house"), 3);
-    assert.equal(maxStoriesForUse("church"), 1);
-    assert.equal(maxStoriesForUse("dormitory"), 6);
-    assert.equal(maxStoriesForUse("apartments"), 6);
-    assert.equal(maxStoriesForUse("hotel"), 6);
-    assert.equal(maxStoriesForUse("hospital"), 6);
-    assert.equal(maxStoriesForUse("university"), 6);
-    assert.equal(maxStoriesForUse("library"), 6);
-    assert.equal(maxStoriesForUse("warehouse"), 3);
+    assert.equal(maxStoriesForUse("house"), 5);
+    assert.equal(maxStoriesForUse("church"), 2);
+    assert.equal(maxStoriesForUse("dormitory"), 12);
+    assert.equal(maxStoriesForUse("apartments"), 12);
+    assert.equal(maxStoriesForUse("hotel"), 12);
+    assert.equal(maxStoriesForUse("hospital"), 12);
+    assert.equal(maxStoriesForUse("university"), 12);
+    assert.equal(maxStoriesForUse("library"), 12);
+    assert.equal(maxStoriesForUse("warehouse"), 5);
     assert.equal(planWordForUse("dormitory"), "dormitory");
     assert.equal(planWordForUse("university"), "university");
     assert.equal(planWordForUse("library"), "library");

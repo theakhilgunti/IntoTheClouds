@@ -23,7 +23,7 @@ import {
   demExtent,
   demHeightfieldBuffers,
   gradeHeight,
-  siteReach,
+  neighborReach,
   terrainGridLinePositions,
 } from "@/lib/compound-geom";
 import { buildNav, routeToMarker, type Route } from "@/lib/route";
@@ -520,7 +520,7 @@ function DemTerrainMesh({
       footprint.length >= 3
         ? footprint
         : ([[-10, -10], [10, -10], [10, 10], [-10, 10]] as Point[]);
-    const radius = siteReach(fp);
+    const radius = neighborReach(fp);
     const buf = demHeightfieldBuffers(dem, { yBias: LAYER_Y.terrain, radiusM: radius });
     if (!buf) return null;
     const g = new THREE.BufferGeometry();
@@ -837,6 +837,8 @@ function SiteFeatureMesh({
 
   const stepRiser = 0.16;
   const isBuildingPad = feature.kind === "terrain" && feature.id !== "terrain-radius";
+  // Roads/driveways are coarse quads — vertex-warp against DEM twists them underground. Lift rigid.
+  const isRoadSurface = feature.kind === "road" || feature.kind === "driveway";
   const slabGeo = useMemo(() => {
     if (
       feature.kind === "trees" ||
@@ -870,12 +872,12 @@ function SiteFeatureMesh({
     }
     const g = new THREE.ShapeGeometry(shape);
     g.rotateX(-Math.PI / 2);
-    // Building pads: keep flat and lift as a rigid plate. Vertex-warping a coarse outline
-    // against a DEM produces twisted "cheese" under the house / neighbors.
-    if (isBuildingPad) return g;
+    // Building pads + street/drive slabs: keep flat and lift as a rigid plate. Vertex-warping a
+    // coarse outline / long ribbon against a DEM produces twisted "cheese" that vanishes into terrain.
+    if (isBuildingPad || isRoadSurface) return g;
     applyGradeToGeometry(g, grade);
     return g;
-  }, [feature.kind, feature.polygon, feature.height, grade, stepRiser, isBuildingPad]);
+  }, [feature.kind, feature.polygon, feature.height, grade, stepRiser, isBuildingPad, isRoadSurface]);
 
   const hover = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
@@ -1039,12 +1041,14 @@ function SiteFeatureMesh({
             : feature.kind === "pool"
               ? -3
               : -1;
-  // Main house pad stays at slab level (DEM is relative to y=0). Neighbor pads ride the DEM as flat plates.
+  // Main house pad stays at slab level (DEM is relative to y=0). Neighbor pads + streets ride DEM as flat plates.
   const padY = isBuildingPad
     ? feature.id === "terrain-main"
       ? slabY
       : slabY + gy
-    : slabY;
+    : isRoadSurface
+      ? slabY + gy
+      : slabY;
   const drawOrder = LAYER_ORDER[feature.kind] ?? 1;
   return (
     <mesh
@@ -1740,7 +1744,21 @@ export default function Viewer({
           // Draw terrain first so pads sit under structures.
           const ordered = [...noYard].sort((a, b) => Number(a.kind !== "terrain") - Number(b.kind !== "terrain"));
           const filtered = peeringBasement
-            ? ordered.filter((f) => f.kind === "garage" || f.kind === "shed" || f.kind === "neighbor" || f.kind === "hydrant" || f.kind === "signal" || f.kind === "stop" || f.kind === "fence" || f.kind === "trees" || f.kind === "steps" || f.kind === "terrain")
+            ? ordered.filter(
+                (f) =>
+                  f.kind === "garage" ||
+                  f.kind === "shed" ||
+                  f.kind === "neighbor" ||
+                  f.kind === "hydrant" ||
+                  f.kind === "signal" ||
+                  f.kind === "stop" ||
+                  f.kind === "fence" ||
+                  f.kind === "trees" ||
+                  f.kind === "steps" ||
+                  f.kind === "terrain" ||
+                  f.kind === "road" ||
+                  f.kind === "driveway",
+              )
             : largeSite
               ? ordered.filter((f) => f.kind !== "patio" && f.kind !== "pool")
               : ordered;
@@ -1898,8 +1916,8 @@ export default function Viewer({
 
         <TerrainGrid
           grade={model.compound?.grade ?? null}
-          size={siteReach(model.footprint) * 2}
-          divisions={Math.max(20, Math.min(40, Math.round(siteReach(model.footprint) / 6)))}
+          size={neighborReach(model.footprint) * 2}
+          divisions={Math.max(20, Math.min(40, Math.round(neighborReach(model.footprint) / 6)))}
         />
         <OrbitControls
           ref={controlsRef}

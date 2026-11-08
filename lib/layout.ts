@@ -14,7 +14,14 @@ import type {
 } from "@/packages/schema/building-model";
 import { minAreaRect } from "./geo";
 import { roomBays } from "./compound-geom";
-import { clipPolyToRect, signedArea, wallsAlongOutline, type OutlineWall } from "./outline";
+import {
+  clipPolyToRect,
+  rectifyOptsForExtent,
+  rectifyRoomPoly,
+  signedArea,
+  wallsAlongOutline,
+  type OutlineWall,
+} from "./outline";
 import { frontDoorFractionFromFacade, nudgeRoomBays } from "./streetview-cues";
 import {
   buildingUseFromTag,
@@ -838,8 +845,8 @@ export function buildHouse(input: BuildInput): BuildOutput {
   let depth = alongU ? rect.wU : rect.wV;
   if (width > 60 || depth > 60) notes.push("This building is larger than a typical house; the room layout is a rough guide only.");
   // Keep the real footprint scale so large compounds still get a full shell.
-  width = Math.min(120, Math.max(5, width));
-  depth = Math.min(120, Math.max(5, depth));
+  width = Math.min(160, Math.max(5, width));
+  depth = Math.min(160, Math.max(5, depth));
 
   // Plan frame -> model frame. Plan -y is the front (toward the street).
   const xAxis: Point = [-f[1], f[0]];
@@ -885,7 +892,7 @@ export function buildHouse(input: BuildInput): BuildOutput {
     {
       width,
       depth,
-      stories: use === "church" ? 1 : stories,
+      stories: use === "church" ? Math.min(2, stories) : stories,
       basement: use === "house" ? input.basement : false,
       garage: use === "house" ? input.garage : "none",
       drivewaySide: use === "house" ? drivewaySide : null,
@@ -895,13 +902,22 @@ export function buildHouse(input: BuildInput): BuildOutput {
     notes,
   );
 
+  const rectOpts = rectifyOptsForExtent(Math.hypot(width, depth));
   const floors: Floor[] = plan.map((pf) => {
     const prefix = pf.level < 0 ? "b-" : `f${pf.level}-`;
     const rectPoly = (r: Rect): Point[] => [[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]];
     const cut = pf.rooms
-      .map((r) => ({ ...r, poly: clipPolyToRect(fpPlan, r.r) }))
+      .map((r) => ({
+        ...r,
+        poly: rectifyRoomPoly(clipPolyToRect(fpPlan, r.r), rectOpts.angleTolDeg, rectOpts.jogTol),
+      }))
       .filter((r) => r.poly.length >= 3 && Math.abs(signedArea(r.poly)) >= 0.3);
-    const rooms = cut.length ? cut : pf.rooms.map((r) => ({ ...r, poly: rectPoly(r.r) }));
+    const rooms = cut.length
+      ? cut
+      : pf.rooms.map((r) => ({
+          ...r,
+          poly: rectifyRoomPoly(rectPoly(r.r), rectOpts.angleTolDeg, rectOpts.jogTol),
+        }));
     const { walls, doors } = openingsForRooms(
       prefix,
       rooms.map((r) => ({ id: r.id, type: r.type, poly: r.poly, zone: r.zone })),

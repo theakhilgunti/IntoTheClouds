@@ -56,10 +56,10 @@ export function isGenericResidentialUse(tags: Record<string, string> | undefined
   return !t || t === "yes" || t === "residential" || t === "house" || t === "detached" || t === "semidetached_house" || t === "terrace" || t === "bungalow";
 }
 
-/** Max modeled floors by building program — keeps houses compact, public / multi-unit taller. */
+/** Max modeled floors by building program — houses stay modest; public / multi-unit can go taller. */
 export function maxStoriesForUse(use: BuildingUse | undefined | null): number {
-  if (use === "church") return 1;
-  if (use === "warehouse") return 3;
+  if (use === "church") return 2;
+  if (use === "warehouse") return 5;
   if (
     use === "school" ||
     use === "university" ||
@@ -71,9 +71,9 @@ export function maxStoriesForUse(use: BuildingUse | undefined | null): number {
     use === "hotel" ||
     use === "hospital"
   ) {
-    return 6;
+    return 12;
   }
-  return 3;
+  return 5;
 }
 
 /** Short label for scan attributes / interior notes. */

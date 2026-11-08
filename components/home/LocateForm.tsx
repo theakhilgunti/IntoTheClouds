@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useSheetNav } from "@/components/ui/SheetTransition";
 import { saveScan, recentScans, type SavedScan, type ScanQuery } from "@/lib/clientStore";
 import { streamScan } from "@/lib/scanClient";
@@ -8,6 +8,15 @@ import { STEP_LABELS, type StepKey } from "@/lib/sources";
 
 type Mode = "photo" | "address";
 type StepState = { status: "pending" | "active" | "done" | "skipped"; detail?: string };
+type Suggestion = {
+  label: string;
+  primary: string;
+  secondary: string;
+  lat: number;
+  lng: number;
+  wayId?: number | null;
+};
+
 const STEPS = Object.keys(STEP_LABELS) as StepKey[];
 const EXAMPLE = "Burdett Avenue Residence Hall, Troy, NY";
 
@@ -54,6 +63,7 @@ function deviceLocation(): Promise<{ lat: number; lng: number; heading?: number 
 
 export default function LocateForm() {
   const go = useSheetNav();
+  const listId = useId();
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [address, setAddress] = useState("");
@@ -62,9 +72,74 @@ export default function LocateForm() {
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<SavedScan[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const [suggesting, setSuggesting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const scanAbortRef = useRef<AbortController | null>(null);
+  const pickLock = useRef(false);
 
   useEffect(() => setRecent(recentScans()), []);
+
+  useEffect(() => {
+    return () => {
+      scanAbortRef.current?.abort();
+      scanAbortRef.current = null;
+    };
+  }, []);
+
+  // Debounced address typeahead (Maps-style dropdown).
+  useEffect(() => {
+    if (busy || pickLock.current) return;
+    const q = address.trim();
+    if (q.length < 3) {
+      setSuggestions([]);
+      setOpen(false);
+      setActive(-1);
+      setSuggesting(false);
+      return;
+    }
+    const t = window.setTimeout(async () => {
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+      setSuggesting(true);
+      try {
+        const res = await fetch(`/api/geocode/suggest?q=${encodeURIComponent(q)}`, {
+          signal: ac.signal,
+        });
+        if (!res.ok) throw new Error("suggest failed");
+        const data = (await res.json()) as { suggestions?: Suggestion[] };
+        if (ac.signal.aborted) return;
+        const list = data.suggestions ?? [];
+        setSuggestions(list);
+        setOpen(list.length > 0);
+        setActive(list.length ? 0 : -1);
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return;
+        setSuggestions([]);
+        setOpen(false);
+      } finally {
+        if (!ac.signal.aborted) setSuggesting(false);
+      }
+    }, 280);
+    return () => {
+      window.clearTimeout(t);
+      abortRef.current?.abort();
+    };
+  }, [address, busy]);
+
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
 
   function pickFile(f: File | undefined) {
     if (!f || !f.type.startsWith("image/")) return;
@@ -78,11 +153,32 @@ export default function LocateForm() {
     if (preview) URL.revokeObjectURL(preview);
     setFile(null);
     setPreview(null);
-    if (inputRef.current) inputRef.current.value = "";
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
+  function pickSuggestion(s: Suggestion) {
+    pickLock.current = true;
+    setAddress(s.label);
+    setSuggestions([]);
+    setOpen(false);
+    setActive(-1);
+    setError(null);
+    window.setTimeout(() => {
+      pickLock.current = false;
+    }, 400);
   }
 
   const mode: Mode = file ? "photo" : "address";
   const ready = mode === "photo" ? !!file : address.trim().length > 5;
+
+  function cancelScan() {
+    scanAbortRef.current?.abort();
+    scanAbortRef.current = null;
+    setBusy(false);
+    setSteps(null);
+    setNote(null);
+    setError(null);
+  }
 
   async function submit(e?: React.FormEvent, overrideAddress?: string) {
     e?.preventDefault();
@@ -92,10 +188,15 @@ export default function LocateForm() {
       setError(mode === "photo" ? "Add a photo of the house first." : "Type the full street address, with city and state.");
       return;
     }
+    setOpen(false);
     setBusy(true);
     setError(null);
     setNote(null);
     setSteps(Object.fromEntries(STEPS.map((k) => [k, { status: "pending" }])) as Record<StepKey, StepState>);
+
+    scanAbortRef.current?.abort();
+    const ac = new AbortController();
+    scanAbortRef.current = ac;
 
     const form = new FormData();
     const query: ScanQuery = {};
@@ -108,6 +209,7 @@ export default function LocateForm() {
         } catch {
           throw new Error("This photo format can't be read here. Try a JPG or PNG, or take the photo with your camera.");
         }
+        if (ac.signal.aborted) throw new DOMException("Aborted", "AbortError");
         if (addr) {
           form.append("address", addr);
           query.address = addr;
@@ -117,6 +219,7 @@ export default function LocateForm() {
             setNote("Your photo has no location tag, so we're using your current location. Stand near the house.");
             loc = await deviceLocation();
           }
+          if (ac.signal.aborted) throw new DOMException("Aborted", "AbortError");
           if (!loc) {
             throw new Error("We couldn't tell where this photo was taken. Add the address below the photo and try again.");
           }
@@ -130,72 +233,163 @@ export default function LocateForm() {
         query.address = addr;
       }
 
-      const { result } = await streamScan(form, (ev) => {
-        if (ev.type === "step") {
-          setSteps((s) => (s ? { ...s, [ev.key]: { status: ev.status, detail: ev.detail } } : s));
-        }
-      });
+      const { result } = await streamScan(
+        form,
+        (ev) => {
+          if (ac.signal.aborted) return;
+          if (ev.type === "step") {
+            setSteps((s) => (s ? { ...s, [ev.key]: { status: ev.status, detail: ev.detail } } : s));
+          }
+        },
+        ac.signal,
+      );
+      if (ac.signal.aborted) return;
       saveScan({ result, query, photo: thumb });
       go(`/model/${encodeURIComponent(result.model.id)}`);
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setBusy(false);
+        setSteps(null);
+        setNote(null);
+        return;
+      }
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
       setBusy(false);
       setSteps(null);
+    } finally {
+      if (scanAbortRef.current === ac) scanAbortRef.current = null;
+    }
+  }
+
+  function onAddrKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (!open || suggestions.length === 0) {
+      if (e.key === "Escape") setOpen(false);
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((i) => (i + 1) % suggestions.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+    } else if (e.key === "Enter" && active >= 0 && suggestions[active]) {
+      e.preventDefault();
+      pickSuggestion(suggestions[active]!);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
     }
   }
 
   return (
     <div className="w-full max-w-[440px] space-y-3 text-left">
       {steps ? (
-        <ol className="space-y-3 border border-bp-ink/60 bg-bp-deep/80 p-5 font-data text-sm" aria-live="polite">
-          {STEPS.map((k) => {
-            const s = steps[k];
-            return (
-              <li key={k} className="flex items-start gap-3">
-                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
-                  {s.status === "active" ? (
-                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-bp-ink/30 border-t-bp-red" />
-                  ) : s.status === "done" ? (
-                    <span className="text-bp-red">✓</span>
-                  ) : s.status === "skipped" ? (
-                    <span className="text-bp-line">–</span>
-                  ) : (
-                    <span className="h-1.5 w-1.5 bg-bp-line/60" />
-                  )}
-                </span>
-                <span>
-                  <span className={s.status === "pending" ? "text-bp-line" : "text-bp-ink"}>{STEP_LABELS[k]}</span>
-                  {s.detail && <span className="block text-xs text-bp-line">{s.detail}</span>}
-                </span>
-              </li>
-            );
-          })}
-          {note && <li className="text-xs text-bp-red">{note}</li>}
-        </ol>
+        <div className="space-y-3 border border-bp-ink/60 bg-bp-deep/80 p-5">
+          <ol className="space-y-3 font-data text-sm" aria-live="polite">
+            {STEPS.map((k) => {
+              const s = steps[k];
+              return (
+                <li key={k} className="flex items-start gap-3">
+                  <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
+                    {s.status === "active" ? (
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-bp-ink/30 border-t-bp-red" />
+                    ) : s.status === "done" ? (
+                      <span className="text-bp-red">✓</span>
+                    ) : s.status === "skipped" ? (
+                      <span className="text-bp-line">–</span>
+                    ) : (
+                      <span className="h-1.5 w-1.5 bg-bp-line/60" />
+                    )}
+                  </span>
+                  <span>
+                    <span className={s.status === "pending" ? "text-bp-line" : "text-bp-ink"}>{STEP_LABELS[k]}</span>
+                    {s.detail && <span className="block text-xs text-bp-line">{s.detail}</span>}
+                  </span>
+                </li>
+              );
+            })}
+            {note && <li className="text-xs text-bp-red">{note}</li>}
+          </ol>
+          <button
+            type="button"
+            onClick={cancelScan}
+            className="w-full min-h-10 border border-bp-ink/70 font-data text-sm text-bp-ink transition hover:bg-bp-ink/15"
+          >
+            Cancel
+          </button>
+        </div>
       ) : (
         <form onSubmit={submit} className="space-y-3">
-          <div className="flex bg-bp-ink text-bp">
-            <label htmlFor="addr" className="sr-only">
-              Street address of the house
-            </label>
-            <input
-              id="addr"
-              value={address}
-              onChange={(e) => {
-                setAddress(e.target.value);
-                setError(null);
-              }}
-              placeholder={file ? "Address (optional)" : "Enter an address"}
-              autoComplete="street-address"
-              className="min-h-12 min-w-0 flex-1 bg-transparent px-4 font-data text-sm text-bp placeholder:text-bp/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bp-red"
-            />
-            <button
-              type="submit"
-              disabled={busy}
-              className="min-h-12 bg-bp-red px-6 font-data text-sm text-bp transition hover:bg-white disabled:cursor-wait disabled:opacity-70"
-            >
-              Scan
-            </button>
+          <div ref={wrapRef} className="relative">
+            <div className="flex bg-bp-ink text-bp">
+              <label htmlFor="addr" className="sr-only">
+                Street address of the house
+              </label>
+              <input
+                ref={inputRef}
+                id="addr"
+                role="combobox"
+                aria-expanded={open}
+                aria-controls={listId}
+                aria-autocomplete="list"
+                aria-activedescendant={active >= 0 ? `${listId}-opt-${active}` : undefined}
+                value={address}
+                onChange={(e) => {
+                  setAddress(e.target.value);
+                  setError(null);
+                }}
+                onFocus={() => {
+                  if (suggestions.length) setOpen(true);
+                }}
+                onKeyDown={onAddrKeyDown}
+                placeholder={file ? "Address (optional)" : "Enter an address"}
+                autoComplete="off"
+                className="min-h-12 min-w-0 flex-1 bg-transparent px-4 font-data text-sm text-bp placeholder:text-bp/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bp-red"
+              />
+              <button
+                type="submit"
+                disabled={busy}
+                className="min-h-12 bg-bp-red px-6 font-data text-sm text-bp transition hover:bg-white disabled:cursor-wait disabled:opacity-70"
+              >
+                Scan
+              </button>
+            </div>
+
+            {open && suggestions.length > 0 && (
+              <ul
+                id={listId}
+                role="listbox"
+                aria-label="Address suggestions"
+                className="absolute left-0 right-0 z-30 mt-1 max-h-64 overflow-auto border border-bp-ink/70 bg-bp-deep shadow-[0_12px_28px_rgba(0,0,0,0.35)]"
+              >
+                {suggestions.map((s, i) => (
+                  <li key={s.label} role="option" aria-selected={i === active} id={`${listId}-opt-${i}`}>
+                    <button
+                      type="button"
+                      className={`flex w-full flex-col items-start gap-0.5 px-4 py-2.5 text-left font-data transition ${
+                        i === active ? "bg-bp-ink text-bp" : "text-bp-ink hover:bg-bp-ink/15"
+                      }`}
+                      onMouseEnter={() => setActive(i)}
+                      onMouseDown={(e) => {
+                        // Prevent input blur before click applies.
+                        e.preventDefault();
+                        pickSuggestion(s);
+                      }}
+                    >
+                      <span className="text-sm font-semibold">{s.primary}</span>
+                      {s.secondary && (
+                        <span className={`text-[11px] ${i === active ? "text-bp/75" : "text-bp-line"}`}>{s.secondary}</span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {suggesting && address.trim().length >= 3 && !open && (
+              <p className="mt-1 font-data text-[10px] text-bp-line" aria-live="polite">
+                Looking up addresses…
+              </p>
+            )}
           </div>
 
           <div className="flex items-center gap-3 font-data text-[11px] text-bp-line" aria-hidden>
@@ -225,7 +419,7 @@ export default function LocateForm() {
               </svg>
               Upload a photo
               <input
-                ref={inputRef}
+                ref={fileRef}
                 type="file"
                 accept="image/*"
                 capture="environment"

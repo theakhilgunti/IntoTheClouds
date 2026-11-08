@@ -91,28 +91,24 @@ export function planUniversity(spec: CampusSpec, notes: string[]): CampusPlanFlo
         });
         n++;
       }
+      const bathY0 = y1 - 3.2;
       rooms.push({
         id: `${prefix}-bath`,
         name: "Restrooms",
         type: "bathroom",
-        r: { x0: hx0, y0: y1 - 3.2, x1: hx1, y1 },
+        r: { x0: hx0, y0: bathY0, x1: hx1, y1 },
         zone: "bath",
       });
+      // Corridor stops at the bath so polygons don't nest (avoids walls through rooms).
       rooms.push({
         id: `${prefix}-hall`,
         name: "Corridor",
         type: "hallway",
-        r: { x0: hx0, y0: y0 + lobbyD, x1: hx1, y1 },
+        r: { x0: hx0, y0: y0 + lobbyD, x1: hx1, y1: bathY0 },
         zone: "hall",
       });
     } else {
-      rooms.push({
-        id: `${prefix}-hall`,
-        name: "Corridor",
-        type: "hallway",
-        r: { x0: hx0, y0, x1: hx1, y1 },
-        zone: "hall",
-      });
+      const bathY0 = y1 - 3.2;
       const edges = Array.from({ length: rows + 1 }, (_, i) => y0 + (D * i) / rows);
       let n = 1;
       for (let i = 0; i < rows; i++) {
@@ -140,11 +136,18 @@ export function planUniversity(spec: CampusSpec, notes: string[]): CampusPlanFlo
         id: `${prefix}-bath`,
         name: "Restrooms",
         type: "bathroom",
-        r: { x0: hx0, y0: y1 - 3.2, x1: hx1, y1 },
+        r: { x0: hx0, y0: bathY0, x1: hx1, y1 },
         zone: "bath",
       });
+      rooms.push({
+        id: `${prefix}-hall`,
+        name: "Corridor",
+        type: "hallway",
+        r: { x0: hx0, y0, x1: hx1, y1: bathY0 },
+        zone: "hall",
+      });
     }
-    if (stair) rooms.push({ id: `${prefix}-stair`, name: "Stairs", type: "stair", r: stair, zone: "hall" });
+    if (stair) rooms.push({ id: `${prefix}-stair`, name: "Stairs", type: "stair", r: stair, zone: "stair" });
     floors.push({ level: lv, rooms, stair });
   }
   notes.push(
@@ -189,7 +192,7 @@ export function planLibrary(spec: CampusSpec, notes: string[]): CampusPlanFloor[
         { id: `${prefix}-bath`, name: "Restrooms", type: "bathroom", r: { x0: hx0, y0: midY, x1: hx1, y1: midY + 3.2 }, zone: "bath" },
       );
     }
-    if (stair) rooms.push({ id: `${prefix}-stair`, name: "Stairs", type: "stair", r: stair, zone: "hall" });
+    if (stair) rooms.push({ id: `${prefix}-stair`, name: "Stairs", type: "stair", r: stair, zone: "stair" });
     floors.push({ level: lv, rooms, stair });
   }
   notes.push(

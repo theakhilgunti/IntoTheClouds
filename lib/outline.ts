@@ -241,10 +241,21 @@ function edgeKey(a: Pt, b: Pt): string {
 const NEIGHBOR_PROBE_DISTS = [0.08, 0.16, 0.28, 0.45, 0.7];
 
 /**
+ * Stronger H/V snap for large footprints — clip against irregular OSM outlines
+ * leaves more near-diagonal crumbs that still read as "straight walls".
+ */
+export function rectifyOptsForExtent(extentM: number): { angleTolDeg: number; jogTol: number } {
+  if (extentM >= 55) return { angleTolDeg: 24, jogTol: 0.28 };
+  if (extentM >= 32) return { angleTolDeg: 18, jogTol: 0.2 };
+  if (extentM >= 18) return { angleTolDeg: 14, jogTol: 0.16 };
+  return { angleTolDeg: 12, jogTol: 0.13 };
+}
+
+/**
  * Snap near-axis edges to exact H/V and drop micro-jogs so walls stay straight
  * after footprint clipping (avoids curved / warped partitions).
  */
-export function rectifyRoomPoly(poly: Pt[], angleTolDeg = 9, jogTol = 0.12): Pt[] {
+export function rectifyRoomPoly(poly: Pt[], angleTolDeg = 12, jogTol = 0.13): Pt[] {
   if (poly.length < 3) return poly;
   const ring = ccw(poly).map((p) => [p[0], p[1]] as Pt);
   const tol = (angleTolDeg * Math.PI) / 180;
@@ -296,8 +307,14 @@ export function snapNearRoomEdges(
   rooms: { zone: string; poly: Pt[] }[],
   maxGap = 0.7,
 ): { zone: string; poly: Pt[] }[] {
+  let extent = 10;
+  for (const r of rooms) {
+    for (const p of r.poly) extent = Math.max(extent, Math.hypot(p[0], p[1]));
+  }
+  const opts = rectifyOptsForExtent(extent);
+  const gap = extent >= 40 ? Math.max(maxGap, 1.05) : maxGap;
   const out = rooms
-    .map((r) => ({ zone: r.zone, poly: rectifyRoomPoly(ccw(r.poly)) }))
+    .map((r) => ({ zone: r.zone, poly: rectifyRoomPoly(ccw(r.poly), opts.angleTolDeg, opts.jogTol) }))
     .filter((r) => r.poly.length >= 3);
   for (let i = 0; i < out.length; i++) {
     for (let j = i + 1; j < out.length; j++) {
@@ -326,7 +343,7 @@ export function snapNearRoomEdges(
           const nx = -aUy;
           const ny = aUx;
           const sep = (midB[0] - midA[0]) * nx + (midB[1] - midA[1]) * ny;
-          if (Math.abs(sep) > maxGap || Math.abs(sep) < 1e-4) continue;
+          if (Math.abs(sep) > gap || Math.abs(sep) < 1e-4) continue;
           // Require along-edge overlap so a short stair face doesn't warp a long hall wall.
           const along = (p: Pt) => (p[0] - midA[0]) * aUx + (p[1] - midA[1]) * aUy;
           const aLo = -aLen / 2;
@@ -345,7 +362,10 @@ export function snapNearRoomEdges(
       }
     }
   }
-  return out.map((r) => ({ zone: r.zone, poly: rectifyRoomPoly(dropCollinear(ccw(r.poly))) }));
+  return out.map((r) => ({
+    zone: r.zone,
+    poly: rectifyRoomPoly(dropCollinear(ccw(r.poly)), opts.angleTolDeg, opts.jogTol),
+  }));
 }
 
 /** Merge consecutive / overlapping collinear wall crumbs into single straight runs. */
@@ -406,6 +426,83 @@ function mergeCollinearWalls(walls: OutlineWall[]): OutlineWall[] {
   return out;
 }
 
+type RoomPoly = { zone: string; poly: Pt[] };
+
+/** Outward neighbor zone at parameter t along edge a→b (null = exterior / no hit). */
+function neighborZoneAt(
+  room: RoomPoly,
+  a: Pt,
+  b: Pt,
+  len: number,
+  t: number,
+  polys: RoomPoly[],
+): string | null {
+  const mid: Pt = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  const rx = (b[1] - a[1]) / len;
+  const ry = -(b[0] - a[0]) / len;
+  for (const d of [0.08, 0.16, 0.28, 0.45]) {
+    const probeA: Pt = [mid[0] + rx * d, mid[1] + ry * d];
+    const probeB: Pt = [mid[0] - rx * d, mid[1] - ry * d];
+    const hitA = polys.find((o) => o.zone !== room.zone && pointInRing(probeA, o.poly));
+    const hitB = polys.find((o) => o.zone !== room.zone && pointInRing(probeB, o.poly));
+    const aInSelf = pointInRing(probeA, room.poly);
+    const bInSelf = pointInRing(probeB, room.poly);
+    let other: RoomPoly | undefined;
+    if (aInSelf && hitB) other = hitB;
+    else if (bInSelf && hitA) other = hitA;
+    else other = hitA ?? hitB;
+    if (other) return other.zone;
+  }
+  return null;
+}
+
+/**
+ * Cut wall runs that pass through a third room's interior (common when a long
+ * corridor edge is emitted as one segment, or nested bath/stair overlaps a hall).
+ */
+export function splitWallsThroughRooms(walls: OutlineWall[], rooms: RoomPoly[]): OutlineWall[] {
+  const out: OutlineWall[] = [];
+  for (const w of walls) {
+    const len = Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
+    if (len < 0.35) continue;
+    const n = Math.max(4, Math.ceil(len / 0.35));
+    const ok: boolean[] = [];
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      const p: Pt = [w.a[0] + (w.b[0] - w.a[0]) * t, w.a[1] + (w.b[1] - w.a[1]) * t];
+      // Slightly inset along the wall so endpoint corners don't false-trip.
+      const tt = Math.min(0.98, Math.max(0.02, t));
+      const q: Pt = [w.a[0] + (w.b[0] - w.a[0]) * tt, w.a[1] + (w.b[1] - w.a[1]) * tt];
+      const sample = i === 0 || i === n ? q : p;
+      let through = false;
+      for (const r of rooms) {
+        if (w.zones[0] === r.zone || w.zones[1] === r.zone) continue;
+        if (pointInRing(sample, r.poly)) {
+          through = true;
+          break;
+        }
+      }
+      ok.push(!through);
+    }
+    let i = 0;
+    while (i < ok.length) {
+      while (i < ok.length && !ok[i]) i++;
+      if (i >= ok.length) break;
+      const i0 = i;
+      while (i < ok.length && ok[i]) i++;
+      const i1 = i - 1;
+      const t0 = i0 / n;
+      const t1 = i1 / n;
+      const a: Pt = [w.a[0] + (w.b[0] - w.a[0]) * t0, w.a[1] + (w.b[1] - w.a[1]) * t0];
+      const b: Pt = [w.a[0] + (w.b[0] - w.a[0]) * t1, w.a[1] + (w.b[1] - w.a[1]) * t1];
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) >= 0.35) {
+        out.push({ a, b, exterior: w.exterior, zones: [...w.zones] as [string, string | null] });
+      }
+    }
+  }
+  return out;
+}
+
 /** Walls from clipped room polygons. An edge with a neighbor on the outside is interior; the outline is exterior. */
 export function wallsAlongOutline(rooms: { zone: string; poly: Pt[] }[]): OutlineWall[] {
   const polys = snapNearRoomEdges(rooms)
@@ -413,6 +510,25 @@ export function wallsAlongOutline(rooms: { zone: string; poly: Pt[] }[]): Outlin
     .filter((r) => r.poly.length >= 3);
   const walls: OutlineWall[] = [];
   const byKey = new Map<string, OutlineWall>();
+
+  const upsert = (seg: OutlineWall) => {
+    const key = edgeKey(seg.a, seg.b);
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.exterior = existing.exterior && seg.exterior;
+      const z0 = existing.zones[0];
+      const z1 = existing.zones[1];
+      const s0 = seg.zones[0];
+      const s1 = seg.zones[1];
+      if (s1 && !existing.zones.includes(s1)) existing.zones = [z0, s1];
+      else if (s0 !== z0 && s0 !== z1) existing.zones = [z0, s0];
+      if (existing.zones[1]) existing.exterior = false;
+      return;
+    }
+    byKey.set(key, seg);
+    walls.push(seg);
+  };
+
   for (const room of polys) {
     const poly = room.poly;
     for (let i = 0; i < poly.length; i++) {
@@ -420,47 +536,37 @@ export function wallsAlongOutline(rooms: { zone: string; poly: Pt[] }[]): Outlin
       const b = poly[(i + 1) % poly.length];
       const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
       if (len < 0.35) continue;
-      const key = edgeKey(a, b);
-      const mid: Pt = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-      const rx = (b[1] - a[1]) / len;
-      const ry = -(b[0] - a[0]) / len;
-      // Cap probe depth so we don't jump across a corridor into a third room.
-      let other: (typeof polys)[number] | undefined;
-      for (const d of [0.08, 0.16, 0.28, 0.45]) {
-        const probeA: Pt = [mid[0] + rx * d, mid[1] + ry * d];
-        const probeB: Pt = [mid[0] - rx * d, mid[1] - ry * d];
-        const hitA = polys.find((o) => o !== room && o.zone !== room.zone && pointInRing(probeA, o.poly));
-        const hitB = polys.find((o) => o !== room && o.zone !== room.zone && pointInRing(probeB, o.poly));
-        // Prefer the outward side (probe not still inside this room).
-        const aInSelf = pointInRing(probeA, poly);
-        const bInSelf = pointInRing(probeB, poly);
-        if (aInSelf && hitB) other = hitB;
-        else if (bInSelf && hitA) other = hitA;
-        else other = hitA ?? hitB;
-        if (other) break;
-      }
-      const existing = byKey.get(key);
-      if (existing) {
-        // Same edge seen from the adjoining room — mark interior and fill both zones.
-        if (other || existing.zones[0] !== room.zone) {
-          existing.exterior = false;
-          if (other && !existing.zones.includes(other.zone)) {
-            existing.zones = [existing.zones[0], other.zone];
-          } else if (!existing.zones.includes(room.zone)) {
-            existing.zones = [existing.zones[0], room.zone];
-          }
-        }
-        continue;
-      }
-      const wall: OutlineWall = {
-        a,
-        b,
-        exterior: !other,
-        zones: other ? [room.zone, other.zone] : [room.zone, null],
+      // Subdivide long edges whenever the outward neighbor changes (corridor vs stacked rooms).
+      const n = Math.max(2, Math.ceil(len / 0.45));
+      let runOther: string | null | undefined;
+      let runT0 = 0;
+      const flush = (t1: number) => {
+        if (runOther === undefined) return;
+        const segA: Pt = [a[0] + (b[0] - a[0]) * runT0, a[1] + (b[1] - a[1]) * runT0];
+        const segB: Pt = [a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1];
+        if (Math.hypot(segB[0] - segA[0], segB[1] - segA[1]) < 0.35) return;
+        upsert({
+          a: segA,
+          b: segB,
+          exterior: runOther == null,
+          zones: runOther != null ? [room.zone, runOther] : [room.zone, null],
+        });
       };
-      byKey.set(key, wall);
-      walls.push(wall);
+      for (let k = 0; k < n; k++) {
+        const t0 = k / n;
+        const t1 = (k + 1) / n;
+        const other = neighborZoneAt(room, a, b, len, (t0 + t1) / 2, polys);
+        if (runOther === undefined) {
+          runOther = other;
+          runT0 = t0;
+        } else if (other !== runOther) {
+          flush(t0);
+          runOther = other;
+          runT0 = t0;
+        }
+        if (k === n - 1) flush(t1);
+      }
     }
   }
-  return mergeCollinearWalls(walls);
+  return mergeCollinearWalls(splitWallsThroughRooms(walls, polys));
 }

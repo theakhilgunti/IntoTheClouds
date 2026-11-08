@@ -5,6 +5,7 @@ import {
 } from "./geo";
 import type { Point } from "@/packages/schema/building-model";
 import { normStreet, parseStreetAddress, streetsMatch } from "./address";
+import { SITE_REACH_MAX_M } from "./compound-geom";
 
 const ENDPOINTS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
 
@@ -321,9 +322,9 @@ function houseLabel(b: OsmBuilding): string {
  * is not inside any outline, prefer buildings in that direction.
  */
 export async function lookupBuilding(origin: LatLng, heading?: number | null, hint?: AddressHint): Promise<OsmContext> {
-  // Match the single outdoor scene radius (siteReach / SITE_REACH_MAX_M = 240 m).
-  const R = 240;
-  const HYDRANT_R = 240;
+  // Match siteReach ceiling so neighbors/streets/grid (neighborReach) still have OSM data at the edge.
+  const R = SITE_REACH_MAX_M;
+  const HYDRANT_R = SITE_REACH_MAX_M;
   const q = `[out:json][timeout:25];
 (
   way["building"](around:${R},${origin.lat},${origin.lng});

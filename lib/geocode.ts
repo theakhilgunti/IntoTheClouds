@@ -82,3 +82,57 @@ export async function nominatimBuildingId(address: string): Promise<number | nul
     return null;
   }
 }
+
+export type AddressSuggestion = {
+  /** Full label shown in the dropdown / filled into the field. */
+  label: string;
+  /** Short primary line (street / place). */
+  primary: string;
+  /** City / state / country secondary line. */
+  secondary: string;
+  lat: number;
+  lng: number;
+  wayId?: number | null;
+};
+
+function splitDisplayName(display: string): { primary: string; secondary: string } {
+  const parts = display.split(",").map((s) => s.trim()).filter(Boolean);
+  if (parts.length <= 1) return { primary: display, secondary: "" };
+  return { primary: parts[0]!, secondary: parts.slice(1, 4).join(", ") };
+}
+
+/**
+ * Typeahead suggestions for the home address field (Maps-style dropdown).
+ * Uses Nominatim search with a small limit — call from a server route so the UA is set.
+ */
+export async function suggestAddresses(query: string, limit = 6): Promise<AddressSuggestion[]> {
+  const q = query.trim();
+  if (q.length < 3) return [];
+  const n = Math.max(1, Math.min(8, Math.round(limit)));
+  try {
+    const j = await getJson(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=jsonv2&addressdetails=1&limit=${n}`,
+      8000,
+    );
+    if (!Array.isArray(j)) return [];
+    const seen = new Set<string>();
+    const out: AddressSuggestion[] = [];
+    for (const hit of j) {
+      const label = String(hit.display_name ?? "").trim();
+      if (!label || seen.has(label)) continue;
+      seen.add(label);
+      const { primary, secondary } = splitDisplayName(label);
+      out.push({
+        label,
+        primary,
+        secondary,
+        lat: +hit.lat,
+        lng: +hit.lon,
+        wayId: hit.osm_type === "way" ? Number(hit.osm_id) : null,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}

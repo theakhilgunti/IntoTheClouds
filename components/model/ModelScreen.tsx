@@ -9,9 +9,19 @@ import { demoModel } from "@/lib/demo";
 import { loadScan, saveScan, type SavedScan } from "@/lib/clientStore";
 import { streamScan } from "@/lib/scanClient";
 import type { BuildingModel } from "@/packages/schema/building-model";
-import type { ScanResult } from "@/lib/sources";
+import { STEP_LABELS, type ScanResult, type StepKey } from "@/lib/sources";
+import { findNeighborFeature, reframeScanToNeighbor } from "@/lib/reframe-neighbor";
 import ScanReport from "./ScanReport";
 import { mergeKnownFloors } from "@/lib/interior";
+
+const SCAN_STEPS = Object.keys(STEP_LABELS) as StepKey[];
+
+function progressFromStep(key: StepKey, status: "active" | "done" | "skipped"): number {
+  const i = SCAN_STEPS.indexOf(key);
+  if (i < 0) return 0;
+  if (status === "active") return Math.round(((i + 0.35) / SCAN_STEPS.length) * 100);
+  return Math.round(((i + 1) / SCAN_STEPS.length) * 100);
+}
 
 // WebGL only runs in the browser.
 const Viewer = dynamic(() => import("@/components/viewer/Viewer"), {
@@ -40,6 +50,8 @@ export default function ModelScreen({ id }: { id: string }) {
   const [panel, setPanel] = useState(false);
   const [rescanning, setRescanning] = useState(false);
   const [nearbyLoading, setNearbyLoading] = useState<string | null>(null);
+  const [nearbyProgress, setNearbyProgress] = useState(0);
+  const [nearbyStep, setNearbyStep] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const [wrongOpen, setWrongOpen] = useState(false);
   const [viewerReady, setViewerReady] = useState(false);
@@ -71,7 +83,7 @@ export default function ModelScreen({ id }: { id: string }) {
       const empty = model.interior?.status === "unknown" && model.floors.every((f) => f.rooms.length === 0);
       const stale =
         (model.source === "address" || model.source === "photo") &&
-        (model.compound?.basis !== "compound-v39" || model.roof?.basis !== "roof-v3");
+        (model.compound?.basis !== "compound-v44" || model.roof?.basis !== "roof-v3");
       if ((!empty && !stale) || !scan.query.address) return;
       const form = new FormData();
       form.append("address", scan.query.address);
@@ -117,6 +129,36 @@ export default function ModelScreen({ id }: { id: string }) {
     };
   }, [id]);
 
+  /** Instant Wrong-house switch: reuse compound / DEM, rebuild only the new focus. */
+  function switchToNeighbor(wayId: number, nearbyLabel?: string) {
+    if (state.kind !== "scan") return;
+    if (state.scan.result.model.id === `osm-${wayId}`) return;
+    if (!findNeighborFeature(state.scan.result.model, wayId)) {
+      // Shell missing from compound — fall back to a full rescan for this way.
+      void rescan(wayId, nearbyLabel);
+      return;
+    }
+    try {
+      const result = reframeScanToNeighbor(state.scan.result, wayId);
+      const scan = {
+        ...state.scan,
+        result,
+        query: { ...state.scan.query, address: result.model.address || state.scan.query.address },
+      };
+      saveScan(scan);
+      setWrongOpen(false);
+      if (result.model.id !== id) {
+        router.push(`/model/${encodeURIComponent(result.model.id)}`);
+        return;
+      }
+      setState({ kind: "scan", scan });
+      setVersion((v) => v + 1);
+    } catch {
+      // Reframe failed — fall back to a full network rescan.
+      void rescan(wayId, nearbyLabel);
+    }
+  }
+
   async function rescan(wayId?: number, nearbyLabel?: string) {
     if (state.kind !== "scan") return;
     const q = state.scan.query;
@@ -133,9 +175,21 @@ export default function ModelScreen({ id }: { id: string }) {
     rescanAbort.current = ac;
     setRescanning(true);
     setNearbyLoading(wayId != null ? nearbyLabel || "nearby house" : null);
+    setNearbyProgress(wayId != null ? 4 : 0);
+    setNearbyStep(wayId != null ? STEP_LABELS.locate : null);
     try {
-      const { result: fresh } = await streamScan(form, () => {}, ac.signal);
+      const { result: fresh } = await streamScan(
+        form,
+        (ev) => {
+          if (ac.signal.aborted || ev.type !== "step") return;
+          setNearbyProgress((p) => Math.max(p, progressFromStep(ev.key, ev.status)));
+          setNearbyStep(ev.detail?.trim() || STEP_LABELS[ev.key]);
+        },
+        ac.signal,
+      );
       if (ac.signal.aborted) return;
+      setNearbyProgress(100);
+      setNearbyStep("Opening model…");
       const result = { ...fresh, model: mergeKnownFloors(fresh.model, state.scan.result.model) };
       const scan = { ...state.scan, result };
       saveScan(scan);
@@ -155,8 +209,26 @@ export default function ModelScreen({ id }: { id: string }) {
       if (!ac.signal.aborted) {
         setRescanning(false);
         setNearbyLoading(null);
+        setNearbyProgress(0);
+        setNearbyStep(null);
       }
     }
+  }
+
+  /** Stop an in-flight nearby-house rescan and stay on the current model. */
+  function cancelNearbyLoad() {
+    rescanAbort.current?.abort();
+    rescanAbort.current = null;
+    setRescanning(false);
+    setNearbyLoading(null);
+    setNearbyProgress(0);
+    setNearbyStep(null);
+  }
+
+  /** Abort nearby load and leave the model page. */
+  function goHomeFromNearby() {
+    cancelNearbyLoad();
+    router.push("/");
   }
 
   function applyPlan(next: BuildingModel) {
@@ -268,7 +340,7 @@ export default function ModelScreen({ id }: { id: string }) {
                         <button
                           key={house.id}
                           disabled={rescanning || selected}
-                          onClick={() => rescan(house.id, shortAddress(house.label))}
+                          onClick={() => switchToNeighbor(house.id, shortAddress(house.label))}
                           className={`border font-data ${
                             selected
                               ? "border-bp-ink bg-bp-ink text-bp"
@@ -309,11 +381,38 @@ export default function ModelScreen({ id }: { id: string }) {
           <div className="pointer-events-auto border border-bp-ink/70 bg-bp-deep px-6 py-5 text-center shadow-lg">
             <div className="font-display text-2xl uppercase tracking-[0.04em] text-white">Loading house</div>
             <div className="mt-2 font-data text-sm text-bp-ink">{nearbyLoading}</div>
-            <div className="mt-3 font-data text-[11px] uppercase tracking-[0.12em] text-bp-line">
-              Go home anytime to cancel
+            {nearbyStep && (
+              <div className="mt-2 font-data text-[11px] uppercase tracking-[0.1em] text-bp-line">{nearbyStep}</div>
+            )}
+            <div
+              className="mx-auto mt-4 h-1.5 w-52 overflow-hidden bg-bp-ink/20"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={nearbyProgress}
+              aria-label="Scan progress"
+            >
+              <div
+                className="h-full bg-bp-red transition-[width] duration-300 ease-out"
+                style={{ width: `${Math.min(100, Math.max(0, nearbyProgress))}%` }}
+              />
             </div>
-            <div className="mx-auto mt-4 h-1 w-40 overflow-hidden bg-bp-ink/20">
-              <div className="h-full w-1/2 animate-pulse bg-bp-red" />
+            <div className="mt-1.5 font-data text-[11px] tabular-nums text-bp-line">{nearbyProgress}%</div>
+            <div className="mt-5 flex items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={cancelNearbyLoad}
+                className="min-h-10 border border-bp-ink/70 px-5 font-data text-sm text-bp-ink transition hover:bg-bp-ink/15"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={goHomeFromNearby}
+                className="min-h-10 bg-bp-ink px-5 font-data text-sm text-bp transition hover:bg-bp-red"
+              >
+                Go home
+              </button>
             </div>
           </div>
         </div>

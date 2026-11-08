@@ -54,6 +54,16 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 09:45 | Cursor | UI-89 | Home scan progress: Cancel aborts in-flight house lookup. |
+| 09:35 | Cursor | UI-88 | Wrong-house neighbor switch reframes compound/DEM locally (no full rescan). |
+| 09:20 | Cursor | UI-87 | Wrong-house overlay progress bar tracks real scan steps. |
+| 09:15 | Cursor | UI-86 | Wrong-house load overlay: Cancel (stay) + Go home buttons. |
+| 09:05 | Cursor | UI-85 | Streets + map grid/DEM share neighborReach + neighborShellCap (compound-v44). |
+| 08:55 | Cursor | UI-84 | Raise floor caps (≤12), widen neighbor reach/fetch (compound-v43), stronger large-footprint wall rectify. |
+| 08:40 | Cursor | UI-83 | Maps-style address autocomplete dropdown (Nominatim suggest API + LocateForm listbox). |
+| 08:25 | Cursor | UI-82 | Size-scaled siteReach (≤320 m); tighter neighbor/road discs + lower shell caps for lag (compound-v42). |
+| 08:15 | Cursor | UI-81 | Chunk long street ribbons; rigid DEM lift for roads/driveways; keep streets in basement view (compound-v41). |
+| 07:50 | Cursor | UI-80 | Split long corridor walls per neighbor; carve nested bath/stair from halls (compound-v40). |
 | 07:35 | Cursor | UI-79 | CubiCasa5K priors for estimated house plans + CubiCasa SVG verified import (compound-v39). |
 | 07:10 | Cursor | UI-78 | Stop synth pillar walls — openings punch existing outline walls only (compound-v38). |
 | 07:00 | Cursor | UI-77 | Kill pillar stubs: safe edge snap, collinear wall union, absorb door remnants / drop synth crumbs (compound-v37). |
@@ -175,3 +185,13 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 05:00 | Cursor | UI-64 | Finished task |
 | 05:05 | Cursor | UI-65 | Finished task |
 | 06:34 | Cursor | UI-79 | Finished task |
+| 07:02 | Cursor | UI-80 | Finished task |
+| 07:14 | Cursor | UI-81 | Finished task |
+| 07:22 | Cursor | UI-82 | Finished task |
+| 07:37 | Cursor | UI-83 | Finished task |
+| 07:43 | Cursor | UI-84 | Finished task |
+| 07:47 | Cursor | UI-85 | Finished task |
+| 07:48 | Cursor | UI-86 | Finished task |
+| 07:48 | Cursor | UI-87 | Finished task |
+| 07:54 | Cursor | UI-88 | Finished task |
+| 07:56 | Cursor | UI-89 | Finished task |
