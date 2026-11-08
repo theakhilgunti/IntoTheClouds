@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
 import { Edges, Line, OrbitControls } from "@react-three/drei";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
@@ -1244,15 +1245,14 @@ function streetFrontYaw(model: BuildingModel): number {
   return 0;
 }
 
-// Collapsing slot for the CloudScan card. The grid-track trick animates the slot to zero size (so the row
-// closes up with no gap), while the inner box pops in with a springy scale. Font size comes from one value so the
-// card's box and text always scale together.
-function CardSlot({ open, axis, scale, children }: { open: boolean; axis: "x" | "y"; scale: number; children: ReactNode }) {
-  const track = open ? "1fr" : "0fr";
+// Collapsing slot for the CloudScan card, which sits directly under the icon row. The grid-track trick animates
+// the slot to zero height (so what's below closes up with no gap), while the inner box pops in with a springy
+// scale. Font size comes from one value so the card's box and text always scale together.
+function CardSlot({ open, scale, children }: { open: boolean; scale: number; children: ReactNode }) {
   return (
     <div
-      className="grid min-w-0 transition-[grid-template-columns,grid-template-rows] duration-300 ease-out"
-      style={axis === "x" ? { gridTemplateColumns: track } : { gridTemplateRows: track }}
+      className="grid min-w-0 transition-[grid-template-rows] duration-300 ease-out"
+      style={{ gridTemplateRows: open ? "1fr" : "0fr" }}
       aria-hidden={!open}
       inert={!open}
     >
@@ -1262,7 +1262,7 @@ function CardSlot({ open, axis, scale, children }: { open: boolean; axis: "x" | 
           style={{
             fontSize: `${12 * scale}px`,
             opacity: open ? 1 : 0,
-            transform: open ? "none" : "translateX(-16px) scale(0.85)",
+            transform: open ? "none" : "translateY(-14px) scale(0.9)",
             transition: `transform 350ms cubic-bezier(.34,1.56,.64,1), opacity 200ms, visibility 0s linear ${open ? "0s" : "350ms"}`,
             visibility: open ? "visible" : "hidden",
           }}
@@ -1274,7 +1274,22 @@ function CardSlot({ open, axis, scale, children }: { open: boolean; axis: "x" | 
   );
 }
 
-export default function Viewer({ model, onReady, card, badge }: { model: BuildingModel; onReady?: () => void; card?: ReactNode; badge?: ReactNode }) {
+const iconBtn =
+  "pointer-events-auto flex h-9 w-8 shrink-0 items-center justify-center border border-bp-ink/60 bg-bp-deep text-bp-ink hover:bg-bp-ink/15";
+
+export default function Viewer({
+  model,
+  onReady,
+  card,
+  badge,
+  onDownload,
+}: {
+  model: BuildingModel;
+  onReady?: () => void;
+  card?: ReactNode;
+  badge?: ReactNode;
+  onDownload?: () => void;
+}) {
   const levels = model.floors.map((f) => f.level);
   const topLevel = Math.max(...levels);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
@@ -1508,6 +1523,8 @@ export default function Viewer({ model, onReady, card, badge }: { model: Buildin
   }, []);
   const narrowTop = wrapW > 0 && wrapW < 560;
   const cardOpen = cardPref ?? !narrowTop;
+  // Room for icons/card + rotate/tilt bar + badge on one line? (px; generous so nothing ever touches)
+  const barInline = wrapW >= (cardOpen ? 840 : 660);
   const cardScale = Math.max(0.75, Math.min(1, wrapW / 680 || 1));
   const toggleCard = () => {
     const next = !cardOpen;
@@ -1523,39 +1540,66 @@ export default function Viewer({ model, onReady, card, badge }: { model: Buildin
     }`;
 
   return (
-    // Layout: one overlay row on the map (card arrow, CloudScan card, rotate/tilt bar, badge) and the toolbar
-    // below it in normal flow. The rotate/tilt bar never shrinks; the card collapses behind the arrow (and
-    // drops under the row when the view is narrow). If the window is too small for everything, the whole
+    // Layout: top-left home / download / arrow buttons with the CloudScan card directly underneath them, the
+    // rotate/tilt bar and badge beside them, all overlaid on the map; the toolbar below in normal flow. The
+    // rotate/tilt bar never shrinks; the card collapses upward behind the arrow. If the window is too small for everything, the whole
     // column scrolls so every button stays reachable.
     <div className="flex h-full w-full flex-col overflow-y-auto bg-bp">
       <div ref={wrap} className="relative min-h-[12rem] flex-1">
-        <div className="pointer-events-none absolute inset-x-3 top-3 z-20 flex flex-col gap-2">
-          <div className="flex flex-wrap items-start gap-2">
-            {card && (
-              <button
-                type="button"
-                onClick={toggleCard}
-                aria-expanded={cardOpen}
-                aria-label={cardOpen ? "Hide CloudScan card" : "Show CloudScan card"}
-                title={cardOpen ? "Hide CloudScan card" : "Show CloudScan card"}
-                className="pointer-events-auto flex h-9 w-8 shrink-0 items-center justify-center border border-bp-ink/60 bg-bp-deep text-bp-ink hover:bg-bp-ink/15"
-              >
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  aria-hidden
-                  style={{ transform: cardOpen ? "none" : "rotate(180deg)", transition: "transform 350ms cubic-bezier(.34,1.56,.64,1)" }}
-                >
-                  <path d="M10 3 5 8l5 5" />
+        <div
+          className="pointer-events-none absolute inset-x-3 top-3 z-20 grid items-start gap-2"
+          style={{
+            // Badge always sits top right on the same line as the home button. The rotate/tilt bar joins that
+            // line when there's room, otherwise it drops to its own line right below.
+            gridTemplateColumns: "auto minmax(0, 1fr) auto",
+            gridTemplateAreas: barInline ? '"left bar badge"' : '"left . badge" "bar bar bar"',
+          }}
+        >
+          <div className="flex min-w-0 flex-col items-start gap-2" style={{ gridArea: "left" }}>
+            <div className="flex gap-2">
+              <Link href="/" className={iconBtn} aria-label="Home" title="Home">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M3 11.5 12 4l9 7.5" />
+                  <path d="M5 10v10h14V10" />
+                  <path d="M10 20v-6h4v6" />
                 </svg>
-              </button>
-            )}
-            {card && !narrowTop && <CardSlot open={cardOpen} axis="x" scale={cardScale}>{card}</CardSlot>}
-    <div className="pointer-events-auto mx-auto flex max-w-full flex-wrap items-center justify-center gap-2 border border-bp-ink/60 bg-bp-deep px-3 py-2 text-bp-ink shadow-lg">
+              </Link>
+              {onDownload && (
+                <button type="button" onClick={onDownload} className={iconBtn} aria-label="Download model" title="Download model">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M12 4v11" />
+                    <path d="m7 11 5 5 5-5" />
+                    <path d="M5 20h14" />
+                  </svg>
+                </button>
+              )}
+              {card && (
+                <button
+                  type="button"
+                  onClick={toggleCard}
+                  aria-expanded={cardOpen}
+                  aria-label={cardOpen ? "Hide CloudScan card" : "Show CloudScan card"}
+                  title={cardOpen ? "Hide CloudScan card" : "Show CloudScan card"}
+                  className={iconBtn}
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    aria-hidden
+                    style={{ transform: cardOpen ? "none" : "rotate(180deg)", transition: "transform 350ms cubic-bezier(.34,1.56,.64,1)" }}
+                  >
+                    <path d="M3 10l5-5 5 5" />
+                  </svg>
+                </button>
+              )}
+            </div>
+            {card && <CardSlot open={cardOpen} scale={cardScale}>{card}</CardSlot>}
+          </div>
+    <div className="pointer-events-auto mx-auto flex max-w-full flex-wrap items-center justify-center gap-2 border border-bp-ink/60 bg-bp-deep px-3 py-2 text-bp-ink shadow-lg" style={{ gridArea: "bar" }}>
         <button
           type="button"
           className="border border-bp-ink/45 px-2.5 py-1 font-data text-sm font-semibold hover:bg-bp-ink/15"
@@ -1603,9 +1647,7 @@ export default function Viewer({ model, onReady, card, badge }: { model: Buildin
           />
         </label>
       </div>
-            {badge && wrapW >= 420 && <div className="pointer-events-none ml-auto shrink-0">{badge}</div>}
-          </div>
-          {card && narrowTop && <CardSlot open={cardOpen} axis="y" scale={cardScale}>{card}</CardSlot>}
+      {badge && <div className="pointer-events-none shrink-0" style={{ gridArea: "badge" }}>{badge}</div>}
         </div>
       <Canvas
         camera={{ position: camPos, fov: 45, near: camNear, far: camFar }}

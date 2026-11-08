@@ -202,6 +202,7 @@ export default function ModelScreen({ id }: { id: string }) {
         key={`${model.id}-${version}`}
         model={model}
         onReady={() => setViewerReady(true)}
+        onDownload={downloadModel}
         card={
           <div className="border border-bp-ink/60 bg-bp-deep text-bp-ink" style={{ padding: "0.65em 0.85em", maxWidth: "24em" }}>
             <div className="flex items-baseline justify-between" style={{ gap: "1.2em" }}>
@@ -214,12 +215,6 @@ export default function ModelScreen({ id }: { id: string }) {
                     Details
                   </button>
                 )}
-                <button onClick={downloadModel} className="hover:text-bp-ink">
-                  Save
-                </button>
-                <Link href="/" className="hover:text-bp-ink">
-                  New
-                </Link>
               </span>
             </div>
             <div className="truncate font-display uppercase tracking-[0.03em] text-white" style={{ fontSize: "1.67em", marginTop: "0.1em" }}>
