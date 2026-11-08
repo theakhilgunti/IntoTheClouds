@@ -3,6 +3,7 @@ import { ThreeCanvas } from './components/ThreeCanvas';
 import { IncidentCommandHUD } from './components/IncidentCommandHUD';
 import { BeaconAnchor, Breadcrumb, FirefighterState, HazardPin, RFMapResponse, WifiScan } from './types';
 import { ALL_ANCHORS } from './lib/rfMap';
+import { ObstacleMeshResponse } from './lib/obstacleMesh';
 
 const WS_URL = 'ws://localhost:8000/ws/dashboard';
 const API_URL = 'http://localhost:8000/api';
@@ -24,6 +25,7 @@ export const App: React.FC = () => {
   const [hazards, setHazards] = useState<HazardPin[]>([]);
 
   const [rfMap, setRfMap] = useState<RFMapResponse | null>(null);
+  const [obstacleMesh, setObstacleMesh] = useState<ObstacleMeshResponse | null>(null);
   const [rfShow, setRfShow] = useState(true);
   const [rfSelected, setRfSelected] = useState<string>(ALL_ANCHORS);
 
@@ -109,6 +111,26 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(`${API_URL}/mesh`);
+        if (!res.ok) return;
+        const data: ObstacleMeshResponse = await res.json();
+        if (!cancelled) setObstacleMesh(data);
+      } catch {
+        // backend not reachable yet; retry on next tick
+      }
+    };
+    load();
+    const timer = setInterval(load, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
   const rfMapAnchorIds = rfMap ? Object.keys(rfMap.cells).sort() : [];
   const rfSelectedEffective =
     rfSelected === ALL_ANCHORS || rfMapAnchorIds.includes(rfSelected) ? rfSelected : ALL_ANCHORS;
@@ -154,6 +176,7 @@ export const App: React.FC = () => {
         rfMap={rfMap}
         rfShow={rfShow}
         rfSelected={rfSelectedEffective}
+        obstacleMesh={obstacleMesh}
       />
       <IncidentCommandHUD
         connected={connected}
