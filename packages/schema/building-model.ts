@@ -118,6 +118,8 @@ export const Roof = z.object({
   polygon: Polygon.optional().describe("Eaves outline; when set, the roof follows this instead of a rectangle"),
   ridgeAlong: z.enum(["width", "depth"]).optional().describe("Axis the ridge runs along in the plan frame"),
   plan: RoofPlan.optional(),
+  /** Generation tag — bump when roof meshing/inference changes so old scans auto-rebuild. */
+  basis: z.string().optional(),
 });
 
 /**

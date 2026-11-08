@@ -512,6 +512,10 @@
             "kind",
             "wings"
           ]
+        },
+        "basis": {
+          "description": "Generation tag — bump when roof meshing/inference changes so old scans auto-rebuild",
+          "type": "string"
         }
       },
       "required": [

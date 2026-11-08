@@ -116,3 +116,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 00:42 | Cursor | UI-28 | Rotate 0° faces the front door (not road centroid). |
 | 01:05 | Cursor | UI-29 | Finished task |
 | 01:17 | Cursor | UI-30 | Finished task |
+| 01:51 | Cursor | UI-31 | Finished task |
+| 01:51 | Cursor | UI-31 | Finished task |

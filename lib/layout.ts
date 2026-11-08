@@ -413,6 +413,8 @@ export function buildHouse(input: BuildInput): BuildOutput {
     polygon: roofPoly.map(([x, y]) => [r4(x), r4(y)] as Point),
     ridgeAlong,
     plan: input.roofPlan ?? undefined,
+    // Bump when flat/concave roof inference or mesh changes so cached scans rebuild.
+    basis: "roof-v2",
   };
 
   const bearing = ((Math.atan2(f[0], f[1]) * 180) / Math.PI + 360) % 360;
