@@ -1214,6 +1214,210 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
       outline: none;
     }
     .search-box:focus { border-color: var(--cyan); }
+
+    /* Grid Presets & Dimension Sliders */
+    .preset-label {
+      font-size: 0.65rem;
+      color: var(--text-dim);
+      letter-spacing: 1px;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+    .preset-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 5px;
+      margin-bottom: 14px;
+    }
+    .pill-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border-glow);
+      color: var(--text-dim);
+      padding: 6px 2px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .pill-btn:hover {
+      border-color: var(--cyan);
+      color: #fff;
+    }
+    .pill-btn.active {
+      background: rgba(0, 240, 255, 0.18);
+      border-color: var(--cyan);
+      color: var(--cyan);
+      box-shadow: 0 0 8px rgba(0, 240, 255, 0.3);
+    }
+    .dim-control-group {
+      margin-bottom: 12px;
+      background: rgba(0,0,0,0.25);
+      border: 1px solid var(--border-glow);
+      border-radius: 6px;
+      padding: 10px;
+    }
+    .dim-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+      font-size: 0.75rem;
+    }
+    .dim-val {
+      font-family: 'Consolas', monospace;
+      color: #fff;
+    }
+    .dim-val strong {
+      color: var(--cyan);
+      font-size: 0.95rem;
+    }
+    .dim-slider {
+      width: 100%;
+      height: 6px;
+      -webkit-appearance: none;
+      background: #1a2744;
+      border-radius: 3px;
+      outline: none;
+      margin: 8px 0;
+    }
+    .dim-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--cyan);
+      cursor: pointer;
+      box-shadow: 0 0 8px var(--cyan);
+      transition: transform 0.1s;
+    }
+    .dim-slider::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+    }
+    .steppers-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+    .step-btn {
+      padding: 3px 0;
+      font-size: 0.7rem;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border-glow);
+      border-radius: 4px;
+      color: var(--text-dim);
+      cursor: pointer;
+      text-align: center;
+    }
+    .step-btn:hover {
+      color: #fff;
+      border-color: var(--cyan);
+    }
+    .dim-options {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      cursor: pointer;
+      user-select: none;
+    }
+    .checkbox-label input {
+      accent-color: var(--cyan);
+    }
+
+    /* Modal Backdrop & Card */
+    .modal-backdrop {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--cyan);
+      box-shadow: 0 0 30px rgba(0, 240, 255, 0.25);
+      border-radius: 10px;
+      width: 520px;
+      max-width: 90vw;
+      overflow: hidden;
+      animation: modalFadeIn 0.2s ease-out;
+    }
+    @keyframes modalFadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+    .modal-header {
+      padding: 14px 18px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border-glow);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .modal-title {
+      font-size: 0.95rem;
+      font-weight: 800;
+      letter-spacing: 1.5px;
+      color: var(--cyan);
+    }
+    .close-btn {
+      background: none;
+      border: none;
+      font-size: 1.3rem;
+      color: var(--text-dim);
+      cursor: pointer;
+      padding: 0 6px;
+    }
+    .close-btn:hover { color: #fff; }
+    .modal-body {
+      padding: 18px;
+    }
+    .modal-inputs-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .input-block label {
+      display: block;
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .input-block input {
+      width: 100%;
+      background: #090e1a;
+      border: 1px solid var(--border-glow);
+      color: #fff;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      font-family: monospace;
+      outline: none;
+    }
+    .input-block input:focus { border-color: var(--cyan); }
+    .modal-footer {
+      padding: 12px 18px;
+      background: var(--bg-card);
+      border-top: 1px solid var(--border-glow);
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
   </style>
 </head>
 <body>
@@ -1239,9 +1443,10 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
     </div>
 
     <div class="header-actions">
+      <button class="primary" onclick="openGridModal()">📐 Dimensions: <span id="headerGridDim">30m × 30m</span></button>
       <button id="btnToggleMock" onclick="toggleMock()">🎭 Simulate Walk</button>
       <button id="btnClearTrail" onclick="clearTrail()">🧹 Clear Trail</button>
-      <button class="primary" onclick="exportCSV()">📥 Export CSV</button>
+      <button onclick="exportCSV()">📥 Export CSV</button>
     </div>
   </header>
 
@@ -1270,7 +1475,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
       <div class="canvas-tools">
         <button onclick="zoomCanvas(1.2)">🔍 + Zoom In</button>
         <button onclick="zoomCanvas(0.8)">🔍 - Zoom Out</button>
-        <button onclick="fitGrid()">📐 Fit 30m Grid</button>
+        <button onclick="fitGrid()">📐 Fit <span id="btnFitDim">30m</span> Grid</button>
         <button onclick="centerOnTarget()">🎯 Center Target</button>
       </div>
     </div>
@@ -1375,17 +1580,64 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
 
       <!-- Environment & Grid Configuration -->
       <div class="sidebar-section">
-        <div class="section-title">GRID & TELEMETRY CONFIG</div>
+        <div class="section-title">
+          <span>GRID DIMENSIONS</span>
+          <button style="font-size:0.7rem; padding: 2px 7px;" onclick="openGridModal()">⚙️ Custom</button>
+        </div>
         
-        <div class="settings-row">
-          <span>Grid X Width (m):</span>
-          <input type="number" id="inpGridW" value="30.0" step="1.0" min="5" max="100" onchange="updateGridDimensions()">
+        <!-- Room Presets -->
+        <div class="preset-label">QUICK ROOM PRESETS:</div>
+        <div class="preset-grid">
+          <button class="pill-btn" onclick="applyPreset(10, 10)">10×10m</button>
+          <button class="pill-btn" onclick="applyPreset(15, 15)">15×15m</button>
+          <button class="pill-btn" onclick="applyPreset(20, 20)">20×20m</button>
+          <button class="pill-btn active" id="btnPreset30" onclick="applyPreset(30, 30)">30×30m</button>
+          <button class="pill-btn" onclick="applyPreset(50, 50)">50×50m</button>
         </div>
-        <div class="settings-row">
-          <span>Grid Y Height (m):</span>
-          <input type="number" id="inpGridH" value="30.0" step="1.0" min="5" max="100" onchange="updateGridDimensions()">
+
+        <!-- Width (X) Slider & Steppers -->
+        <div class="dim-control-group">
+          <div class="dim-header">
+            <span>Width (X-Axis):</span>
+            <span class="dim-val"><strong id="dispGridW">30.0</strong> m (<span id="dispGridWFt">98.4</span> ft)</span>
+          </div>
+          <input type="range" class="dim-slider" id="rangeGridW" min="3" max="100" step="0.5" value="30.0" oninput="onSliderDimChange('w', this.value)">
+          <div class="steppers-row">
+            <button class="step-btn" onclick="stepDim('w', -5)">-5m</button>
+            <button class="step-btn" onclick="stepDim('w', -1)">-1m</button>
+            <button class="step-btn" onclick="stepDim('w', 1)">+1m</button>
+            <button class="step-btn" onclick="stepDim('w', 5)">+5m</button>
+          </div>
         </div>
-        <div class="settings-row">
+
+        <!-- Height (Y) Slider & Steppers -->
+        <div class="dim-control-group">
+          <div class="dim-header">
+            <span>Height (Y-Axis):</span>
+            <span class="dim-val"><strong id="dispGridH">30.0</strong> m (<span id="dispGridHFt">98.4</span> ft)</span>
+          </div>
+          <input type="range" class="dim-slider" id="rangeGridH" min="3" max="100" step="0.5" value="30.0" oninput="onSliderDimChange('h', this.value)">
+          <div class="steppers-row">
+            <button class="step-btn" onclick="stepDim('h', -5)">-5m</button>
+            <button class="step-btn" onclick="stepDim('h', -1)">-1m</button>
+            <button class="step-btn" onclick="stepDim('h', 1)">+1m</button>
+            <button class="step-btn" onclick="stepDim('h', 5)">+5m</button>
+          </div>
+        </div>
+
+        <!-- Dimension Options -->
+        <div class="dim-options">
+          <label class="checkbox-label">
+            <input type="checkbox" id="chkLockAspect" checked onchange="toggleLockAspect(this.checked)">
+            <span>🔒 Lock Square (1:1 Ratio)</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="chkAutoSnap" checked>
+            <span>📍 Auto-Snap Anchors to Ends</span>
+          </label>
+        </div>
+
+        <div class="settings-row" style="margin-top:12px;">
           <span>Path Loss Exponent (n):</span>
           <input type="number" id="inpExpN" value="2.4" step="0.1" min="1.5" max="4.5" onchange="updateExponent(this.value)">
         </div>
@@ -1406,6 +1658,64 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
 
     </div>
 
+  </div>
+
+  <!-- Grid Dimensions Modal -->
+  <div class="modal-backdrop" id="gridModal" style="display:none;" onclick="if(event.target===this) closeGridModal()">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">📐 ADJUST GRID DIMENSIONS & ANCHOR POSITIONS</div>
+        <button class="close-btn" onclick="closeGridModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:0.8rem; color:var(--text-dim); margin-bottom:14px;">
+          Configure the exact room dimensions for the 2D trilateration space. Anchors will automatically adjust to the coordinate boundaries.
+        </p>
+        
+        <div class="modal-inputs-grid">
+          <div class="input-block">
+            <label>X-Axis Width (Meters):</label>
+            <input type="number" id="modalInputW" value="30.0" step="0.5" min="3" max="150" oninput="syncModalFromMeters('w', this.value)">
+          </div>
+          <div class="input-block">
+            <label>X-Axis Width (Feet):</label>
+            <input type="number" id="modalInputWFt" value="98.4" step="1.0" min="10" max="500" oninput="syncModalFromFeet('w', this.value)">
+          </div>
+          <div class="input-block">
+            <label>Y-Axis Height (Meters):</label>
+            <input type="number" id="modalInputH" value="30.0" step="0.5" min="3" max="150" oninput="syncModalFromMeters('h', this.value)">
+          </div>
+          <div class="input-block">
+            <label>Y-Axis Height (Feet):</label>
+            <input type="number" id="modalInputHFt" value="98.4" step="1.0" min="10" max="500" oninput="syncModalFromFeet('h', this.value)">
+          </div>
+        </div>
+
+        <div style="margin-top:14px;">
+          <span style="font-size:0.75rem; color:var(--text-dim); text-transform:uppercase;">Quick Presets:</span>
+          <div class="preset-grid" style="margin-top:6px;">
+            <button class="pill-btn" onclick="applyPreset(10, 10)">10×10m (33×33ft)</button>
+            <button class="pill-btn" onclick="applyPreset(15, 15)">15×15m (49×49ft)</button>
+            <button class="pill-btn" onclick="applyPreset(20, 20)">20×20m (66×66ft)</button>
+            <button class="pill-btn" onclick="applyPreset(30, 30)">30×30m (98×98ft)</button>
+            <button class="pill-btn" onclick="applyPreset(50, 50)">50×50m (164×164ft)</button>
+          </div>
+        </div>
+
+        <div style="margin-top:16px; background:rgba(0,0,0,0.3); border-radius:6px; padding:10px;">
+          <div style="font-size:0.75rem; color:var(--cyan); font-weight:700; margin-bottom:6px;">ANCHOR COORDINATES:</div>
+          <div style="display:flex; justify-content:space-between; font-size:0.75rem; font-family:monospace;">
+            <span style="color:var(--cyan);">🔵 Anchor 1 (Origin): (0.0m, 0.0m)</span>
+            <span style="color:var(--emerald);" id="modalA2Preview">🟢 Anchor 2: (30.0m, 0.0m)</span>
+            <span style="color:var(--amber);" id="modalA3Preview">🟡 Anchor 3: (0.0m, 30.0m)</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button onclick="closeGridModal()">Cancel</button>
+        <button class="primary" onclick="saveModalGrid()">💾 Apply Dimensions</button>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -1793,13 +2103,20 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
     // =========================================================================
     // Real-Time Server-Sent Events (SSE) Stream Receiver (<1s latency)
     // =========================================================================
+    let isAdjustingGrid = false;
+    let gridDebounceTimer = null;
+
     function startSSE() {
       const evtSource = new EventSource('/api/stream');
       
       evtSource.onmessage = function(e) {
         try {
           const data = JSON.parse(e.data);
-          telemetry = data;
+          if (isAdjustingGrid) {
+            delete data.grid_w;
+            delete data.grid_h;
+          }
+          telemetry = { ...telemetry, ...data };
           updateHUD();
         } catch (err) { }
       };
@@ -1823,6 +2140,14 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
       document.getElementById('hudLatency').innerText = `${telemetry.latency_ms.toFixed(0)} ms`;
       document.getElementById('badgeRate').innerText = `${telemetry.update_hz.toFixed(1)} Hz (${telemetry.latency_ms.toFixed(0)} ms)`;
       document.getElementById('badgeFix').innerText = telemetry.fix_type;
+
+      // Update Header Dimension badge and Canvas fit button
+      if (document.getElementById('headerGridDim')) {
+        document.getElementById('headerGridDim').innerText = `${telemetry.grid_w.toFixed(0)}m × ${telemetry.grid_h.toFixed(0)}m`;
+      }
+      if (document.getElementById('btnFitDim')) {
+        document.getElementById('btnFitDim').innerText = `${telemetry.grid_w.toFixed(0)}m`;
+      }
 
       // Update Anchor Cards
       if (telemetry.anchors) {
@@ -1928,17 +2253,188 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
       alert(`Anchor ${anchorId} Calibrated!\nNew 1m Reference RSSI (A): ${data.new_A} dBm`);
     }
 
-    async function updateGridDimensions() {
-      const gw = parseFloat(document.getElementById('inpGridW').value);
-      const gh = parseFloat(document.getElementById('inpGridH').value);
-      await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ grid_w: gw, grid_h: gh })
+    // =========================================================================
+    // Grid Dimension Management (Interactive Sliders, Presets & Modal)
+    // =========================================================================
+    let lockAspect = true;
+
+    function applyPreset(w, h) {
+      document.querySelectorAll('.preset-grid .pill-btn').forEach(btn => {
+        if (btn.innerText.startsWith(`${w}×${h}`) || btn.innerText.startsWith(`${w}m`)) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
       });
-      document.getElementById('posPill2').innerText = `(${gw.toFixed(1)}m, 0.0m)`;
-      document.getElementById('posPill3').innerText = `(0.0m, ${gh.toFixed(1)}m)`;
+      syncDimensions(w, h, true);
       fitGrid();
+    }
+
+    function onSliderDimChange(dim, val) {
+      val = parseFloat(val);
+      let w = telemetry.grid_w;
+      let h = telemetry.grid_h;
+
+      if (dim === 'w') {
+        w = val;
+        if (lockAspect) h = val;
+      } else {
+        h = val;
+        if (lockAspect) w = val;
+      }
+
+      syncDimensions(w, h, false);
+    }
+
+    function stepDim(dim, delta) {
+      let w = telemetry.grid_w;
+      let h = telemetry.grid_h;
+
+      if (dim === 'w') {
+        w = Math.max(3, Math.min(150, w + delta));
+        if (lockAspect) h = w;
+      } else {
+        h = Math.max(3, Math.min(150, h + delta));
+        if (lockAspect) w = h;
+      }
+
+      syncDimensions(w, h, true);
+    }
+
+    function toggleLockAspect(checked) {
+      lockAspect = checked;
+      if (lockAspect) {
+        syncDimensions(telemetry.grid_w, telemetry.grid_w, true);
+      }
+    }
+
+    function syncDimensions(w, h, updateSliders) {
+      w = parseFloat(w);
+      h = parseFloat(h);
+
+      telemetry.grid_w = w;
+      telemetry.grid_h = h;
+
+      // Update Slider and Numeric Displays
+      if (updateSliders) {
+        const sw = document.getElementById('rangeGridW');
+        const sh = document.getElementById('rangeGridH');
+        if (sw) sw.value = w;
+        if (sh) sh.value = h;
+      }
+      
+      const dw = document.getElementById('dispGridW');
+      const dh = document.getElementById('dispGridH');
+      const dwft = document.getElementById('dispGridWFt');
+      const dhft = document.getElementById('dispGridHFt');
+      const hdim = document.getElementById('headerGridDim');
+      const fitdim = document.getElementById('btnFitDim');
+      
+      if (dw) dw.innerText = w.toFixed(1);
+      if (dh) dh.innerText = h.toFixed(1);
+      if (dwft) dwft.innerText = (w * 3.28084).toFixed(1);
+      if (dhft) dhft.innerText = (h * 3.28084).toFixed(1);
+      if (hdim) hdim.innerText = `${w.toFixed(0)}m × ${h.toFixed(0)}m`;
+      if (fitdim) fitdim.innerText = `${w.toFixed(0)}m`;
+
+      // Update Anchor Position Badges in Sidebar
+      const p2 = document.getElementById('posPill2');
+      const p3 = document.getElementById('posPill3');
+      if (p2) p2.innerText = `(${w.toFixed(1)}m, 0.0m)`;
+      if (p3) p3.innerText = `(0.0m, ${h.toFixed(1)}m)`;
+
+      // Update Modal Inputs if open
+      const miw = document.getElementById('modalInputW');
+      const mih = document.getElementById('modalInputH');
+      const miwft = document.getElementById('modalInputWFt');
+      const mihft = document.getElementById('modalInputHFt');
+      if (miw) miw.value = w;
+      if (mih) mih.value = h;
+      if (miwft) miwft.value = (w * 3.28084).toFixed(1);
+      if (mihft) mihft.value = (h * 3.28084).toFixed(1);
+
+      const ma2 = document.getElementById('modalA2Preview');
+      const ma3 = document.getElementById('modalA3Preview');
+      if (ma2) ma2.innerText = `🟢 Anchor 2: (${w.toFixed(1)}m, 0.0m)`;
+      if (ma3) ma3.innerText = `🟡 Anchor 3: (0.0m, ${h.toFixed(1)}m)`;
+
+      // Flag adjusting to prevent SSE overwrite
+      isAdjustingGrid = true;
+      clearTimeout(gridDebounceTimer);
+      gridDebounceTimer = setTimeout(() => {
+        fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            grid_w: w,
+            grid_h: h,
+            snap_anchors: document.getElementById('chkAutoSnap')?.checked ?? true
+          })
+        }).then(() => {
+          setTimeout(() => { isAdjustingGrid = false; }, 400);
+        });
+      }, 150);
+    }
+
+    function openGridModal() {
+      const modal = document.getElementById('gridModal');
+      if (!modal) return;
+      modal.style.display = 'flex';
+      syncDimensions(telemetry.grid_w, telemetry.grid_h, true);
+    }
+
+    function closeGridModal() {
+      const modal = document.getElementById('gridModal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    function saveModalGrid() {
+      const w = parseFloat(document.getElementById('modalInputW').value);
+      const h = parseFloat(document.getElementById('modalInputH').value);
+      syncDimensions(w, h, true);
+      fitGrid();
+      closeGridModal();
+    }
+
+    function syncModalFromMeters(dim, val) {
+      val = parseFloat(val) || 0;
+      if (dim === 'w') {
+        document.getElementById('modalInputWFt').value = (val * 3.28084).toFixed(1);
+        if (lockAspect) {
+          document.getElementById('modalInputH').value = val;
+          document.getElementById('modalInputHFt').value = (val * 3.28084).toFixed(1);
+        }
+      } else {
+        document.getElementById('modalInputHFt').value = (val * 3.28084).toFixed(1);
+        if (lockAspect) {
+          document.getElementById('modalInputW').value = val;
+          document.getElementById('modalInputWFt').value = (val * 3.28084).toFixed(1);
+        }
+      }
+      const w = parseFloat(document.getElementById('modalInputW').value);
+      const h = parseFloat(document.getElementById('modalInputH').value);
+      syncDimensions(w, h, true);
+    }
+
+    function syncModalFromFeet(dim, val) {
+      val = parseFloat(val) || 0;
+      const meters = val / 3.28084;
+      if (dim === 'w') {
+        document.getElementById('modalInputW').value = meters.toFixed(1);
+        if (lockAspect) {
+          document.getElementById('modalInputH').value = meters.toFixed(1);
+          document.getElementById('modalInputHFt').value = val.toFixed(1);
+        }
+      } else {
+        document.getElementById('modalInputH').value = meters.toFixed(1);
+        if (lockAspect) {
+          document.getElementById('modalInputW').value = meters.toFixed(1);
+          document.getElementById('modalInputWFt').value = val.toFixed(1);
+        }
+      }
+      const w = parseFloat(document.getElementById('modalInputW').value);
+      const h = parseFloat(document.getElementById('modalInputH').value);
+      syncDimensions(w, h, true);
     }
 
     async function updateExponent(val) {
@@ -2182,14 +2678,17 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
         # 4. Update Grid Config
         if url.path == "/api/config":
             with STATE.lock:
+                snap = req_data.get("snap_anchors", True)
                 if "grid_w" in req_data:
                     gw = float(req_data["grid_w"])
                     STATE.grid_width = gw
-                    STATE.anchors[2]["x"] = gw # Move Anchor 2 to end of X axis
+                    if snap:
+                        STATE.anchors[2]["x"] = gw # Move Anchor 2 to end of X axis
                 if "grid_h" in req_data:
                     gh = float(req_data["grid_h"])
                     STATE.grid_height = gh
-                    STATE.anchors[3]["y"] = gh # Move Anchor 3 to end of Y axis
+                    if snap:
+                        STATE.anchors[3]["y"] = gh # Move Anchor 3 to end of Y axis
                 if "n_exp" in req_data:
                     n = float(req_data["n_exp"])
                     for a in STATE.anchors.values():

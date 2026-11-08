@@ -1,0 +1,30 @@
+{
+  "grid_width": 30.0,
+  "grid_height": 30.0,
+  "anchors": {
+    "1": {
+      "signal_id": null,
+      "signal_name": "Unassigned",
+      "A_ref": -42.0,
+      "n_exp": 2.4,
+      "x": 0.0,
+      "y": 0.0
+    },
+    "2": {
+      "signal_id": null,
+      "signal_name": "Unassigned",
+      "A_ref": -42.0,
+      "n_exp": 2.4,
+      "x": 30.0,
+      "y": 0.0
+    },
+    "3": {
+      "signal_id": null,
+      "signal_name": "Unassigned",
+      "A_ref": -42.0,
+      "n_exp": 2.4,
+      "x": 0.0,
+      "y": 30.0
+    }
+  }
+}

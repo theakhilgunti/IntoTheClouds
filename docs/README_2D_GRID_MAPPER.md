@@ -105,8 +105,19 @@ Or double-click [RUN_2D_GRID_MAPPER.bat](file:///c:/Users/caleb/.gemini/antigrav
 
 ---
 
+### Step 5: Adjust Grid Dimensions (Any Room Size)
+You can customize the grid size directly in the UI at any time:
+1. **Quick Presets**: In the sidebar or modal, click `10×10m`, `15×15m`, `20×20m`, `30×30m`, or `50×50m`.
+2. **Interactive Sliders & Steppers**: Use the **Width (X)** and **Height (Y)** sliders or `[-5m] [-1m] [+1m] [+5m]` stepper buttons for instant real-time scaling on the canvas.
+3. **Dual Metric/Imperial Inputs**: Click the **📐 Dimensions** button in the header bar to open the modal and type exact dimensions in either meters or feet.
+4. **Auto-Snap**: With `📍 Auto-Snap Anchors to Ends` enabled, Anchor 2 and Anchor 3 automatically snap to $(X, 0)$ and $(0, Y)$ whenever dimensions change.
+5. **Auto-Saved**: All custom dimensions and anchor positions are automatically saved to `anchors_config.json`.
+
+---
+
 ## 📊 Features & Controls
-- **Interactive Canvas**: Drag to pan, scroll wheel to zoom, or use the **Fit 30m Grid** / **Center Target** buttons.
+- **Interactive Canvas**: Drag to pan, scroll wheel to zoom, or use the **Fit Grid** / **Center Target** buttons.
+- **Dynamic Dimension Resizing**: Live visual scaling of metric ticks, boundary borders, and trilateration calculations.
 - **Audio Sonar**: Toggle **🔊 Sound ON** to hear proximity sonar pings whose frequency increases as you approach the origin or anchors.
 - **CSV Logging**: Click **📥 Export CSV** anytime to download timestamped $X, Y$, speed, and RSSI logs.
 - **Simulation Mode**: Click **🎭 Simulate Walk** to run a virtual walk through the room even without physical hotspots active.
