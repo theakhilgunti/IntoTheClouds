@@ -1181,6 +1181,34 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
       background: var(--cyan);
       color: #000;
     }
+    .btn-calib.secondary {
+      background: rgba(255, 184, 0, 0.1);
+      border-color: rgba(255, 184, 0, 0.3);
+      color: var(--amber);
+    }
+    .btn-calib.secondary:hover {
+      background: var(--amber);
+      color: #000;
+    }
+    .fresh-pill {
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 2px 5px;
+      border-radius: 3px;
+      letter-spacing: 0.5px;
+      background: rgba(255,255,255,0.06);
+      color: var(--text-dim);
+    }
+    .fresh-pill.online {
+      background: rgba(0, 255, 157, 0.15);
+      color: var(--emerald);
+      border: 1px solid rgba(0, 255, 157, 0.3);
+    }
+    .fresh-pill.stale {
+      background: rgba(255, 46, 99, 0.15);
+      color: var(--rose);
+      border: 1px solid rgba(255, 46, 99, 0.3);
+    }
 
     /* Advanced Settings Modal / Drawer */
     .settings-row {
@@ -2651,28 +2679,44 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"status": "ok"}).encode('utf-8'))
             return
 
-        # 3. Calibrate Anchor 1-Meter Reference RSSI
+        # 3. Calibrate Anchor 1-Meter Reference RSSI & 2-Point Exponent Fit
         if url.path == "/api/calibrate":
             a_id = int(req_data.get("anchor_id", 1))
-            calib_dist = float(req_data.get("distance_m", 1.0))
+            mode = req_data.get("mode", "1point")
             
             with STATE.lock:
                 anchor = STATE.anchors.get(a_id)
                 if anchor and anchor["history"]:
-                    # Compute mean/median of recent RSSI readings
                     recent_rssi = float(np.median(list(anchor["history"])[-10:]))
-                    # A = RSSI + 10 * n * log10(d)
-                    new_A = recent_rssi + 10.0 * anchor["n_exp"] * math.log10(max(0.1, calib_dist))
-                    anchor["A_ref"] = round(new_A, 1)
-                    print(f"[CALIB] Anchor {a_id} calibrated at {calib_dist}m: New A_ref = {anchor['A_ref']} dBm")
+                    
+                    if mode == "2point":
+                        d1 = float(req_data.get("d1", 1.0))
+                        rssi1 = float(req_data.get("rssi1", anchor["A_ref"]))
+                        d2 = float(req_data.get("d2", 5.0))
+                        rssi2 = recent_rssi
+                        if d2 > d1:
+                            fitted_n = (rssi1 - rssi2) / (10.0 * math.log10(d2 / d1))
+                            fitted_n = float(np.clip(fitted_n, 1.4, 4.5))
+                            anchor["n_exp"] = round(fitted_n, 2)
+                        anchor["A_ref"] = round(rssi1, 1)
+                        new_A = anchor["A_ref"]
+                        new_n = anchor["n_exp"]
+                        print(f"[CALIB 2-POINT] Anchor {a_id}: A={new_A} dBm, n={new_n} (d1={d1}m @ {rssi1}dBm, d2={d2}m @ {rssi2:.1f}dBm)")
+                    else:
+                        calib_dist = float(req_data.get("distance_m", 1.0))
+                        new_A = recent_rssi + 10.0 * anchor["n_exp"] * math.log10(max(0.1, calib_dist))
+                        anchor["A_ref"] = round(new_A, 1)
+                        new_n = anchor["n_exp"]
+                        print(f"[CALIB 1-POINT] Anchor {a_id} at {calib_dist}m: New A_ref = {anchor['A_ref']} dBm")
                 else:
                     new_A = -42.0
+                    new_n = 2.4
                 STATE.save_config()
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"status": "ok", "new_A": new_A}).encode('utf-8'))
+            self.wfile.write(json.dumps({"status": "ok", "new_A": new_A, "new_n": new_n}).encode('utf-8'))
             return
 
         # 4. Update Grid Config
@@ -2693,6 +2737,12 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
                     n = float(req_data["n_exp"])
                     for a in STATE.anchors.values():
                         a["n_exp"] = n
+                if "anchors" in req_data:
+                    for aid_str, apos in req_data["anchors"].items():
+                        aid = int(aid_str)
+                        if aid in STATE.anchors:
+                            if "x" in apos: STATE.anchors[aid]["x"] = float(apos["x"])
+                            if "y" in apos: STATE.anchors[aid]["y"] = float(apos["y"])
                 STATE.save_config()
 
             self.send_response(200)

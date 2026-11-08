@@ -3,8 +3,8 @@
   "grid_height": 30.0,
   "anchors": {
     "1": {
-      "signal_id": null,
-      "signal_name": "Unassigned",
+      "signal_id": "wifi:a0:93:51:81:99:44",
+      "signal_name": "rpi_public_webauth",
       "A_ref": -42.0,
       "n_exp": 2.4,
       "x": 0.0,
