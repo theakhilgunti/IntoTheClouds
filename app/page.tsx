@@ -10,9 +10,13 @@ export default function Home() {
       <SideClouds />
 
       <header className="relative z-10 flex w-full max-w-5xl items-center justify-between py-5">
-        <span className="font-display text-2xl uppercase tracking-[0.14em]">
+        <Link
+          href="/about"
+          className="font-display text-2xl uppercase tracking-[0.14em] transition hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-bp-red"
+          aria-label="About CloudScan — meet the team"
+        >
           Cloud<span className="text-bp-red">Scan</span>
-        </span>
+        </Link>
         <Link
           href="/model/demo"
           className="font-data text-xs underline decoration-bp-ink underline-offset-4 hover:text-bp-red hover:decoration-bp-red"

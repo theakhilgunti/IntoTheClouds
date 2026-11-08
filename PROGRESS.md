@@ -54,6 +54,10 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 10:40 | Cursor | UI-177 | Team: Caleb Meade LinkedIn on about page (headshot pending). |
+| 10:37 | Cursor | UI-176 | Team: Prem Bagul LinkedIn on about page (headshot pending). |
+| 10:34 | Cursor | UI-175 | Team: Akhil + Joshua LinkedIns/headshots on about page. |
+| 10:30 | Cursor | UI-174 | CloudScan brand → /about Meet the Team (4 placeholder LinkedIns). |
 | 10:23 | Cursor | UI-173 | Cloud fleet set to 10 spaced lanes. |
 | 10:22 | Cursor | UI-172 | Raise cloud fleet to 11 spaced lanes. |
 | 10:20 | Cursor | UI-171 | Edge-only cloud fades; 8 spaced lanes; less overlap (max ~8 on screen). |
