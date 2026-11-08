@@ -109,3 +109,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 09:30 | Claude Code | LC-06 | radar_bridge.py --insecure: accepts the self-signed https backend (wss + https POST); 16 tests pass; not yet run against live beacons |
 | 04:16 | Claude Code | PRIV-01 | Removed phone GPS end to end: /walker no longer requests or shows location, backend /api/phone and /api/phone/log no longer carry gps/gps_usable/gps_origin/gps_local, clean_sensors allow-lists compass/gyro/accel only (location keys from old clients are dropped), latlon_to_local removed; tests prove GPS is rejected; 41 backend tests |
 | 09:16 | Claude Code | PRIV-01 | Finished task |
+| 04:48 | Claude Code | REC-01 | /walker data-collection card: Start/Stop collecting, big Leaving/Arrived tap button, Undo; backend GET/POST /api/record keeps the L-walk session (A2>A1>A3 x rounds, ends at A3) with timed taps; the mapper polls it; no location data; 47 backend tests |
+| 09:48 | Claude Code | REC-01 | Finished task |

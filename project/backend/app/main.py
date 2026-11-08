@@ -301,6 +301,91 @@ async def get_phone_log(last: int = 1000):
     return phone_log[-max(1, min(last, PHONE_LOG_MAX)):]
 
 
+# REC-01: data-collection session driven from the phone's /walker page. The phone is HTTPS and the mapper is plain
+# HTTP, so the phone cannot call the mapper directly; the mapper polls GET /api/record instead and records its own
+# sensor/beacon streams while a session is active. Only labels and times are kept here (no location data).
+RECORD_START_LABEL, RECORD_CORNER_LABEL, RECORD_END_LABEL = "A2", "A1", "A3"
+record_state: dict = {"active": False, "id": None, "rounds": 3, "route": [], "idx": 0, "phase": "at",
+                      "marks": [], "started_t": None, "stopped_t": None}
+
+
+def build_route(rounds: int) -> List[str]:
+    """L-shaped walk A2 -> A1 -> A3, repeated `rounds` times, always ending at A3:
+    rounds=1: A2 A1 A3; rounds=2: A2 A1 A3 A1 A2 A1 A3; ..."""
+    route = [RECORD_START_LABEL, RECORD_CORNER_LABEL, RECORD_END_LABEL]
+    for _ in range(rounds - 1):
+        route += [RECORD_CORNER_LABEL, RECORD_START_LABEL, RECORD_CORNER_LABEL, RECORD_END_LABEL]
+    return route
+
+
+def record_view() -> dict:
+    st = record_state
+    route, idx = st["route"], st["idx"]
+    done = bool(st["active"]) and idx >= len(route) - 1 and st["phase"] == "at"
+    if not st["active"]:
+        prompt = "Not collecting"
+    elif done:
+        prompt = f"Route complete at {route[-1]}. Press Stop."
+    elif st["phase"] == "at":
+        prompt = f"At {route[idx]}. Press when you start walking to {route[idx + 1]}"
+    else:
+        prompt = f"Walking to {route[idx + 1]}. Press when you arrive"
+    now = time.time()
+    return {**st, "done": done, "prompt": prompt, "n_marks": len(st["marks"]),
+            "elapsed_s": round((st["stopped_t"] or now) - st["started_t"], 1) if st["started_t"] else 0.0,
+            "next_label": None if not st["active"] or done else (route[idx] if st["phase"] == "walking" else route[idx + 1]),
+            "button": "" if not st["active"] or done else (f"Leaving {route[idx]}" if st["phase"] == "at" else f"Arrived at {route[idx + 1]}")}
+
+
+class RecordCmd(BaseModel):
+    action: str
+    rounds: int = Field(default=3, ge=1, le=10)
+
+
+@app.get("/api/record")
+async def get_record():
+    return record_view()
+
+
+@app.post("/api/record")
+async def post_record(cmd: RecordCmd):
+    """start {rounds} | mark | undo | stop. `mark` alternates leaving (at a beacon) and arriving (at the next one)."""
+    st = record_state
+    now = time.time()
+    if cmd.action == "start":
+        route = build_route(cmd.rounds)
+        st.update(active=True, id=int(now), rounds=cmd.rounds, route=route, idx=0, phase="at", started_t=now,
+                  stopped_t=None, marks=[{"type": "arrive", "label": route[0], "t": round(now, 3)}])
+    elif not st["active"]:
+        raise HTTPException(status_code=409, detail="not collecting: press Start first")
+    elif cmd.action == "mark":
+        route, idx = st["route"], st["idx"]
+        if idx >= len(route) - 1 and st["phase"] == "at":
+            raise HTTPException(status_code=409, detail="route complete: press Stop")
+        if st["phase"] == "at":
+            st["marks"].append({"type": "depart", "label": route[idx], "t": round(now, 3)})
+            st["phase"] = "walking"
+        else:
+            st["idx"] = idx + 1
+            st["marks"].append({"type": "arrive", "label": route[idx + 1], "t": round(now, 3)})
+            st["phase"] = "at"
+    elif cmd.action == "undo":
+        if len(st["marks"]) <= 1:
+            raise HTTPException(status_code=409, detail="nothing to undo")
+        last = st["marks"].pop()
+        if last["type"] == "arrive":
+            st["idx"] -= 1
+            st["phase"] = "walking"
+        else:
+            st["phase"] = "at"
+    elif cmd.action == "stop":
+        st["active"] = False
+        st["stopped_t"] = now
+    else:
+        raise HTTPException(status_code=422, detail="action must be start, mark, undo or stop")
+    return record_view()
+
+
 @app.get("/api/mesh")
 async def get_obstacle_mesh(extrude: bool = True, wall_height_m: float = 2.5):
     """Rough RF obstacle-hint mesh (BE-03): triangles around voxels where most
