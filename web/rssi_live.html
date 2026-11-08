@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IntoTheClouds | Tactical Wi-Fi Distance Radar</title>
+  <style>
+    :root {
+      --bg: #070a12;
+      --card: #101624;
+      --border: #1e293b;
+      --accent: #00e5ff;
+      --ok: #00ff88;
+      --warn: #ffaa00;
+      --hazard: #ff334b;
+      --text: #f1f5f9;
+      --muted: #64748b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    .hud-container {
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    header {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    .brand h1 {
+      font-size: 1.3rem;
+      letter-spacing: 1.5px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .badge-live {
+      background: rgba(0, 255, 136, 0.15);
+      color: var(--ok);
+      border: 1px solid var(--ok);
+      font-size: 0.68rem;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-family: monospace;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .selector-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .target-select {
+      flex: 1;
+      background: #090d18;
+      color: var(--accent);
+      border: 1px solid #2d3e5e;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 1rem;
+      font-weight: 600;
+      outline: none;
+      cursor: pointer;
+    }
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 768px) {
+      .main-grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+    }
+    .radar-box {
+      align-items: center;
+      justify-content: center;
+      min-height: 320px;
+    }
+    canvas#radarCanvas {
+      width: 280px;
+      height: 280px;
+    }
+    .readout-card {
+      justify-content: center;
+      text-align: center;
+      gap: 12px;
+    }
+    .distance-hero {
+      font-size: 4.2rem;
+      font-weight: 900;
+      color: #fff;
+      font-family: monospace;
+      letter-spacing: -2px;
+      line-height: 1;
+    }
+    .distance-unit {
+      font-size: 1.5rem;
+      color: var(--accent);
+      font-weight: 600;
+      letter-spacing: 0;
+    }
+    .distance-sub {
+      font-size: 1.2rem;
+      color: var(--muted);
+      font-family: monospace;
+    }
+    .trend-pill {
+      display: inline-block;
+      margin: 0 auto;
+      padding: 6px 16px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      background: #192338;
+      border: 1px solid var(--border);
+    }
+    .trend-approaching { background: rgba(0, 255, 136, 0.15); color: var(--ok); border-color: var(--ok); }
+    .trend-away { background: rgba(255, 51, 75, 0.15); color: var(--hazard); border-color: var(--hazard); }
+    .trend-steady { background: rgba(0, 229, 255, 0.15); color: var(--accent); border-color: var(--accent); }
+    
+    .stats-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 10px;
+    }
+    .stat-pill {
+      background: #090e1a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      text-align: center;
+    }
+    .stat-label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; margin-bottom: 4px; }
+    .stat-val { font-size: 1.25rem; font-weight: 800; font-family: monospace; color: var(--text); }
+    
+    .chart-card {
+      grid-column: span 2;
+      min-height: 160px;
+    }
+    @media (max-width: 768px) {
+      .chart-card { grid-column: span 1; }
+    }
+    canvas#historyChart {
+      width: 100%;
+      height: 120px;
+    }
+  </style>
+</head>
+<body>
+  <div class="hud-container">
+    <header>
+      <div class="brand">
+        <h1>INTO THE CLOUDS <span class="badge-live">LIVE RADAR</span></h1>
+        <p style="font-size:0.75rem; color:var(--muted); margin-top:2px;">Real-Time Sub-Second Wi-Fi RSSI Distance Tracker</p>
+      </div>
+      <div style="font-family:monospace; font-size:0.8rem; color:var(--accent);">
+        Scan Rate: <span id="scanRate">1.0s</span>
+      </div>
+    </header>
+
+    <!-- Target Selector -->
+    <div class="selector-card">
+      <div style="font-weight:700; font-size:0.9rem; white-space:nowrap;">🎯 Focus Target:</div>
+      <select id="targetSelect" class="target-select">
+        <option value="">Scanning for networks...</option>
+      </select>
+    </div>
+
+    <!-- Main Live Metrics -->
+    <div class="main-grid">
+      <!-- Radar Dial -->
+      <div class="card radar-box">
+        <canvas id="radarCanvas" width="280" height="280"></canvas>
+      </div>
+
+      <!-- Hero Distance Numbers -->
+      <div class="card readout-card">
+        <div style="font-size:0.75rem; color:var(--muted); text-transform:uppercase; letter-spacing:1px;">Estimated Physical Distance</div>
+        <div>
+          <span class="distance-hero" id="distFt">--</span><span class="distance-unit"> ft</span>
+        </div>
+        <div class="distance-sub" id="distM">-- meters</div>
+        <div id="trendPill" class="trend-pill trend-steady">Waiting for target...</div>
+
+        <div class="stats-row">
+          <div class="stat-pill">
+            <div class="stat-label">Raw Signal</div>
+            <div class="stat-val" id="rawRssi" style="color:var(--warn);">-- dBm</div>
+          </div>
+          <div class="stat-pill">
+            <div class="stat-label">Filtered Signal (EMA)</div>
+            <div class="stat-val" id="filtRssi" style="color:var(--ok);">-- dBm</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Time Series Signal Chart -->
+      <div class="card chart-card">
+        <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:0.75rem; color:var(--muted);">
+          <span>SIGNAL HISTORY & FILTER STABILITY (LAST 30 SECONDS)</span>
+          <span style="color:var(--ok);">● Smoothed Distance Curve</span>
+        </div>
+        <canvas id="historyChart" width="820" height="120"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const targetSelect = document.getElementById('targetSelect');
+      const distFtEl = document.getElementById('distFt');
+      const distMEl = document.getElementById('distM');
+      const trendPill = document.getElementById('trendPill');
+      const rawRssiEl = document.getElementById('rawRssi');
+      const filtRssiEl = document.getElementById('filtRssi');
+
+      const radarCanvas = document.getElementById('radarCanvas');
+      const rCtx = radarCanvas.getContext('2d');
+      const chartCanvas = document.getElementById('historyChart');
+      const cCtx = chartCanvas.getContext('2d');
+
+      let currentTarget = "";
+      let historyData = []; // Array of { dist_ft, raw_rssi, filt_rssi }
+      let animPulse = 0;
+      let lastDistance = null;
+
+      // Populate dropdown
+      async function refreshNetworks() {
+        try {
+          const res = await fetch('/api/networks');
+          const networks = await res.json();
+          const prevTarget = targetSelect.value;
+          
+          targetSelect.innerHTML = "";
+          let foundSelected = false;
+
+          networks.forEach((n, idx) => {
+            const opt = document.createElement('option');
+            opt.value = n.ssid;
+            const isPrem = n.ssid.toLowerCase().includes("prem");
+            opt.textContent = `${isPrem ? "⭐ " : ""}${n.ssid} (${n.pct}% | ${n.rssi} dBm)`;
+            targetSelect.appendChild(opt);
+
+            // Auto-select Prem bagul if available, or first network
+            if (prevTarget && n.ssid === prevTarget) {
+              opt.selected = true;
+              foundSelected = true;
+            } else if (!prevTarget && isPrem) {
+              opt.selected = true;
+              foundSelected = true;
+            }
+          });
+
+          if (!foundSelected && networks.length > 0) {
+            targetSelect.selectedIndex = 0;
+          }
+          currentTarget = targetSelect.value;
+        } catch (e) {}
+      }
+
+      targetSelect.addEventListener('change', () => {
+        currentTarget = targetSelect.value;
+        historyData = [];
+      });
+
+      // Poll telemetry
+      async function pollTelemetry() {
+        if (!currentTarget) {
+          await refreshNetworks();
+        }
+        if (!currentTarget) return;
+
+        try {
+          const res = await fetch(`/api/track?target=${encodeURIComponent(currentTarget)}`);
+          const data = await res.json();
+
+          if (data.found) {
+            distFtEl.textContent = data.distance_ft.toFixed(1);
+            distMEl.textContent = `${data.distance_m.toFixed(1)} meters`;
+            rawRssiEl.textContent = `${data.raw_rssi.toFixed(1)} dBm`;
+            filtRssiEl.textContent = `${data.smoothed_rssi.toFixed(1)} dBm`;
+
+            // Movement trend
+            if (lastDistance !== null) {
+              const diff = data.distance_ft - lastDistance;
+              if (diff < -0.3) {
+                trendPill.className = "trend-pill trend-approaching";
+                trendPill.textContent = "🚶 Approaching (Getting Closer)";
+              } else if (diff > 0.3) {
+                trendPill.className = "trend-pill trend-away";
+                trendPill.textContent = "🏃 Moving Away";
+              } else {
+                trendPill.className = "trend-pill trend-steady";
+                trendPill.textContent = "⏸ Holding Steady";
+              }
+            } else {
+              trendPill.textContent = "📍 Target Locked";
+            }
+            lastDistance = data.distance_ft;
+
+            historyData.push(data.distance_ft);
+            if (historyData.length > 30) historyData.shift();
+          } else {
+            trendPill.className = "trend-pill";
+            trendPill.textContent = `Looking for beacon...`;
+          }
+        } catch (e) {}
+      }
+
+      // Draw Circular Tactical Radar Dial
+      function drawRadar() {
+        rCtx.clearRect(0, 0, 280, 280);
+        const cx = 140, cy = 140;
+
+        // Concentric radar circles
+        rCtx.strokeStyle = "#1e293b";
+        rCtx.lineWidth = 1.5;
+        for (let r = 30; r <= 120; r += 30) {
+          rCtx.beginPath();
+          rCtx.arc(cx, cy, r, 0, Math.PI * 2);
+          rCtx.stroke();
+        }
+
+        // Crosshairs
+        rCtx.beginPath();
+        rCtx.moveTo(cx, 20); rCtx.lineTo(cx, 260);
+        rCtx.moveTo(20, cy); rCtx.lineTo(260, cy);
+        rCtx.stroke();
+
+        // Pulsing radar sweep
+        animPulse = (animPulse + 0.05) % (Math.PI * 2);
+        const currentDist = lastDistance !== null ? lastDistance : 15.0;
+        
+        // Target blip position (closer distance = closer to center)
+        const maxDist = 25.0; // ft
+        const radius = Math.min(115, Math.max(15, (currentDist / maxDist) * 115));
+        
+        // Pulse ring around target
+        rCtx.strokeStyle = currentDist < 6 ? "#00ff88" : currentDist < 15 ? "#00e5ff" : "#ffaa00";
+        rCtx.lineWidth = 2;
+        rCtx.beginPath();
+        rCtx.arc(cx, cy, radius, 0, Math.PI * 2);
+        rCtx.stroke();
+
+        // Center device icon
+        rCtx.fillStyle = "#ffffff";
+        rCtx.beginPath();
+        rCtx.arc(cx, cy, 6, 0, Math.PI * 2);
+        rCtx.fill();
+
+        // Target marker blip
+        const angle = -Math.PI / 4;
+        const tx = cx + Math.cos(angle) * radius;
+        const ty = cy + Math.sin(angle) * radius;
+
+        rCtx.fillStyle = currentDist < 6 ? "#00ff88" : "#00e5ff";
+        rCtx.beginPath();
+        rCtx.arc(tx, ty, 8, 0, Math.PI * 2);
+        rCtx.fill();
+
+        // Label
+        rCtx.fillStyle = "#94a3b8";
+        rCtx.font = "10px monospace";
+        rCtx.fillText(`${currentDist.toFixed(1)} ft`, tx + 12, ty + 4);
+
+        requestAnimationFrame(drawRadar);
+      }
+
+      // Draw History Chart
+      function drawChart() {
+        cCtx.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
+        if (historyData.length < 2) return;
+
+        const W = chartCanvas.width;
+        const H = chartCanvas.height;
+        const maxVal = 25.0;
+
+        cCtx.strokeStyle = "#00ff88";
+        cCtx.lineWidth = 3;
+        cCtx.beginPath();
+
+        historyData.forEach((val, i) => {
+          const x = (i / (historyData.length - 1)) * (W - 40) + 20;
+          const y = H - Math.min(H - 10, Math.max(10, (val / maxVal) * (H - 20)));
+          if (i === 0) cCtx.moveTo(x, y);
+          else cCtx.lineTo(x, y);
+        });
+        cCtx.stroke();
+      }
+
+      // Start loops
+      refreshNetworks();
+      setInterval(pollTelemetry, 1000);
+      setInterval(drawChart, 1000);
+      requestAnimationFrame(drawRadar);
+    })();
+  </script>
+</body>
+</html>
+
