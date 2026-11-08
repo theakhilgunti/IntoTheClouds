@@ -9,7 +9,7 @@
 
 | Task ID | Claimed Files / Directories | Owner / Agent | Branch | Status | Timestamp (UTC) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| *None* | *(No active locks — all modules available)* | — | — | ⚪ Open | — |
+| `UI-59` | `lib/layout.ts,lib/overpass.ts,lib/indoor-osm.ts,lib/plan-typology.ts,data/plan-fingerprints.json,lib/scan.ts,components/model/ModelScreen.tsx,lib/*.test.ts,PROGRESS.md` | Cursor | `main` | 🟡 In Progress | 2026-11-08 04:00 UTC |
 
 ---
 
@@ -59,6 +59,7 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 04:00 | Cursor | UI-58 | Raise public floor cap to 6; bidirectional stair links between levels (compound-v21). |
 | 03:55 | Cursor | UI-57 | Street View front door t + window count nudge bays / exit doors (compound-v20). |
 | 03:45 | Cursor | UI-56 | Denser backyard fences/obstacles: OSM barriers, aerial fence cues, parcel soft edges (compound-v19). |
 | 03:35 | Cursor | UI-55 | Street View facade cross-check (stories/garage/entry/porch) via Gemini (compound-v18). |
@@ -149,3 +150,4 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 03:31 | Cursor | UI-55 | Finished task |
 | 03:39 | Cursor | UI-56 | Finished task |
 | 03:44 | Cursor | UI-57 | Finished task |
+| 03:51 | Cursor | UI-58 | Finished task |

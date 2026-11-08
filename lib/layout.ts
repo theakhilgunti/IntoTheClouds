@@ -45,7 +45,8 @@ export function buildingUseFromTag(tag: string | undefined | null): BuildingUse 
 export type HouseSpec = {
   width: number; // across the front
   depth: number; // front to back
-  stories: number; // above ground, 1..3
+  /** Above-ground floors (houses ≤3; school/office/commercial ≤6). */
+  stories: number;
   basement: boolean;
   garage: GarageSide;
   /** Which side the driveway is on, as you stand on the street looking at the front door. */
@@ -55,6 +56,20 @@ export type HouseSpec = {
   bays?: number | null;
 };
 
+/** Max modeled floors by building program — keeps houses compact, public buildings taller. */
+export function maxStoriesForUse(use: BuildingUse | undefined | null): number {
+  if (use === "church") return 1;
+  if (use === "school" || use === "office" || use === "commercial") return 6;
+  return 3;
+}
+
+function floorName(level: number): string {
+  if (level < 0) return "Basement";
+  const n = level + 1;
+  const ord = n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : `${n}th`;
+  return `${ord} Floor`;
+}
+
 /** Street-facade cues used to place exit doors (plan frame: +x = right when facing the house). */
 export type FacadeOpenings = {
   /** 0 = left edge of front wall, 1 = right edge, as seen from the street. */
@@ -62,7 +77,6 @@ export type FacadeOpenings = {
   sideEntry?: "left" | "right" | "none" | "unknown";
 };
 
-const FLOOR_NAMES: Record<number, string> = { [-1]: "Basement", 0: "1st Floor", 1: "2nd Floor", 2: "3rd Floor" };
 const STAIR_LEN = 3.6;
 const r4 = (n: number) => Math.round(n * 1e4) / 1e4;
 
@@ -559,13 +573,13 @@ export function buildHouse(input: BuildInput): BuildOutput {
   };
   const fpPlan = footprint.map(inv);
 
-  const stories = Math.min(3, Math.max(1, Math.round(input.stories)));
+  const use = input.use ?? "house";
+  const stories = Math.min(maxStoriesForUse(use), Math.max(1, Math.round(input.stories)));
   let drivewaySide: "left" | "right" | null = null;
   if (input.garageAt) {
     const s = input.garageAt[0] * xAxis[0] + input.garageAt[1] * xAxis[1];
     if (Math.abs(s) > 0.4) drivewaySide = s > 0 ? "right" : "left";
   }
-  const use = input.use ?? "house";
   const facadeBays =
     use === "house" && input.facade?.frontWindows != null
       ? nudgeRoomBays(roomBays(depth), input.facade.frontWindows)
@@ -617,12 +631,13 @@ export function buildHouse(input: BuildInput): BuildOutput {
     if (stairPoly && pf.stair) {
       const up = plan.some((p) => p.level === pf.level + 1);
       const down = plan.some((p) => p.level === pf.level - 1);
+      // Bidirectional links so mid-floors connect both ways (public / multi-story routing).
       if (up) stairs.push({ id: `${prefix}s-up`, polygon: stairPoly.map(T), toLevel: pf.level + 1 });
-      else if (down) stairs.push({ id: `${prefix}s-down`, polygon: stairPoly.map(T), toLevel: pf.level - 1 });
+      if (down) stairs.push({ id: `${prefix}s-down`, polygon: stairPoly.map(T), toLevel: pf.level - 1 });
     }
     return {
       level: pf.level,
-      name: FLOOR_NAMES[pf.level] ?? `Level ${pf.level}`,
+      name: floorName(pf.level),
       elevation: pf.level < 0 ? -2.5 : pf.level * 2.8,
       height: pf.level < 0 ? 2.5 : 2.8,
       rooms: rooms.map((r) => ({ id: `${prefix}${r.id}`, name: r.name, type: r.type, polygon: r.poly.map(T) })),

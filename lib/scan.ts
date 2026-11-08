@@ -23,7 +23,7 @@ import {
 import { fetchSiteDem, withDem } from "./elevation";
 import { fetchStreetViewFacade } from "./streetview";
 import { inNyc, lookupParcel, type ParcelHit } from "./parcel";
-import { buildHouse, buildingUseFromTag, type GarageSide } from "./layout";
+import { buildHouse, buildingUseFromTag, maxStoriesForUse, type GarageSide } from "./layout";
 import { analyzeAerialRoof } from "./aerial-roof";
 import { analyzeAerialSite } from "./aerial-site";
 import { inferRoofPlan } from "./roof-infer";
@@ -164,7 +164,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v20" || saved.model.roof?.basis !== "roof-v3");
+      (saved.model.compound?.basis !== "compound-v21" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -344,7 +344,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   if (input.photo && sure) {
     stories = sure.stories;
     attributes.push({ field: "Floors above ground", value: String(stories), from: "photos", note: photoNote });
-  } else if (osmLevels >= 1 && osmLevels <= 5) {
+  } else if (osmLevels >= 1 && osmLevels <= 12) {
     stories = osmLevels;
     attributes.push({ field: "Floors above ground", value: String(stories), from: "map", note: "OpenStreetMap building:levels" });
   } else if (plutoStories) {
@@ -359,10 +359,17 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   } else {
     attributes.push({ field: "Floors above ground", value: "2", from: "estimated", note: "Most common for houses in the area" });
   }
-  if (stories > 3) {
-    warnings.push(`This building has ${stories} floors; the model shows the first 3.`);
-    attributes[attributes.length - 1].value = `${stories} (showing 3)`;
-    stories = 3;
+  // Cap by program: houses stay compact; schools/offices may show more levels + public stair links.
+  const buildingUsePreview = buildingUseFromTag(b?.tags.building);
+  const storyCap = maxStoriesForUse(buildingUsePreview);
+  if (stories > storyCap) {
+    warnings.push(
+      storyCap === 3
+        ? `This building has ${stories} floors; the model shows the first 3.`
+        : `This building has ${stories} floors; the model shows the first ${storyCap}.`,
+    );
+    attributes[attributes.length - 1].value = `${stories} (showing ${storyCap})`;
+    stories = storyCap;
   }
 
   const aerialCue = aerial ? analyzeAerialRoof(aerial) : null;
@@ -709,7 +716,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const entrySteps = entryStairFeatures({ streetDir, grade, exits });
   built.model.compound = {
     features: [...kept, ...access, ...entrySteps],
-    basis: "compound-v20",
+    basis: "compound-v21",
     grade: grade ?? undefined,
   };
   if (grade?.dem) {

@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { Image } from "./imagery";
 
 export const HouseFacts = z.object({
-  stories: z.number().int().min(1).max(4),
+  stories: z.number().int().min(1).max(6),
   roof_shape: z.enum(["gable", "hip", "flat", "gambrel", "mansard", "other"]),
   /** Which way the ridge runs, as seen from the street. Prefer the aerial for this. */
   ridge_along: z.enum(["front_to_back", "side_to_side", "unknown"]).default("unknown"),
@@ -170,7 +170,7 @@ export async function describeHouse(opts: {
   const text: string | undefined = j.candidates?.[0]?.content?.parts?.find((p: { text?: string }) => p.text)?.text;
   if (!text) throw new Error("Gemini returned no answer");
   const raw = JSON.parse(text);
-  raw.stories = Math.min(4, Math.max(1, Math.round(raw.stories ?? 2)));
+  raw.stories = Math.min(6, Math.max(1, Math.round(raw.stories ?? 2)));
   raw.confidence = Math.min(1, Math.max(0, raw.confidence ?? 0.5));
   raw.observations = (raw.observations ?? []).slice(0, 6);
   if (!raw.ridge_along) raw.ridge_along = "unknown";
