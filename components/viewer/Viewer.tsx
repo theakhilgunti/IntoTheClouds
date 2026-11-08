@@ -126,6 +126,7 @@ const SITE_COLOR: Record<CompoundFeature["kind"], string> = {
   trees: "#2f6bd0",
   road: "#0a2a68",
   signal: "#facc15",
+  stop: "#ef4444",
   hydrant: "#dc2626",
   neighbor: "#8eb0e8",
   steps: "#c5d6f4",
@@ -166,23 +167,42 @@ const MARKER_STYLE: Record<MarkerType, { color: string; label: string }> = {
 
 const EXPLODE_GAP = 3;
 
+/** Min solid remnant length — shorter crumbs read as free-standing pillars. */
+const MIN_WALL_SEG = 0.42;
+
 /** Split a wall into solid segments around its door openings. */
 function wallSegments(wall: Wall, floor: Floor): Array<[number, number]> {
   const [ax, ay] = wall.a;
   const [bx, by] = wall.b;
   const len = Math.hypot(bx - ax, by - ay);
-  const gaps = floor.doors
+  if (len < MIN_WALL_SEG) return [];
+  // Merge overlapping door gaps first.
+  const rawGaps = floor.doors
     .filter((d) => d.wallId === wall.id)
     .map((d) => [Math.max(0, d.t * len - d.width / 2), Math.min(len, d.t * len + d.width / 2)] as [number, number])
     .sort((p, q) => p[0] - q[0]);
+  const gaps: Array<[number, number]> = [];
+  for (const g of rawGaps) {
+    const last = gaps[gaps.length - 1];
+    if (last && g[0] <= last[1] + 0.05) last[1] = Math.max(last[1], g[1]);
+    else gaps.push([g[0], g[1]]);
+  }
+  // Absorb crumb stubs into neighboring openings so stair/exit walls don't leave pillars.
+  const expanded = gaps.map(([s, e]) => {
+    let s2 = s;
+    let e2 = e;
+    if (s2 > 0 && s2 < MIN_WALL_SEG) s2 = 0;
+    if (e2 < len && len - e2 < MIN_WALL_SEG) e2 = len;
+    return [s2, e2] as [number, number];
+  });
   const segs: Array<[number, number]> = [];
   let cur = 0;
-  for (const [s, e] of gaps) {
-    if (s > cur) segs.push([cur, s]);
+  for (const [s, e] of expanded) {
+    if (s > cur + 1e-4) segs.push([cur, s]);
     cur = Math.max(cur, e);
   }
-  if (cur < len) segs.push([cur, len]);
-  return segs;
+  if (cur < len - 1e-4) segs.push([cur, len]);
+  return segs.filter(([s, e]) => e - s >= MIN_WALL_SEG);
 }
 
 const WINDOW_FOR: Record<Room["type"], { every: number; max: number; h: number; y: number }> = {
@@ -580,9 +600,15 @@ function NeighborMesh({
     return g;
   }, [feature.polygon, wallH, grade]);
   if (!geo) return null;
+  const hasAddr = feature.label && feature.label !== "Neighbor" && feature.label !== "Nearby house";
   const hover = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
-    onOver(e, feature.id, feature.label, "Nearby building — sized to match map levels or this house");
+    onOver(
+      e,
+      feature.id,
+      hasAddr ? feature.label : "Nearby house",
+      hasAddr ? "Neighbor address from OpenStreetMap" : "Nearby building — address not mapped",
+    );
   };
   return (
     <mesh geometry={geo} position={[0, 0, 0]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
@@ -818,6 +844,7 @@ function SiteFeatureMesh({
       feature.kind === "shed" ||
       feature.kind === "hydrant" ||
       feature.kind === "signal" ||
+      feature.kind === "stop" ||
       feature.kind === "neighbor"
     )
       return null;
@@ -926,6 +953,27 @@ function SiteFeatureMesh({
             />
           </mesh>
         ))}
+      </group>
+    );
+  }
+
+  if (feature.kind === "stop") {
+    const red = hovered ? "#f87171" : SITE_COLOR.stop;
+    return (
+      <group position={[center[0], gy, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
+        <mesh position={[0, 1.2, 0]}>
+          <cylinderGeometry args={[0.045, 0.055, 2.4, 8]} />
+          <meshStandardMaterial color="#9ca3af" metalness={0.45} roughness={0.5} />
+        </mesh>
+        {/* Upright octagon (coin on its edge) — flat face toward the street. */}
+        <mesh position={[0, 2.55, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <cylinderGeometry args={[0.38, 0.38, 0.05, 8]} />
+          <meshStandardMaterial color={red} emissive={red} emissiveIntensity={hovered ? 0.5 : 0.22} roughness={0.55} />
+        </mesh>
+        <mesh position={[0.028, 2.55, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <cylinderGeometry args={[0.28, 0.28, 0.02, 8]} />
+          <meshStandardMaterial color="#fef2f2" roughness={0.7} />
+        </mesh>
       </group>
     );
   }
@@ -1692,7 +1740,7 @@ export default function Viewer({
           // Draw terrain first so pads sit under structures.
           const ordered = [...noYard].sort((a, b) => Number(a.kind !== "terrain") - Number(b.kind !== "terrain"));
           const filtered = peeringBasement
-            ? ordered.filter((f) => f.kind === "garage" || f.kind === "shed" || f.kind === "neighbor" || f.kind === "hydrant" || f.kind === "signal" || f.kind === "fence" || f.kind === "trees" || f.kind === "steps" || f.kind === "terrain")
+            ? ordered.filter((f) => f.kind === "garage" || f.kind === "shed" || f.kind === "neighbor" || f.kind === "hydrant" || f.kind === "signal" || f.kind === "stop" || f.kind === "fence" || f.kind === "trees" || f.kind === "steps" || f.kind === "terrain")
             : largeSite
               ? ordered.filter((f) => f.kind !== "patio" && f.kind !== "pool")
               : ordered;

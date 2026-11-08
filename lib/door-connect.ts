@@ -27,6 +27,14 @@ export type ConnectDoor = {
   kind?: "door" | "open";
 };
 
+export type ConnectResult = {
+  doors: ConnectDoor[];
+  reached: Set<string>;
+  extraWalls: ConnectWall[];
+  /** Walls whose exterior/zones were rewritten (clip-gap / sealed-room rescue). */
+  wallPatches: ConnectWall[];
+};
+
 const ENTRY_HINTS = ["hall", "lobby", "narthex", "corridor", "base"];
 
 const GENERAL = new Set(["living", "kitchen", "dining"]);
@@ -161,6 +169,113 @@ function openingWidth(kind: "door" | "open", wallLen: number): number {
 }
 
 /**
+ * Best door segment on `poly`'s boundary facing `toward` (neighbor centroid).
+ * Always sits on a real edge — never a floating cut through the room middle.
+ */
+export function boundaryDoorSegment(
+  poly: [number, number][],
+  toward: [number, number],
+  width = 0.9,
+): { a: [number, number]; b: [number, number]; length: number } | null {
+  if (poly.length < 2) return null;
+  const cz = centroid(poly);
+  const dirx = toward[0] - cz[0];
+  const diry = toward[1] - cz[1];
+  const dl = Math.hypot(dirx, diry) || 1;
+  const ux = dirx / dl;
+  const uy = diry / dl;
+  let best: { mid: [number, number]; ex: number; ey: number; edgeLen: number; score: number } | null = null;
+  for (let i = 0; i < poly.length; i++) {
+    const p0 = poly[i];
+    const p1 = poly[(i + 1) % poly.length];
+    const edgeLen = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+    if (edgeLen < 0.7) continue;
+    const mid: [number, number] = [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2];
+    const ex = (p1[0] - p0[0]) / edgeLen;
+    const ey = (p1[1] - p0[1]) / edgeLen;
+    // Outward-ish normal from room center through mid should align with toward.
+    const mx = mid[0] - cz[0];
+    const my = mid[1] - cz[1];
+    const facing = mx * ux + my * uy;
+    if (facing < 0) continue;
+    const score = -facing + Math.abs(ex * ux + ey * uy) * 0.15;
+    if (!best || score < best.score) best = { mid, ex, ey, edgeLen, score };
+  }
+  if (!best) return null;
+  const half = Math.min(width / 2, best.edgeLen * 0.4, 0.55);
+  return {
+    a: [best.mid[0] - best.ex * half, best.mid[1] - best.ey * half],
+    b: [best.mid[0] + best.ex * half, best.mid[1] + best.ey * half],
+    length: half * 2,
+  };
+}
+
+/**
+ * Find an existing outline wall that already covers segment ab (same line, nearby).
+ * Used so rescue openings punch the real partition instead of stacking a synth pillar.
+ */
+export function wallCoveringSegment(
+  walls: ConnectWall[],
+  a: [number, number],
+  b: [number, number],
+  zoneHint?: string | null,
+): ConnectWall | null {
+  const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  const segLen = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+  const sx = (b[0] - a[0]) / segLen;
+  const sy = (b[1] - a[1]) / segLen;
+  let best: { w: ConnectWall; score: number } | null = null;
+  for (const w of walls) {
+    if (!w.a || !w.b || w.length < 0.5) continue;
+    if (zoneHint && !w.zones.includes(zoneHint)) continue;
+    const wl = w.length || 1;
+    const ux = (w.b[0] - w.a[0]) / wl;
+    const uy = (w.b[1] - w.a[1]) / wl;
+    if (Math.abs(ux * sx + uy * sy) < 0.92) continue;
+    const t = (mid[0] - w.a[0]) * ux + (mid[1] - w.a[1]) * uy;
+    if (t < -0.2 || t > wl + 0.2) continue;
+    const clamped = Math.max(0, Math.min(wl, t));
+    const closest: [number, number] = [w.a[0] + ux * clamped, w.a[1] + uy * clamped];
+    const d = Math.hypot(mid[0] - closest[0], mid[1] - closest[1]);
+    if (d > 0.4) continue;
+    const score = d + (w.exterior ? 0.02 : 0);
+    if (!best || score < best.score) best = { w, score };
+  }
+  return best?.w ?? null;
+}
+
+/** True when probes on both sides of a wall hit different indoor zones (shared partition). */
+export function roomsOnBothSides(
+  w: ConnectWall,
+  polys: RoomPoly[],
+  dists = [0.12, 0.28, 0.5],
+): [string, string] | null {
+  if (!w.a || !w.b) return null;
+  const wl = w.length || Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]) || 1;
+  const mid: [number, number] = [(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2];
+  const nx = -(w.b[1] - w.a[1]) / wl;
+  const ny = (w.b[0] - w.a[0]) / wl;
+  const hit = (px: number, py: number) =>
+    polys.find((o) => {
+      // ray-cast point-in-poly
+      let inside = false;
+      const ring = o.poly;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, yi] = ring[i];
+        const [xj, yj] = ring[j];
+        if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi || 1e-12) + xi) inside = !inside;
+      }
+      return inside;
+    })?.zone ?? null;
+  for (const d of dists) {
+    const a = hit(mid[0] + nx * d, mid[1] + ny * d);
+    const b = hit(mid[0] - nx * d, mid[1] - ny * d);
+    if (a && b && a !== b) return [a, b];
+  }
+  return null;
+}
+
+/**
  * BFS door placement from circulation, rescue on short edges, then synthesize a
  * short interior wall+door into any room that is still sealed (common after clip gaps).
  * Extra illicit openings respect room-type adjacency (no bedroom↔bedroom, open into living, etc.).
@@ -176,19 +291,23 @@ export function connectZonesWithDoors(
     /** zone id → RoomType (or string). Missing keys are inferred from the id. */
     roomTypes?: Record<string, string> | null;
   },
-): { doors: ConnectDoor[]; reached: Set<string>; extraWalls: ConnectWall[] } {
+): ConnectResult {
   const minLen = opts?.minLen ?? 0.55;
   const rescueLen = opts?.rescueLen ?? 0.25;
   const doors: ConnectDoor[] = [];
   const usedWalls = new Set<string>();
   const extraWalls: ConnectWall[] = [];
-  const mutableWalls = [...walls];
+  const patched = new Map<string, ConnectWall>();
+  const mutableWalls = walls.map((w) => ({ ...w, zones: [...w.zones] as [string, string | null] }));
   const types = opts?.roomTypes ?? {};
 
   const typeOf = (z: string) => inferRoomType(z, types[z] ?? null);
   const policy = (z0: string, z1: string) => openingBetween(typeOf(z0), typeOf(z1));
+  const notePatch = (w: ConnectWall) => {
+    patched.set(w.id, w);
+  };
 
-  const addOpening = (w: ConnectWall, kind: OpeningKind, force = false) => {
+  const addOpening = (w: ConnectWall, kind: OpeningKind, force = false, asExit = false) => {
     if (usedWalls.has(w.id)) return false;
     let effective: "door" | "open";
     if (kind === "none") {
@@ -197,11 +316,16 @@ export function connectZonesWithDoors(
     } else {
       effective = kind;
     }
+    // Never punch an open arch to the outdoors — exits are hinged doors only.
+    if (asExit || w.exterior || w.zones[1] == null) {
+      effective = "door";
+      asExit = true;
+    }
     usedWalls.add(w.id);
     doors.push({
       wallId: w.id,
-      width: openingWidth(effective, w.length),
-      exit: false,
+      width: asExit ? Math.min(1.0, Math.max(0.85, openingWidth("door", w.length))) : openingWidth(effective, w.length),
+      exit: asExit,
       t: 0.5,
       kind: effective,
     });
@@ -293,7 +417,6 @@ export function connectZonesWithDoors(
     for (const z of sealed) {
       const poly = polyOf(z);
       if (!poly || poly.length < 3) continue;
-      const cz = centroid(poly);
       let best: { r: string; hit: ReturnType<typeof closestPoints>; score: number } | null = null;
       for (const r of reached) {
         const rp = polyOf(r);
@@ -308,58 +431,42 @@ export function connectZonesWithDoors(
         const ext = mutableWalls
           .filter((w) => w.exterior && w.zones[0] === z && w.length >= 0.8)
           .sort((a, b) => b.length - a.length)[0];
-        if (ext && addOpening(ext, "door", true)) {
-          // Reclassify as a passable opening even on the shell — better than a sealed pocket.
-          ext.exterior = false;
-          if (start) ext.zones = [z, start];
+        if (ext && addOpening(ext, "door", true, true)) {
+          // Keep as a real exterior exit — do not turn the shell into an open archway.
+          notePatch(ext);
           reached.add(z);
           progressed = true;
           break;
         }
         continue;
       }
-      const { pa, pb } = best.hit;
-      // Build a short door segment between the two rooms (or on the sealed room face).
-      let a: [number, number] = pa;
-      let b: [number, number] = pb;
-      if (best.hit.d < 0.05) {
-        // Already touching at a point — invent a 0.9 m segment along the sealed boundary near pa.
-        const i = poly.findIndex((p) => p[0] === pa[0] && p[1] === pa[1]);
-        const j = i >= 0 ? (i + 1) % poly.length : 0;
-        const p0 = poly[i >= 0 ? i : 0];
-        const p1 = poly[j];
-        const edgeLen = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) || 1;
-        const ux = (p1[0] - p0[0]) / edgeLen;
-        const uy = (p1[1] - p0[1]) / edgeLen;
-        const half = Math.min(0.45, edgeLen * 0.35);
-        a = [pa[0] - ux * half, pa[1] - uy * half];
-        b = [pa[0] + ux * half, pa[1] + uy * half];
+      // Prefer an existing shared wall; else punch the sealed room's facing outline wall
+      // (never stack a short synth segment on top — that reads as a free-standing pillar).
+      const existing = wallsBetween(mutableWalls, z, best.r, 0.2)[0];
+      if (existing && addOpening(existing, policy(z, best.r), true)) {
+        reached.add(z);
+        progressed = true;
+        break;
       }
-      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      if (len < 0.4) {
-        const c = centroid(polyOf(best.r)!);
-        const dirx = c[0] - cz[0];
-        const diry = c[1] - cz[1];
-        const dl = Math.hypot(dirx, diry) || 1;
-        const px = -diry / dl;
-        const py = dirx / dl;
-        a = [cz[0] + (dirx / dl) * 0.2 - px * 0.45, cz[1] + (diry / dl) * 0.2 - py * 0.45];
-        b = [cz[0] + (dirx / dl) * 0.2 + px * 0.45, cz[1] + (diry / dl) * 0.2 + py * 0.45];
-      }
-      const wallLen = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      const id = `synth-${z}-${best.r}`;
-      const synth: ConnectWall = {
-        id,
-        exterior: false,
-        zones: [z, best.r],
-        length: Math.max(0.85, wallLen),
-        a,
-        b,
-      };
-      mutableWalls.push(synth);
-      extraWalls.push(synth);
+      const seg = boundaryDoorSegment(poly, centroid(polyOf(best.r)!));
+      if (!seg) continue;
+      const host =
+        wallCoveringSegment(mutableWalls, seg.a, seg.b, z) ??
+        wallCoveringSegment(mutableWalls, seg.a, seg.b, null);
+      if (!host) continue;
       const kind = policy(z, best.r);
-      if (addOpening(synth, kind, true)) {
+      if (best.hit.d < 0.7) {
+        host.exterior = false;
+        host.zones = [z, best.r];
+        notePatch(host);
+        if (addOpening(host, kind === "open" ? "door" : kind, true)) {
+          reached.add(z);
+          progressed = true;
+          break;
+        }
+      } else if (addOpening(host, "door", true, host.exterior || host.zones[1] == null)) {
+        // Far from the neighbor — hinged exit on the existing shell, not a floating stub.
+        notePatch(host);
         reached.add(z);
         progressed = true;
         break;
@@ -386,43 +493,28 @@ export function connectZonesWithDoors(
     }
   }
 
-  // Near-miss shell walls against another room — only when policy allows an opening.
+  // Near-miss shell walls: only convert when BOTH sides of the segment actually
+  // hit different rooms (true clip-gap partition). Centroid projection alone
+  // falsely turns outdoor shell faces into open arches when a neighbor sits beside them.
   for (const w of mutableWalls) {
     if (!w.exterior || !w.a || !w.b || w.length < 0.75) continue;
     if (usedWalls.has(w.id)) continue;
-    const z0 = w.zones[0];
-    if (!z0) continue;
-    const mid: [number, number] = [(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2];
-    const wl = w.length || 1;
-    const nx = -(w.b[1] - w.a[1]) / wl;
-    const ny = (w.b[0] - w.a[0]) / wl;
-    let neighbor: string | null = null;
-    let bestSep = Infinity;
-    for (const other of polys) {
-      if (other.zone === z0) continue;
-      const c = centroid(other.poly);
-      const sep = Math.abs((c[0] - mid[0]) * nx + (c[1] - mid[1]) * ny);
-      const along =
-        (c[0] - mid[0]) * ((w.b[0] - w.a[0]) / wl) + (c[1] - mid[1]) * ((w.b[1] - w.a[1]) / wl);
-      if (sep > 1.25 || Math.abs(along) > wl * 0.65) continue;
-      if (sep < bestSep) {
-        bestSep = sep;
-        neighbor = other.zone;
-      }
-    }
-    if (!neighbor) continue;
-    const kind = policy(z0, neighbor);
+    const both = roomsOnBothSides(w, polys);
+    if (!both) continue;
+    const [z0, z1] = both;
+    const kind = policy(z0, z1);
     if (kind === "none") continue;
     w.exterior = false;
-    w.zones = [z0, neighbor];
-    if (addOpening(w, kind)) {
+    w.zones = [z0, z1];
+    notePatch(w);
+    if (addOpening(w, kind === "open" ? "open" : "door")) {
       reached.add(z0);
-      reached.add(neighbor);
+      reached.add(z1);
     }
   }
 
-  // Final sweep: any room still without a doorway gets one forced synth cut
-  // (prefer a policy-friendly neighbor).
+  // Final sweep: any room still without a doorway gets a hinged door on its
+  // boundary edge facing a neighbor (never a floating mid-room wall).
   for (const z of zones) {
     const hasDoor = doors.some((d) => {
       const w = mutableWalls.find((x) => x.id === d.wallId);
@@ -442,35 +534,46 @@ export function connectZonesWithDoors(
       if (!best || score < best.score) best = { r, hit, score };
     }
     if (!best || best.hit.d > 14) continue;
-    const cz = centroid(poly);
-    const cr = centroid(polyOf(best.r)!);
-    const dirx = cr[0] - cz[0];
-    const diry = cr[1] - cz[1];
-    const dl = Math.hypot(dirx, diry) || 1;
-    const px = -diry / dl;
-    const py = dirx / dl;
-    const a: [number, number] = [
-      cz[0] + (dirx / dl) * 0.15 - px * 0.45,
-      cz[1] + (diry / dl) * 0.15 - py * 0.45,
-    ];
-    const b: [number, number] = [
-      cz[0] + (dirx / dl) * 0.15 + px * 0.45,
-      cz[1] + (diry / dl) * 0.15 + py * 0.45,
-    ];
-    const id = `illicit-${z}-${best.r}`;
-    const synth: ConnectWall = {
-      id,
-      exterior: false,
-      zones: [z, best.r],
-      length: Math.hypot(b[0] - a[0], b[1] - a[1]),
-      a,
-      b,
-    };
-    mutableWalls.push(synth);
-    extraWalls.push(synth);
-    const kind = policy(z, best.r);
-    if (addOpening(synth, kind, true)) reached.add(z);
+    const existing = wallsBetween(mutableWalls, z, best.r, 0.2)[0];
+    if (existing && addOpening(existing, policy(z, best.r), true)) {
+      reached.add(z);
+      continue;
+    }
+    const seg = boundaryDoorSegment(poly, centroid(polyOf(best.r)!));
+    if (!seg) continue;
+    const host =
+      wallCoveringSegment(mutableWalls, seg.a, seg.b, z) ??
+      wallCoveringSegment(mutableWalls, seg.a, seg.b, null);
+    if (!host) continue;
+    if (best.hit.d < 0.7) {
+      host.exterior = false;
+      host.zones = [z, best.r];
+      notePatch(host);
+      if (addOpening(host, "door", true)) reached.add(z);
+    } else if (addOpening(host, "door", true, host.exterior || host.zones[1] == null)) {
+      notePatch(host);
+      reached.add(z);
+    }
   }
 
-  return { doors, reached, extraWalls };
+  // Harden: open arches only on verified two-sided indoor partitions.
+  for (const d of doors) {
+    if (d.kind !== "open") continue;
+    const w = mutableWalls.find((x) => x.id === d.wallId);
+    if (!w) continue;
+    const shell = w.exterior || w.zones[1] == null || d.exit;
+    if (shell) {
+      d.kind = "door";
+      d.exit = true;
+      d.width = Math.min(1.0, Math.max(0.85, d.width > 1.15 ? 0.95 : d.width));
+      continue;
+    }
+    if (polys.length && !roomsOnBothSides(w, polys)) {
+      // Claimed interior but only one room (or none) sits beside the cut — hinged door, not an outdoor hole.
+      d.kind = "door";
+      d.width = Math.min(0.95, Math.max(0.7, d.width > 1.15 ? 0.85 : d.width));
+    }
+  }
+
+  return { doors, reached, extraWalls, wallPatches: [...patched.values()] };
 }

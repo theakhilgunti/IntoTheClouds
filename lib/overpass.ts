@@ -44,6 +44,10 @@ export type OsmContext = {
   hydrants: Point[];
   /** Mapped tree trunks / tree-row samples near the house (local meters). */
   trees: Point[];
+  /** Mapped highway=traffic_signals nodes (local meters). */
+  trafficSignals: Point[];
+  /** Mapped highway=stop nodes (local meters). */
+  stopSigns: Point[];
 };
 
 const NON_HOUSE = new Set(["garage", "garages", "shed", "roof", "carport", "service", "hut", "cabin", "greenhouse", "barn"]);
@@ -54,6 +58,14 @@ const ROADS = /^(residential|service|tertiary|secondary|primary|unclassified|liv
 function isHydrantTags(tags: Record<string, string> | undefined): boolean {
   if (!tags) return false;
   return tags.emergency === "fire_hydrant" || tags.amenity === "fire_hydrant";
+}
+
+function isTrafficSignalTags(tags: Record<string, string> | undefined): boolean {
+  return tags?.highway === "traffic_signals";
+}
+
+function isStopSignTags(tags: Record<string, string> | undefined): boolean {
+  return tags?.highway === "stop";
 }
 
 function isTreeNodeTags(tags: Record<string, string> | undefined): boolean {
@@ -100,7 +112,13 @@ function samplePolyline(pts: Point[], spacing = 4): Point[] {
   return out;
 }
 
-type OsmFetch = { ways: OsmWay[]; hydrants: Point[]; trees: Point[] };
+type OsmFetch = {
+  ways: OsmWay[];
+  hydrants: Point[];
+  trees: Point[];
+  trafficSignals: Point[];
+  stopSigns: Point[];
+};
 
 /** Main OpenStreetMap API: everything in a small box around the point. Fast and reliable for tiny areas. */
 async function fromOsmApi(o: LatLng, radius: number): Promise<OsmFetch> {
@@ -116,6 +134,8 @@ async function fromOsmApi(o: LatLng, radius: number): Promise<OsmFetch> {
   const nodes = new Map<number, { lat: number; lon: number }>();
   const hydrants: Point[] = [];
   const trees: Point[] = [];
+  const trafficSignals: Point[] = [];
+  const stopSigns: Point[] = [];
   for (const e of j.elements) {
     if (e.type !== "node") continue;
     nodes.set(e.id, { lat: e.lat, lon: e.lon });
@@ -125,6 +145,12 @@ async function fromOsmApi(o: LatLng, radius: number): Promise<OsmFetch> {
     }
     if (isTreeNodeTags(tags)) {
       trees.push(toLocal(o, { lat: e.lat, lng: e.lon }));
+    }
+    if (isTrafficSignalTags(tags)) {
+      trafficSignals.push(toLocal(o, { lat: e.lat, lng: e.lon }));
+    }
+    if (isStopSignTags(tags)) {
+      stopSigns.push(toLocal(o, { lat: e.lat, lng: e.lon }));
     }
   }
   const ways: OsmWay[] = [];
@@ -145,7 +171,7 @@ async function fromOsmApi(o: LatLng, radius: number): Promise<OsmFetch> {
     }
     ways.push({ id: e.id, tags: e.tags, geometry });
   }
-  return { ways, hydrants, trees };
+  return { ways, hydrants, trees, trafficSignals, stopSigns };
 }
 
 /** Try the main OSM API first, then the Overpass mirrors. */
@@ -206,6 +232,8 @@ async function runQuery(origin: LatLng, query: string): Promise<OsmFetch> {
       const ways: OsmWay[] = [];
       const hydrants: Point[] = [];
       const trees: Point[] = [];
+      const trafficSignals: Point[] = [];
+      const stopSigns: Point[] = [];
       for (const e of j.elements as Array<{
         type: string;
         id: number;
@@ -217,6 +245,8 @@ async function runQuery(origin: LatLng, query: string): Promise<OsmFetch> {
         if (e.type === "node" && e.lat != null && e.lon != null) {
           if (isHydrantTags(e.tags)) hydrants.push(toLocal(origin, { lat: e.lat, lng: e.lon }));
           if (isTreeNodeTags(e.tags)) trees.push(toLocal(origin, { lat: e.lat, lng: e.lon }));
+          if (isTrafficSignalTags(e.tags)) trafficSignals.push(toLocal(origin, { lat: e.lat, lng: e.lon }));
+          if (isStopSignTags(e.tags)) stopSigns.push(toLocal(origin, { lat: e.lat, lng: e.lon }));
         } else if (e.type === "way" && e.geometry) {
           if (isTreeRowTags(e.tags)) {
             const local = e.geometry.map((g) => toLocal(origin, { lat: g.lat, lng: g.lon }));
@@ -226,7 +256,44 @@ async function runQuery(origin: LatLng, query: string): Promise<OsmFetch> {
           }
         }
       }
-      return { ways, hydrants, trees };
+      return { ways, hydrants, trees, trafficSignals, stopSigns };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+/** OSM map bbox often misses roadside control nodes — pull stop / signal nodes via Overpass. */
+async function fetchRoadSignsOverpass(
+  origin: LatLng,
+  radius: number,
+): Promise<{ trafficSignals: Point[]; stopSigns: Point[] }> {
+  const q = `[out:json][timeout:20];
+(
+  node["highway"="traffic_signals"](around:${radius},${origin.lat},${origin.lng});
+  node["highway"="stop"](around:${radius},${origin.lat},${origin.lng});
+);
+out body;`;
+  let lastErr: unknown;
+  for (const url of ENDPOINTS) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        body: "data=" + encodeURIComponent(q),
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = await res.json();
+      const trafficSignals: Point[] = [];
+      const stopSigns: Point[] = [];
+      for (const e of j.elements as Array<{ type: string; lat?: number; lon?: number; tags?: Record<string, string> }>) {
+        if (e.type !== "node" || e.lat == null || e.lon == null) continue;
+        if (isTrafficSignalTags(e.tags)) trafficSignals.push(toLocal(origin, { lat: e.lat, lng: e.lon }));
+        if (isStopSignTags(e.tags)) stopSigns.push(toLocal(origin, { lat: e.lat, lng: e.lon }));
+      }
+      return { trafficSignals, stopSigns };
     } catch (e) {
       lastErr = e;
     }
@@ -273,12 +340,22 @@ export async function lookupBuilding(origin: LatLng, heading?: number | null, hi
   node["natural"="tree"](around:${R},${origin.lat},${origin.lng});
   node["emergency"="fire_hydrant"](around:${HYDRANT_R},${origin.lat},${origin.lng});
   node["amenity"="fire_hydrant"](around:${HYDRANT_R},${origin.lat},${origin.lng});
+  node["highway"="traffic_signals"](around:${R},${origin.lat},${origin.lng});
+  node["highway"="stop"](around:${R},${origin.lat},${origin.lng});
 );
 out tags geom;`;
-  // OSM map API bbox uses R; hydrant nodes farther out are filled in by Overpass when needed.
-  const { ways: els, hydrants: apiHydrants, trees: apiTrees } = await fetchMap(origin, q, R);
+  // OSM map API bbox uses R; hydrant / sign nodes farther out are filled in by Overpass when needed.
+  const {
+    ways: els,
+    hydrants: apiHydrants,
+    trees: apiTrees,
+    trafficSignals: apiSignals,
+    stopSigns: apiStops,
+  } = await fetchMap(origin, q, R);
   const rawHydrants = apiHydrants;
   const rawTrees = [...apiTrees];
+  const rawSignals = [...apiSignals];
+  const rawStops = [...apiStops];
   // OSM map bbox (R) often misses the nearest street hydrants past ~150–200 m — always merge Overpass.
   try {
     const extra = await fetchHydrantsOverpass(origin, HYDRANT_R);
@@ -292,6 +369,23 @@ out tags geom;`;
     }
   } catch (e) {
     console.warn("Hydrant Overpass supplement failed", e);
+  }
+  try {
+    const extra = await fetchRoadSignsOverpass(origin, R);
+    const merge = (into: Point[], add: Point[]) => {
+      const seen = new Set(into.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`));
+      for (const p of add) {
+        const key = `${p[0].toFixed(1)},${p[1].toFixed(1)}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          into.push(p);
+        }
+      }
+    };
+    merge(rawSignals, extra.trafficSignals);
+    merge(rawStops, extra.stopSigns);
+  } catch (e) {
+    console.warn("Road-sign Overpass supplement failed", e);
   }
 
   const buildings: OsmBuilding[] = [];
@@ -431,8 +525,26 @@ out tags geom;`;
     .slice(0, 160)
     .map((t) => t.p);
 
+  const dedupeNear = (pts: Point[], max = 120) => {
+    const seen = new Set<string>();
+    return pts
+      .map((p) => ({ p, d: dist(here, p) }))
+      .filter((t) => t.d < R)
+      .sort((a, b) => a.d - b.d)
+      .filter((t) => {
+        const key = `${t.p[0].toFixed(1)},${t.p[1].toFixed(1)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, max)
+      .map((t) => t.p);
+  };
+  const trafficSignals = dedupeNear(rawSignals);
+  const stopSigns = dedupeNear(rawStops);
+
   return {
     building, chosenBy, buildingCount: buildings.length, nearby, roadDir, roadName, roadDistance,
-    structures: buildings, fences, pools, parking, roads, hydrants, trees,
+    structures: buildings, fences, pools, parking, roads, hydrants, trees, trafficSignals, stopSigns,
   };
 }

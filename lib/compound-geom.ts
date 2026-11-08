@@ -12,6 +12,7 @@ export type CompoundKind =
   | "trees"
   | "road"
   | "signal"
+  | "stop"
   | "hydrant"
   | "neighbor"
   | "steps"
@@ -89,6 +90,7 @@ const HEIGHT: Record<CompoundKind, number> = {
   trees: 4,
   road: 0.1,
   signal: 3.2,
+  stop: 2.4,
   hydrant: 0.85,
   neighbor: 6.5,
   steps: 0.18,
@@ -106,6 +108,7 @@ const LABEL: Record<CompoundKind, string> = {
   trees: "Trees",
   road: "Street",
   signal: "Traffic light",
+  stop: "Stop sign",
   hydrant: "Fire hydrant",
   neighbor: "Neighbor",
   steps: "Entry stairs",
@@ -426,8 +429,12 @@ export const MAX_ROAD_RIBBONS = 42;
 export const MAX_TREE_MARKERS = 100;
 /** Cap fire hydrants kept on the scene (nearest first). */
 export const MAX_HYDRANTS = 60;
-/** Cap traffic lights spawned at road crossings. */
+/** Cap inferred crossing lights (OSM-mapped signals are kept separately, uncapped aside from scene radius). */
 export const MAX_TRAFFIC_SIGNALS = 10;
+/** Cap mapped stop signs / traffic signals kept along loaded roads. */
+export const MAX_ROAD_SIGNS = 80;
+/** How close a mapped sign must sit to a drawn road ribbon (meters). */
+export const ROAD_SIGN_ALONG_M = 16;
 
 /** Floor / ceiling for the single outdoor scene radius (meters). */
 export const SITE_REACH_MIN_M = 200;
@@ -604,11 +611,13 @@ export function compoundReach(mainRing: Point[]): number {
 
 /**
  * How far a garage/shed may sit from the foundation edge (meters).
- * Kept tighter than siteReach so off-lot and far campus buildings are not drawn as "garages".
+ * Wider than before, but still below siteReach so campus pads are not all "your garage".
  */
 export function accessoryReach(mainRing: Point[]): number {
   const ext = foundationExtent(mainRing);
-  return Math.min(55, Math.max(18, ext * 1.2 + 10));
+  const site = siteReach(mainRing);
+  // ~45–120 m typical; never reach the full outdoor disc.
+  return Math.min(site * 0.55, Math.max(45, ext * 1.85 + 22));
 }
 
 /** True when point is inside the foundation or within `r` meters of its outline. */
@@ -672,7 +681,16 @@ function inBackyard(p: Point, houseC: Point, streetDir: Point | null): boolean {
 export function assembleCompound(site: {
   mainId: number | null;
   mainRing: Point[];
-  structures: { id: number; tag: string; ring: Point[]; area: number; levels?: number | null; heightM?: number | null }[];
+  structures: {
+    id: number;
+    tag: string;
+    ring: Point[];
+    area: number;
+    levels?: number | null;
+    heightM?: number | null;
+    /** Mapped address when OSM has housenumber/street — shown on neighbor hover. */
+    address?: string | null;
+  }[];
   fences: Point[][];
   pools: Point[][];
   parking?: Point[][];
@@ -792,10 +810,11 @@ export function assembleCompound(site: {
       heightM: s.heightM,
       mainEave,
     });
+    const addr = s.address?.trim();
     features.push({
       id: `neighbor-${s.id}`,
       kind: "neighbor",
-      label: LABEL.neighbor,
+      label: addr && addr.length > 0 ? addr : LABEL.neighbor,
       polygon: s.ring,
       height: h,
       source: "map",
@@ -1136,7 +1155,7 @@ export function crossVerifySiteFeatures(opts: {
   // Add aerial cues the map missed (including fence / hedge ribbons).
   let addN = 0;
   for (const cue of cues) {
-    if (cue.kind === "yard" || cue.kind === "road" || cue.kind === "signal" || cue.kind === "hydrant") continue;
+    if (cue.kind === "yard" || cue.kind === "road" || cue.kind === "signal" || cue.kind === "stop" || cue.kind === "hydrant") continue;
     if ((cue.confidence ?? 0.5) < 0.4) continue;
     const c = ringCentroid(cue.polygon);
     if (cue.kind === "fence") {
@@ -1215,6 +1234,42 @@ function nearestOn(p: Point, a: Point, b: Point): { at: Point; d: number } {
   return { at, d: dist(p, at) };
 }
 
+/**
+ * OSM stop / signal nodes (and inferred crossings) often sit on the intersection
+ * centerline. Nudge them onto the curb so poles aren't planted in the asphalt.
+ */
+export function roadsidePlace(
+  p: Point,
+  segs: { a: Point; b: Point }[],
+  preferToward: Point | null,
+  curbM = 5.2,
+): Point {
+  if (!segs.length) return p;
+  let best: { at: Point; a: Point; b: Point; d: number } | null = null;
+  for (const s of segs) {
+    const hit = nearestOn(p, s.a, s.b);
+    if (!best || hit.d < best.d) best = { at: hit.at, a: s.a, b: s.b, d: hit.d };
+  }
+  if (!best) return p;
+  const dx = best.b[0] - best.a[0];
+  const dy = best.b[1] - best.a[1];
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  let side = 1;
+  if (preferToward) {
+    const vx = preferToward[0] - best.at[0];
+    const vy = preferToward[1] - best.at[1];
+    side = vx * nx + vy * ny >= 0 ? 1 : -1;
+  } else {
+    // Keep the side the raw node already leans toward when it's clearly off-center.
+    const vx = p[0] - best.at[0];
+    const vy = p[1] - best.at[1];
+    if (Math.hypot(vx, vy) > 0.4) side = vx * nx + vy * ny >= 0 ? 1 : -1;
+  }
+  return [best.at[0] + nx * side * curbM, best.at[1] + ny * side * curbM];
+}
+
 /** Circle–segment hits (0..1 params), sorted. */
 function circleHits(a: Point, b: Point, origin: Point, radius: number): number[] {
   const dx = b[0] - a[0],
@@ -1267,7 +1322,7 @@ function segIntersect(a: Point, b: Point, c: Point, d: Point): Point | null {
 
 /**
  * Long street ribbons in a wide radius (main + connecting roads), driveway to the
- * garage/front, and traffic lights where mapped roads cross.
+ * garage/front, and stop signs / traffic signals along those roads.
  */
 export function accessFeatures(opts: {
   footprint: Point[];
@@ -1276,6 +1331,10 @@ export function accessFeatures(opts: {
   garage: Point[] | null;
   /** Fire hydrant positions in the model frame (meters). */
   hydrants?: Point[];
+  /** OSM highway=traffic_signals nodes (model frame meters). */
+  trafficSignals?: Point[];
+  /** OSM highway=stop nodes (model frame meters). */
+  stopSigns?: Point[];
 }): SiteFeature[] {
   const here: Point = ringCentroid(opts.footprint);
   const siteR = siteReach(opts.footprint);
@@ -1356,6 +1415,82 @@ export function accessFeatures(opts: {
       segs.push({ a: r.a, b: r.b, name: r.name });
     });
 
+  const nearRoad = (p: Point) => {
+    let best = Infinity;
+    for (const s of segs) best = Math.min(best, nearestOn(p, s.a, s.b).d);
+    return best <= ROAD_SIGN_ALONG_M;
+  };
+  const pad = (p: Point, s: number): Point[] => [
+    [p[0] - s, p[1] - s],
+    [p[0] + s, p[1] - s],
+    [p[0] + s, p[1] + s],
+    [p[0] - s, p[1] + s],
+  ];
+
+  // OSM-mapped traffic signals along the drawn road ribbons — curb-offset so poles
+  // aren't stuck in the middle of the intersection / roadway.
+  let signalN = 0;
+  [...(opts.trafficSignals ?? [])]
+    .map((p) => ({ p, d: dist(here, p) }))
+    .filter((h) => h.d < siteR && nearRoad(h.p))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, MAX_ROAD_SIGNS)
+    .forEach((h) => {
+      const at = roadsidePlace(h.p, segs, here);
+      if (out.some((f) => f.kind === "signal" && dist(ringCentroid(f.polygon), at) < 6)) return;
+      out.push({
+        id: `signal-${signalN++}`,
+        kind: "signal",
+        label: LABEL.signal,
+        polygon: pad(at, 0.55),
+        height: HEIGHT.signal,
+        source: "map",
+      });
+    });
+
+  // OSM-mapped stop signs — same curb nudge (OSM often tags the junction node).
+  let stopN = 0;
+  [...(opts.stopSigns ?? [])]
+    .map((p) => ({ p, d: dist(here, p) }))
+    .filter((h) => h.d < siteR && nearRoad(h.p))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, MAX_ROAD_SIGNS)
+    .forEach((h) => {
+      const at = roadsidePlace(h.p, segs, here);
+      if (out.some((f) => f.kind === "stop" && dist(ringCentroid(f.polygon), at) < 5)) return;
+      out.push({
+        id: `stop-${stopN++}`,
+        kind: "stop",
+        label: LABEL.stop,
+        polygon: pad(at, 0.4),
+        height: HEIGHT.stop,
+        source: "map",
+      });
+    });
+
+  // Fallback: invent a light at unmapped crossings when OSM has none nearby —
+  // still curb-offset, never plant the pole on the asphalt cross.
+  if (signalN === 0) {
+    for (let i = 0; i < segs.length; i++) {
+      for (let j = i + 1; j < segs.length; j++) {
+        const hit = segIntersect(segs[i].a, segs[i].b, segs[j].a, segs[j].b);
+        if (!hit || dist(hit, here) > keepR * 0.98) continue;
+        const at = roadsidePlace(hit, segs, here);
+        if (out.some((f) => f.kind === "signal" && dist(ringCentroid(f.polygon), at) < 8)) continue;
+        out.push({
+          id: `signal-${signalN++}`,
+          kind: "signal",
+          label: LABEL.signal,
+          polygon: pad(at, 0.55),
+          height: HEIGHT.signal,
+          source: "estimated",
+        });
+        if (signalN >= MAX_TRAFFIC_SIGNALS) break;
+      }
+      if (signalN >= MAX_TRAFFIC_SIGNALS) break;
+    }
+  }
+
   // Nearest segment for driveway mouth.
   let best: { a: Point; b: Point; name: string | null; at: Point; d: number } | null = null;
   for (const s of segs) {
@@ -1363,35 +1498,8 @@ export function accessFeatures(opts: {
     if (!best || hit.d < best.d) best = { a: s.a, b: s.b, name: s.name, at: hit.at, d: hit.d };
   }
   if (!best || best.d > roadMax) {
-    // Still keep any road ribbons we already built; no driveway if nothing is close.
+    // Keep roads / hydrants / signs even when the driveway cannot attach.
     return out;
-  }
-
-  // Traffic lights at road crossings near the house.
-  let signalN = 0;
-  for (let i = 0; i < segs.length; i++) {
-    for (let j = i + 1; j < segs.length; j++) {
-      const hit = segIntersect(segs[i].a, segs[i].b, segs[j].a, segs[j].b);
-      if (!hit || dist(hit, here) > keepR * 0.98) continue;
-      // Skip near-duplicates.
-      if (out.some((f) => f.kind === "signal" && dist(ringCentroid(f.polygon), hit) < 8)) continue;
-      const s = 0.55;
-      out.push({
-        id: `signal-${signalN++}`,
-        kind: "signal",
-        label: "Traffic light",
-        polygon: [
-          [hit[0] - s, hit[1] - s],
-          [hit[0] + s, hit[1] - s],
-          [hit[0] + s, hit[1] + s],
-          [hit[0] - s, hit[1] + s],
-        ],
-        height: HEIGHT.signal,
-        source: "map",
-      });
-      if (signalN >= MAX_TRAFFIC_SIGNALS) break;
-    }
-    if (signalN >= MAX_TRAFFIC_SIGNALS) break;
   }
 
   let dir = opts.streetDir;

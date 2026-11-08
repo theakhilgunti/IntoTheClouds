@@ -23,7 +23,16 @@ import {
 import { fetchSiteDem, withDem } from "./elevation";
 import { fetchStreetViewFacade } from "./streetview";
 import { inNyc, lookupParcel, type ParcelHit } from "./parcel";
-import { buildHouse, buildingUseFromTags, maxStoriesForUse, planWordForUse, rebuildFloorCirculation, type GarageSide } from "./layout";
+import { buildingUseFromAssessor, lookupVgsi, type VgsiHit } from "./vgsi";
+import {
+  buildHouse,
+  buildingUseFromTags,
+  isGenericResidentialUse,
+  maxStoriesForUse,
+  planWordForUse,
+  rebuildFloorCirculation,
+  type GarageSide,
+} from "./layout";
 import { fetchIndoorRooms, overlayIndoorOnModel } from "./indoor-osm";
 import { fingerprintLayout, softCheckTypology } from "./plan-typology";
 import { analyzeAerialRoof } from "./aerial-roof";
@@ -67,7 +76,7 @@ function storiesFromPluto(n: number): number | null {
 
 const NOT_A_HOUSE = new Set([
   "apartments", "commercial", "retail", "industrial", "office", "school", "church", "university",
-  "hospital", "warehouse", "hotel", "civic", "public", "dormitory",
+  "college", "library", "hospital", "warehouse", "hotel", "civic", "public", "dormitory",
 ]);
 
 export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): Promise<void> {
@@ -151,12 +160,58 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     if (osm) {
       sources.push({ id: "osm", name: "OpenStreetMap buildings", status: "failed", detail: "No building outline is mapped at this spot." });
     }
+  }
+
+  // Vision (gis.vgsi.com) assessor maps — building shell + lot/program cues when the town is covered.
+  let vgsi: VgsiHit | null = null;
+  try {
+    vgsi = await lookupVgsi(center, address);
+  } catch (e) {
+    sources.push({
+      id: "vgsi",
+      name: "Vision assessor (VGSI)",
+      status: "failed",
+      detail: String(e).slice(0, 160),
+    });
+  }
+  if (vgsi && !footprint && vgsi.buildingRing && vgsi.buildingRing.length >= 3) {
+    const ringLocal = vgsi.buildingRing.map((p) => toLocal(origin, p));
+    const c = polygonCentroid(ringLocal);
+    center = fromLocal(origin, c);
+    footprint = ringLocal.map(([x, y]) => [x - c[0], y - c[1]] as Point);
+    id = `vgsi-${vgsi.municipality.replace(/\s+/g, "_")}-${center.lat.toFixed(5)}_${center.lng.toFixed(5)}`;
+    sources.push({
+      id: "vgsi",
+      name: "Vision assessor (VGSI)",
+      status: "used",
+      detail: `Building footprint from ${vgsi.detail}`,
+    });
+    step("outline", "done", "Vision assessor footprint");
+    warnings.push(
+      "No OpenStreetMap building outline here — used the Vision Government Solutions assessor building footprint. Interior rooms are still estimated.",
+    );
+  } else if (!footprint) {
     warnings.push(
       osm
         ? "No building outline is mapped here, so a typical 11 × 9 m house was used. Size and shape are estimates."
         : "The map server didn't respond, so a typical 11 × 9 m house was used. Try Re-scan in a minute.",
     );
     step("outline", "skipped", osm ? "No outline mapped, using a typical size" : "Map unavailable, using a typical size");
+    if (vgsi) {
+      sources.push({
+        id: "vgsi",
+        name: "Vision assessor (VGSI)",
+        status: "used",
+        detail: `No building polygon; ${vgsi.detail}`,
+      });
+    }
+  } else if (vgsi) {
+    sources.push({
+      id: "vgsi",
+      name: "Vision assessor (VGSI)",
+      status: "used",
+      detail: vgsi.detail,
+    });
   }
 
   // Saved scan? Then we're done, no imagery or AI calls needed.
@@ -166,7 +221,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v30" || saved.model.roof?.basis !== "roof-v3");
+      (saved.model.compound?.basis !== "compound-v38" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -174,14 +229,14 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     }
   }
 
-  // City lot, when this address is in New York City. The yard follows the lot the building actually sits on.
+  // City lot: NYC MapPLUTO first; otherwise Vision parcel when available.
   let lot: ParcelHit | null = null;
   let buildingOnLot = false;
   if (inNyc(center)) {
     try {
       const byAddress = address ? await lookupParcel(origin, address) : null;
       const addressRing = byAddress ? byAddress.ring.map((p) => toLocal(origin, p)) : null;
-      const atBuilding = b ? polygonCentroid(b.ring) : null;
+      const atBuilding = b ? polygonCentroid(b.ring) : footprint ? ([0, 0] as Point) : null;
       const addressHoldsBuilding = !!(atBuilding && addressRing && pointInPolygon(atBuilding, addressRing));
       if (b && !addressHoldsBuilding) {
         const under = await lookupParcel(center);
@@ -206,6 +261,32 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     } catch (e) {
       sources.push({ id: "parcel", name: "NYC tax lot", status: "failed", detail: String(e).slice(0, 160) });
     }
+  } else if (vgsi?.parcelRing && vgsi.parcelRing.length >= 3) {
+    lot = {
+      address: vgsi.address ?? "",
+      ring: vgsi.parcelRing,
+      numFloors: vgsi.stories,
+      numBuildings: null,
+      basement: null,
+    };
+    const atBuilding = footprint ? ([0, 0] as Point) : b ? polygonCentroid(b.ring) : null;
+    if (lot && atBuilding) {
+      // Footprint is centered at model origin after shift; compare parcel in origin frame vs footprint center.
+      const parcelLocal = lot.ring.map((p) => toLocal(origin, p));
+      const fpCenter: Point = footprint
+        ? (() => {
+            const ring = vgsi!.buildingRing?.map((p) => toLocal(origin, p)) ?? b?.ring;
+            return ring ? polygonCentroid(ring) : [0, 0];
+          })()
+        : atBuilding;
+      buildingOnLot = pointInPolygon(fpCenter, parcelLocal);
+    }
+    sources.push({
+      id: "parcel",
+      name: "Vision tax parcel",
+      status: "used",
+      detail: `${lot.address || vgsi.municipality} parcel from Vision assessor.`,
+    });
   }
 
   // 3. Aerial imagery.
@@ -351,7 +432,20 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     attributes.push({ field: "Floors above ground", value: String(stories), from: "map", note: "OpenStreetMap building:levels" });
   } else if (plutoStories) {
     stories = plutoStories;
-    attributes.push({ field: "Floors above ground", value: String(stories), from: "map", note: `NYC tax lot lists ${lot!.numFloors}` });
+    attributes.push({
+      field: "Floors above ground",
+      value: String(stories),
+      from: "map",
+      note: inNyc(center) ? `NYC tax lot lists ${lot!.numFloors}` : `Vision assessor lists ${lot!.numFloors}`,
+    });
+  } else if (vgsi?.stories != null && vgsi.stories >= 1) {
+    stories = vgsi.stories;
+    attributes.push({
+      field: "Floors above ground",
+      value: String(stories),
+      from: "map",
+      note: `Vision assessor (${vgsi.municipality})`,
+    });
   } else if (osmHeight > 2) {
     stories = storiesFromHeight(osmHeight);
     attributes.push({ field: "Floors above ground", value: String(stories), from: "map", note: `From mapped height ${osmHeight} m` });
@@ -362,7 +456,15 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     attributes.push({ field: "Floors above ground", value: "2", from: "estimated", note: "Most common for houses in the area" });
   }
   // Cap by program: houses stay compact; schools/offices/multi-unit may show more levels + public stair links.
-  const buildingUsePreview = buildingUseFromTags(b?.tags);
+  const assessorUseEarly = buildingUseFromAssessor({
+    style: vgsi?.style,
+    occupancy: vgsi?.occupancy,
+    useDesc: vgsi?.useDesc,
+  });
+  const buildingUsePreview =
+    assessorUseEarly && (isGenericResidentialUse(b?.tags) || !b)
+      ? assessorUseEarly
+      : buildingUseFromTags(b?.tags);
   const storyCap = maxStoriesForUse(buildingUsePreview);
   if (stories > storyCap) {
     warnings.push(
@@ -564,8 +666,39 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   if (facts) confidence += 0.15 * facts.confidence;
   confidence = Math.min(0.9, confidence);
 
-  const buildingUse = buildingUseFromTags(b?.tags);
+  let buildingUse = buildingUseFromTags(b?.tags);
+  const assessorUse = buildingUseFromAssessor({
+    style: vgsi?.style,
+    occupancy: vgsi?.occupancy,
+    useDesc: vgsi?.useDesc,
+  });
+  if (assessorUse && (isGenericResidentialUse(b?.tags) || !b) && assessorUse !== buildingUse) {
+    buildingUse = assessorUse;
+    attributes.push({
+      field: "Building program",
+      value: planWordForUse(buildingUse),
+      from: "map",
+      note: `Vision assessor style/use (${[vgsi?.style, vgsi?.occupancy, vgsi?.useDesc].filter(Boolean).join(", ")})`,
+    });
+  }
   const planWord = planWordForUse(buildingUse);
+  if (vgsi?.beds != null || vgsi?.baths != null || vgsi?.rooms != null) {
+    const bits = [
+      vgsi.beds != null ? `${vgsi.beds} bed` : null,
+      vgsi.baths != null ? `${vgsi.baths} bath` : null,
+      vgsi.rooms != null ? `${vgsi.rooms} rooms` : null,
+    ].filter(Boolean);
+    attributes.push({
+      field: "Assessor room counts",
+      value: bits.join(" · "),
+      from: "map",
+      note: "Vision card totals — used as shell/program cues, not a measured floor plan",
+    });
+  }
+  const vgsiBays =
+    buildingUse === "house" && vgsi?.beds != null && vgsi.beds >= 2 && vgsi.beds <= 6
+      ? Math.round(vgsi.beds)
+      : null;
   const verified = verifiedInterior(id);
   let built = buildHouse({
     id,
@@ -584,6 +717,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     roofPlan,
     garageAt: buildingUse === "house" ? garageAt : null,
     use: buildingUse,
+    bays: vgsiBays,
     facade:
       buildingUse === "house" && sure
         ? {
@@ -736,6 +870,10 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     roads: (osm?.roads ?? []).map((r) => ({ name: r.name, pts: shift(r.pts) })),
     garage: garageRing ? shift(garageRing) : null,
     hydrants: (osm?.hydrants ?? []).map((p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point),
+    trafficSignals: (osm?.trafficSignals ?? []).map(
+      (p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point,
+    ),
+    stopSigns: (osm?.stopSigns ?? []).map((p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point),
   });
   const geminiAerial = siteBoxes.flatMap((box) => {
     const polygon = boxToPolygon(box, aerialHalf);
@@ -756,6 +894,9 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     structures: (osm?.structures ?? []).map((s) => {
       const levelsRaw = parseFloat(s.tags["building:levels"] ?? "");
       const heightRaw = parseFloat(String(s.tags.height ?? "").replace(/m$/i, "").trim());
+      const num = s.tags["addr:housenumber"];
+      const street = s.tags["addr:street"];
+      const address = num && street ? `${num} ${street}` : num ? String(num) : null;
       return {
         id: s.id,
         tag: s.tags.building ?? "",
@@ -763,6 +904,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
         area: s.area,
         levels: Number.isFinite(levelsRaw) && levelsRaw >= 1 ? levelsRaw : null,
         heightM: Number.isFinite(heightRaw) && heightRaw >= 2 ? heightRaw : null,
+        address,
       };
     }),
     fences: (osm?.fences ?? []).map(shift),
@@ -810,7 +952,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const entrySteps = entryStairFeatures({ streetDir, grade, exits });
   built.model.compound = {
     features: [...kept, ...access, ...entrySteps],
-    basis: "compound-v30",
+    basis: "compound-v38",
     grade: grade ?? undefined,
   };
   if (grade?.dem) {

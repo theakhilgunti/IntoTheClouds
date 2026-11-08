@@ -39,11 +39,13 @@ export default function ModelScreen({ id }: { id: string }) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [panel, setPanel] = useState(false);
   const [rescanning, setRescanning] = useState(false);
+  const [nearbyLoading, setNearbyLoading] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const [wrongOpen, setWrongOpen] = useState(false);
   const [viewerReady, setViewerReady] = useState(false);
   const holdSheet = useSheetHold();
   const releaseSheet = useRef<(() => void) | null>(null);
+  const rescanAbort = useRef<AbortController | null>(null);
 
   // Keep the page-change sheet down until the model has drawn its first frame.
   useEffect(() => {
@@ -54,6 +56,14 @@ export default function ModelScreen({ id }: { id: string }) {
     if (viewerReady || state.kind === "missing") releaseSheet.current?.();
   }, [viewerReady, state.kind]);
 
+  // Leaving the model page (home, etc.) must cancel any in-flight nearby rescan.
+  useEffect(() => {
+    return () => {
+      rescanAbort.current?.abort();
+      rescanAbort.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     let cancel = false;
     const refreshIfEmpty = (scan: SavedScan) => {
@@ -61,7 +71,7 @@ export default function ModelScreen({ id }: { id: string }) {
       const empty = model.interior?.status === "unknown" && model.floors.every((f) => f.rooms.length === 0);
       const stale =
         (model.source === "address" || model.source === "photo") &&
-        (model.compound?.basis !== "compound-v30" || model.roof?.basis !== "roof-v3");
+        (model.compound?.basis !== "compound-v38" || model.roof?.basis !== "roof-v3");
       if ((!empty && !stale) || !scan.query.address) return;
       const form = new FormData();
       form.append("address", scan.query.address);
@@ -107,7 +117,7 @@ export default function ModelScreen({ id }: { id: string }) {
     };
   }, [id]);
 
-  async function rescan(wayId?: number) {
+  async function rescan(wayId?: number, nearbyLabel?: string) {
     if (state.kind !== "scan") return;
     const q = state.scan.query;
     const form = new FormData();
@@ -118,9 +128,14 @@ export default function ModelScreen({ id }: { id: string }) {
     } else return;
     form.append("rescan", "1");
     if (wayId != null) form.append("wayId", String(wayId));
+    rescanAbort.current?.abort();
+    const ac = new AbortController();
+    rescanAbort.current = ac;
     setRescanning(true);
+    setNearbyLoading(wayId != null ? nearbyLabel || "nearby house" : null);
     try {
-      const { result: fresh } = await streamScan(form, () => {});
+      const { result: fresh } = await streamScan(form, () => {}, ac.signal);
+      if (ac.signal.aborted) return;
       const result = { ...fresh, model: mergeKnownFloors(fresh.model, state.scan.result.model) };
       const scan = { ...state.scan, result };
       saveScan(scan);
@@ -131,10 +146,16 @@ export default function ModelScreen({ id }: { id: string }) {
       setState({ kind: "scan", scan });
       setVersion((v) => v + 1);
       setWrongOpen(false);
-    } catch {
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
       /* keep the existing model */
     } finally {
-      setRescanning(false);
+      if (rescanAbort.current === ac) rescanAbort.current = null;
+      // Skip state updates after unmount / home navigation abort.
+      if (!ac.signal.aborted) {
+        setRescanning(false);
+        setNearbyLoading(null);
+      }
     }
   }
 
@@ -221,14 +242,19 @@ export default function ModelScreen({ id }: { id: string }) {
               {shortAddress(model.address) || `${model.lat.toFixed(5)}, ${model.lng.toFixed(5)}`}
             </div>
             <div className="font-data text-bp-line [@media(max-height:620px)]:hidden" style={{ fontSize: "0.92em" }}>
-              {rescanning ? "Updating this house…" : interiorLine}
-              {match === "nearest" ? " · closest building, confirm it's yours" : ""}
+              {nearbyLoading
+                ? `Loading ${nearbyLoading}…`
+                : rescanning
+                  ? "Updating this house…"
+                  : interiorLine}
+              {!rescanning && match === "nearest" ? " · closest building, confirm it's yours" : ""}
             </div>
             {nearby.length > 1 && (
               <div style={{ marginTop: "0.3em" }}>
                 <button
                   onClick={() => setWrongOpen((v) => !v)}
-                  className="font-data text-bp-line underline-offset-2 hover:text-bp-ink hover:underline"
+                  disabled={!!nearbyLoading}
+                  className="font-data text-bp-line underline-offset-2 hover:text-bp-ink hover:underline disabled:opacity-50"
                   style={{ fontSize: "0.92em" }}
                 >
                   {wrongOpen ? "Hide nearby houses" : "Wrong house?"}
@@ -237,15 +263,23 @@ export default function ModelScreen({ id }: { id: string }) {
                   <div className="flex flex-wrap" style={{ marginTop: "0.3em", gap: "0.3em", maxWidth: "22em" }}>
                     {nearby.map((house) => {
                       const selected = model.id === `osm-${house.id}`;
+                      const loadingThis = nearbyLoading === shortAddress(house.label);
                       return (
                         <button
                           key={house.id}
                           disabled={rescanning || selected}
-                          onClick={() => rescan(house.id)}
-                          className={`border font-data ${selected ? "border-bp-ink bg-bp-ink text-bp" : "border-bp-ink/45 text-bp-ink hover:bg-bp-ink/15"}`}
+                          onClick={() => rescan(house.id, shortAddress(house.label))}
+                          className={`border font-data ${
+                            selected
+                              ? "border-bp-ink bg-bp-ink text-bp"
+                              : loadingThis
+                                ? "border-bp-red bg-bp-red/20 text-bp-ink"
+                                : "border-bp-ink/45 text-bp-ink hover:bg-bp-ink/15"
+                          }`}
                           style={{ padding: "0.15em 0.6em", fontSize: "0.92em" }}
+                          aria-busy={loadingThis}
                         >
-                          {shortAddress(house.label)}
+                          {loadingThis ? `Loading ${shortAddress(house.label)}…` : shortAddress(house.label)}
                         </button>
                       );
                     })}
@@ -265,6 +299,25 @@ export default function ModelScreen({ id }: { id: string }) {
           </span>
         }
       />
+
+      {nearbyLoading && (
+        <div
+          className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-bp-deep/55"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="pointer-events-auto border border-bp-ink/70 bg-bp-deep px-6 py-5 text-center shadow-lg">
+            <div className="font-display text-2xl uppercase tracking-[0.04em] text-white">Loading house</div>
+            <div className="mt-2 font-data text-sm text-bp-ink">{nearbyLoading}</div>
+            <div className="mt-3 font-data text-[11px] uppercase tracking-[0.12em] text-bp-line">
+              Go home anytime to cancel
+            </div>
+            <div className="mx-auto mt-4 h-1 w-40 overflow-hidden bg-bp-ink/20">
+              <div className="h-full w-1/2 animate-pulse bg-bp-red" />
+            </div>
+          </div>
+        </div>
+      )}
 
       {state.kind === "scan" && panel && (
         <ScanReport

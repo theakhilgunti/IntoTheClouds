@@ -7,6 +7,7 @@ import {
   planWordForUse,
 } from "./layout-use.ts";
 import { planCorridorUnits, type CorridorUnitKind } from "./layout-corridor.ts";
+import { planLibrary, planUniversity } from "./layout-campus.ts";
 
 describe("building programs", () => {
   it("maps OSM tags to dormitory / apartments / hotel / hospital / warehouse", () => {
@@ -21,6 +22,19 @@ describe("building programs", () => {
     assert.equal(buildingUseFromTags({ building: "residential", amenity: "hotel" }), "hotel");
   });
 
+  it("splits university / college from K–12 school and maps library", () => {
+    assert.equal(buildingUseFromTag("university"), "university");
+    assert.equal(buildingUseFromTag("college"), "university");
+    assert.equal(buildingUseFromTag("college_building"), "university");
+    assert.equal(buildingUseFromTag("school"), "school");
+    assert.equal(buildingUseFromTag("kindergarten"), "school");
+    assert.equal(buildingUseFromTag("library"), "library");
+    assert.equal(buildingUseFromTags({ building: "yes", amenity: "university" }), "university");
+    assert.equal(buildingUseFromTags({ building: "public", amenity: "library" }), "library");
+    assert.equal(buildingUseFromTags({ building: "yes", amenity: "college" }), "university");
+    assert.equal(buildingUseFromTags({ building: "yes", amenity: "school" }), "school");
+  });
+
   it("raises story caps for multi-unit and institutional uses", () => {
     assert.equal(maxStoriesForUse("house"), 3);
     assert.equal(maxStoriesForUse("church"), 1);
@@ -28,8 +42,12 @@ describe("building programs", () => {
     assert.equal(maxStoriesForUse("apartments"), 6);
     assert.equal(maxStoriesForUse("hotel"), 6);
     assert.equal(maxStoriesForUse("hospital"), 6);
+    assert.equal(maxStoriesForUse("university"), 6);
+    assert.equal(maxStoriesForUse("library"), 6);
     assert.equal(maxStoriesForUse("warehouse"), 3);
     assert.equal(planWordForUse("dormitory"), "dormitory");
+    assert.equal(planWordForUse("university"), "university");
+    assert.equal(planWordForUse("library"), "library");
   });
 });
 
@@ -74,5 +92,29 @@ describe("per-level program floors", () => {
     const gUnits = g.filter((n) => /Unit G/i.test(n)).length;
     const uUnits = u.filter((n) => /Unit 2/i.test(n)).length;
     assert.ok(uUnits > gUnits, "upper floors should have more unit pads than ground");
+  });
+
+  it("university: atrium/lecture on L0, labs/faculty above — not K–12 classrooms", () => {
+    const notes: string[] = [];
+    const floors = planUniversity({ width: 48, depth: 36, stories: 3 }, notes);
+    const g = floors.find((f) => f.level === 0)!.rooms.map((r) => r.name);
+    const u = floors.find((f) => f.level === 1)!.rooms.map((r) => r.name);
+    assert.ok(g.some((n) => /Atrium|Lobby/i.test(n)));
+    assert.ok(g.some((n) => /Lecture/i.test(n)));
+    assert.ok(!g.some((n) => /Nurse|Cafeteria|Classroom/i.test(n)), "should not reuse K–12 school rooms");
+    assert.ok(u.some((n) => /Lab|Seminar|Faculty/i.test(n)));
+    assert.ok(!u.some((n) => /Atrium|Lecture Hall/i.test(n)));
+    assert.ok(notes.some((n) => /University/i.test(n)));
+  });
+
+  it("library: lobby/desk/stacks on L0, study floors above", () => {
+    const notes: string[] = [];
+    const floors = planLibrary({ width: 40, depth: 30, stories: 2 }, notes);
+    const g = floors.find((f) => f.level === 0)!.rooms.map((r) => r.name);
+    const u = floors.find((f) => f.level === 1)!.rooms.map((r) => r.name);
+    assert.ok(g.some((n) => /Lobby/i.test(n)));
+    assert.ok(g.some((n) => /Circulation|Stacks/i.test(n)));
+    assert.ok(u.some((n) => /Stacks|Study|Quiet/i.test(n)));
+    assert.ok(notes.some((n) => /Library/i.test(n)));
   });
 });

@@ -19,15 +19,17 @@ import { frontDoorFractionFromFacade, nudgeRoomBays } from "./streetview-cues";
 import {
   buildingUseFromTag,
   buildingUseFromTags,
+  isGenericResidentialUse,
   maxStoriesForUse,
   planWordForUse,
   type BuildingUse,
 } from "./layout-use";
 import { planCorridorUnits } from "./layout-corridor";
+import { planLibrary, planUniversity } from "./layout-campus";
 import { connectZonesWithDoors } from "./door-connect";
 
 export type { BuildingUse };
-export { buildingUseFromTag, buildingUseFromTags, maxStoriesForUse, planWordForUse };
+export { buildingUseFromTag, buildingUseFromTags, isGenericResidentialUse, maxStoriesForUse, planWordForUse };
 
 type Rect = { x0: number; y0: number; x1: number; y1: number };
 type PlanRoom = { id: string; name: string; type: RoomType; r: Rect; zone: string };
@@ -429,6 +431,8 @@ function planWarehouse(spec: HouseSpec, notes: string[]): PlanFloor[] {
 function planBuilding(spec: HouseSpec, notes: string[]): PlanFloor[] {
   const use = spec.use ?? "house";
   if (use === "school") return planSchool(spec, notes);
+  if (use === "university") return planUniversity(spec, notes) as PlanFloor[];
+  if (use === "library") return planLibrary(spec, notes) as PlanFloor[];
   if (use === "office") return planOffice(spec, notes, false);
   if (use === "commercial") return planOffice(spec, notes, true);
   if (use === "church") return planChurch({ ...spec, stories: 1, basement: false }, notes);
@@ -511,8 +515,12 @@ function placeDoors(
     zones,
     { preferredStart: opts?.preferredStart, roomPolys: opts?.roomPolys, roomTypes },
   );
+  // Never materialize synth/illicit stub walls — openings must land on real outline walls.
   for (const extra of linked.extraWalls) {
     if (!extra.a || !extra.b) continue;
+    if (/synth-|illicit-/.test(extra.id)) continue;
+    const L = Math.hypot(extra.b[0] - extra.a[0], extra.b[1] - extra.a[1]);
+    if (L < 0.85) continue;
     walls.push({
       id: extra.id.startsWith(prefix) ? extra.id : `${prefix}${extra.id}`,
       a: extra.a,
@@ -527,9 +535,26 @@ function placeDoors(
   for (const w of walls) {
     if (w.id.startsWith(prefix)) byId.set(w.id.slice(prefix.length), w);
   }
+  // Apply clip-gap / rescue patches so shell walls that became interior are not left exterior.
+  for (const patch of linked.wallPatches) {
+    const w = byId.get(patch.id) ?? byId.get(`${prefix}${patch.id}`);
+    if (!w) continue;
+    w.exterior = patch.exterior;
+    w.zones = patch.zones;
+    w.thickness = patch.exterior ? 0.25 : 0.12;
+  }
   for (const d of linked.doors) {
     const w = byId.get(d.wallId) ?? byId.get(`${prefix}${d.wallId}`);
-    if (w) addDoor(w, d.width, false, d.t, d.kind ?? "door");
+    if (!w) continue;
+    const toOutside = d.exit || w.exterior || w.zones[1] == null;
+    if (toOutside) {
+      // Ground exits only — no open arches or doors into thin air on upper floors.
+      if (!isGround) continue;
+      addDoor(w, Math.min(1.05, Math.max(0.85, d.width > 1.15 ? 0.95 : d.width)), true, d.t, "door");
+      continue;
+    }
+    // Indoor open arches are OK; never treat them as outdoor openings.
+    addDoor(w, d.width, false, d.t, d.kind === "open" ? "open" : "door");
   }
 
   if (isGround) {
@@ -541,6 +566,7 @@ function placeDoors(
     const ext = walls.filter((w) => w.exterior && len(w) >= 1.05);
     const pick = (pred: (w: ZWall) => boolean, score: (w: ZWall) => number) =>
       ext.filter(pred).sort((a, b) => score(a) - score(b))[0];
+    // Prefer a longer hall/living front over a short stair face (avoids pillar stubs beside the exit).
     const frontDoor = pick(
       (w) =>
         across(w) &&
@@ -549,11 +575,17 @@ function placeDoors(
           (z, t) =>
             z === "hall" || z === "lobby" || z === "living" || z === "narthex" || t === "hallway" || t === "living",
         ),
-      (w) => mid(w)[1],
+      (w) => {
+        const stairOnly = w.zones.every((z) => !z || roomType(z) === "stair");
+        return mid(w)[1] + (stairOnly ? 0.8 : 0) - len(w) * 0.02;
+      },
     );
     if (frontDoor) {
       const fromLeft = facade?.frontDoorFromLeft ?? 0.5;
-      addDoor(frontDoor, 1.0, true, tFromLeftOnWall(frontDoor, fromLeft));
+      // Skip a second exit if linker already cut one on this wall.
+      if (!doors.some((d) => d.wallId === frontDoor.id && d.exit)) {
+        addDoor(frontDoor, 1.0, true, tFromLeftOnWall(frontDoor, fromLeft));
+      }
     }
     const backDoor = pick(
       (w) =>
@@ -583,7 +615,114 @@ function placeDoors(
     }
   }
 
-  return { walls: walls.map((w) => ({ id: w.id, a: w.a, b: w.b, thickness: w.thickness, exterior: w.exterior })), doors };
+  // Final pass: any open arch on a shell wall becomes a hinged exit (or is dropped upstairs).
+  for (let i = doors.length - 1; i >= 0; i--) {
+    const d = doors[i];
+    const w = byId.get(d.wallId);
+    if (!w) continue;
+    if (d.kind === "open" && (d.exit || w.exterior || w.zones[1] == null)) {
+      if (!isGround) {
+        doors.splice(i, 1);
+        continue;
+      }
+      d.kind = "door";
+      d.exit = true;
+      d.width = Math.min(1.05, Math.max(0.85, d.width > 1.15 ? 0.95 : d.width));
+    }
+  }
+
+  return pruneWallPillars(walls, doors, len);
+}
+
+const MIN_SOLID_WALL = 0.45;
+const MIN_STUB = 0.4;
+
+/**
+ * Drop duplicate / synth pillar walls and widen doors on short runs so leftovers
+ * don't render as free-standing columns (common on stair fronts next to exits).
+ */
+function pruneWallPillars(
+  walls: ZWall[],
+  doors: Door[],
+  lenOf: (w: { a: Point; b: Point }) => number,
+): { walls: Wall[]; doors: Door[] } {
+  // One opening per wall: prefer exit, then open arch, then widest.
+  const bestByWall = new Map<string, Door>();
+  for (const d of doors) {
+    const prev = bestByWall.get(d.wallId);
+    if (!prev) {
+      bestByWall.set(d.wallId, d);
+      continue;
+    }
+    const score = (x: Door) => (x.exit ? 100 : 0) + (x.kind === "open" ? 20 : 0) + x.width;
+    if (score(d) > score(prev)) bestByWall.set(d.wallId, d);
+  }
+  const prunedDoors = [...bestByWall.values()];
+
+  for (const d of prunedDoors) {
+    const w = walls.find((x) => x.id === d.wallId);
+    if (!w) continue;
+    const L = lenOf(w);
+    if (L < 0.3) continue;
+    // Short wall + door → open almost the whole run (no 10 cm pillar stubs).
+    const side = (L - d.width) / 2;
+    if (side < MIN_STUB) {
+      d.width = Math.max(0.6, L - 0.04);
+      d.t = 0.5;
+    } else {
+      // Clamp so each remnant stays ≥ MIN_STUB.
+      const maxW = Math.max(0.6, L - 2 * MIN_STUB);
+      d.width = Math.min(d.width, maxW);
+      const half = d.width / 2;
+      const minT = half / L;
+      const maxT = 1 - half / L;
+      d.t = Math.min(maxT, Math.max(minT, d.t));
+    }
+  }
+
+  const doorWalls = new Set(prunedDoors.map((d) => d.wallId));
+
+  // Drop synth crumbs and near-duplicate short walls that aren't hosting a door.
+  const kept: ZWall[] = [];
+  for (const w of walls) {
+    const L = lenOf(w);
+    const isSynth = w.id.includes("synth-") || w.id.includes("illicit-");
+    if (L < MIN_SOLID_WALL && !doorWalls.has(w.id)) continue;
+    if (isSynth && L < 0.75 && !doorWalls.has(w.id)) continue;
+    // Near-duplicate of an already-kept wall (floating double partition / pillar pair).
+    const mid: Point = [(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2];
+    const dup = kept.some((k) => {
+      const km: Point = [(k.a[0] + k.b[0]) / 2, (k.a[1] + k.b[1]) / 2];
+      if (Math.hypot(mid[0] - km[0], mid[1] - km[1]) > 0.35) return false;
+      const ux = (w.b[0] - w.a[0]) / (L || 1);
+      const uy = (w.b[1] - w.a[1]) / (L || 1);
+      const kx = (k.b[0] - k.a[0]) / (lenOf(k) || 1);
+      const ky = (k.b[1] - k.a[1]) / (lenOf(k) || 1);
+      return Math.abs(ux * kx + uy * ky) > 0.95;
+    });
+    if (dup && !doorWalls.has(w.id)) continue;
+    if (dup && doorWalls.has(w.id) && isSynth) {
+      // Keep the real wall; retarget the door if needed.
+      const host = kept.find((k) => {
+        const km: Point = [(k.a[0] + k.b[0]) / 2, (k.a[1] + k.b[1]) / 2];
+        return Math.hypot(mid[0] - km[0], mid[1] - km[1]) <= 0.35;
+      });
+      if (host) {
+        const d = prunedDoors.find((x) => x.wallId === w.id);
+        if (d) d.wallId = host.id;
+        continue;
+      }
+    }
+    kept.push(w);
+  }
+
+  const keptIds = new Set(kept.map((w) => w.id));
+  const finalDoors = prunedDoors.filter((d) => keptIds.has(d.wallId));
+
+  return {
+    walls: kept.map((w) => ({ id: w.id, a: w.a, b: w.b, thickness: w.thickness, exterior: w.exterior })),
+    doors: finalDoors,
+  };
 }
 
 function openingsForRooms(

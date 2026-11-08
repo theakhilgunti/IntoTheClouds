@@ -51,6 +51,22 @@
       "medianBays": 4
     },
     {
+      "program": "university",
+      "bedrooms": [0, 2],
+      "baths": [1, 10],
+      "corridorFrac": [0.08, 0.26],
+      "aspect": [0.35, 2.8],
+      "medianBays": 4
+    },
+    {
+      "program": "library",
+      "bedrooms": [0, 1],
+      "baths": [1, 6],
+      "corridorFrac": [0.04, 0.18],
+      "aspect": [0.4, 2.5],
+      "medianBays": 3
+    },
+    {
       "program": "office",
       "bedrooms": [0, 1],
       "baths": [1, 6],

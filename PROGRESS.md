@@ -17,12 +17,7 @@
 
 To avoid collision, each member and agent has a defined territory based on the hackathon PRD:
 
-| Role / Member | Primary Scope | Permitted File Boundaries | Prohibited (Unless Coordinated) |
-| :--- | :--- | :--- | :--- |
-| **Member A (Backend)** | FastAPI, Math, Fusion | `project/backend/app/**`, `project/backend/tests/**` | `project/frontend/**`, `project/pi_client/**` |
-| **Member B (Hardware/Pi)** | nmcli Scanner, Pi Setup | `project/pi_client/**`, `project/PRD.md` | `project/frontend/**`, `project/backend/app/fusion/**` |
-| **Member C (Frontend)** | Three.js, React, UI HUD | `project/frontend/src/**`, `project/frontend/public/**` | `project/backend/**`, `project/pi_client/**` |
-| **Member D (Voice & Demo)**| Voice Radio, Pitch, Docs | `project/frontend/src/components/IncidentCommandHUD.tsx`, `project/DEMO_GUIDE.md` | Core Math & Backend endpoints |
+| *None* | *(No active locks — all modules available)* | — | — | ⚪ Open | — |
 
 ---
 
@@ -59,6 +54,14 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 07:10 | Cursor | UI-78 | Stop synth pillar walls — openings punch existing outline walls only (compound-v38). |
+| 07:00 | Cursor | UI-77 | Kill pillar stubs: safe edge snap, collinear wall union, absorb door remnants / drop synth crumbs (compound-v37). |
+| 06:50 | Cursor | UI-76 | Curb-offset stops/signals; nearby-house loading overlay + abort on home; neighbor address hover (compound-v36). |
+| 06:40 | Cursor | UI-75 | Vision VGSI assessor footprints/parcels + style/story/room cues when town is covered (compound-v35). |
+| 06:25 | Cursor | UI-74 | Ban false outdoor arches (both-sides probe); straighten walls + boundary-only synth doors (compound-v34). |
+| 06:15 | Cursor | UI-73 | Split university/library from school; campus atrium/lecture + library stack planners (compound-v33). |
+| 06:05 | Cursor | UI-72 | Ban outdoor open arches: shell openings are hinged exit doors only; sync wall patches (compound-v32). |
+| 05:55 | Cursor | UI-71 | Wider garage/shed accessory reach; OSM stop signs + traffic signals along loaded roads (compound-v31). |
 | 05:45 | Cursor | UI-70 | Home example address → Burdett Avenue Residence Hall, Troy, NY. |
 | 05:40 | Cursor | UI-69 | One siteReach (~200–240 m) for grid, DEM, neighbors, roads, hydrants, fences, trees (compound-v30). |
 | 05:32 | Cursor | UI-68 | Fix missing streets: road ribbons allow length up to ~keepR×2.2 after wider road reach. |

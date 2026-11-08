@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { clipPolyToRect, expandPoly, signedArea, splitAtX, splitAtY, wallsAlongOutline } from "./outline.ts";
+import {
+  clipPolyToRect,
+  expandPoly,
+  rectifyRoomPoly,
+  signedArea,
+  splitAtX,
+  splitAtY,
+  wallsAlongOutline,
+} from "./outline.ts";
 
 const notch = [
   [0, 0], [10, 0], [10, 2], [4, 2], [4, 3], [0, 3],
@@ -58,4 +66,22 @@ test("expanding the eaves keeps the step and grows the area", () => {
   const grown = expandPoly(notch, 0.4);
   assert.ok(Math.abs(signedArea(grown)) > before);
   assert.ok(grown.length >= 5);
+});
+
+test("rectifyRoomPoly snaps near-axis jogs to straight H/V edges", () => {
+  const wobbly: [number, number][] = [
+    [0, 0],
+    [5, 0.08],
+    [5.05, 4],
+    [0.04, 3.95],
+  ];
+  const got = rectifyRoomPoly(wobbly);
+  assert.ok(got.length >= 4);
+  for (let i = 0; i < got.length; i++) {
+    const a = got[i];
+    const b = got[(i + 1) % got.length];
+    const dx = Math.abs(b[0] - a[0]);
+    const dy = Math.abs(b[1] - a[1]);
+    assert.ok(dx < 0.05 || dy < 0.05, `edge ${a}->${b} should be axis-aligned`);
+  }
 });

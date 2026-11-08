@@ -66,7 +66,11 @@ describe("street and driveway", () => {
     });
     const roads = features.filter((f) => f.kind === "road");
     assert.ok(roads.length >= 2, `expected main + connector, got ${roads.length}`);
-    assert.ok(features.some((f) => f.kind === "signal"), "crossing should spawn a traffic light");
+    const signal = features.find((f) => f.kind === "signal");
+    assert.ok(signal, "crossing should spawn a traffic light");
+    const c = signal!.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((n) => n / 4);
+    // Must not sit on the asphalt cross at (12, -14).
+    assert.ok(Math.hypot(c[0] - 12, c[1] + 14) > 3, `signal should be curb-offset, got ${c}`);
   });
 
   it("keeps streets when the clipped run exceeds the old 320 m ribbon cap", () => {
@@ -115,7 +119,51 @@ describe("street and driveway", () => {
     assert.equal(roadReach(house), R);
     assert.equal(compoundReach(house), R);
     assert.ok(R >= SITE_REACH_MIN_M && R <= SITE_REACH_MAX_M);
+    assert.ok(accessoryReach(house) >= 45, "garage/shed base reach was increased");
     assert.ok(accessoryReach(house) < R, "garage/shed lot radius stays tighter than the scene");
+  });
+
+  it("places mapped stop signs and traffic signals along loaded roads", () => {
+    const features = accessFeatures({
+      footprint: [[-4, -6], [4, -6], [4, 6], [-4, 6]],
+      streetDir: [0, -1],
+      roads: [{ name: "Main", pts: [[-80, -14], [80, -14]] }],
+      garage: null,
+      trafficSignals: [[12, -14], [200, 0]],
+      stopSigns: [[-20, -14], [5, 80]],
+    });
+    const signal = features.find((f) => f.kind === "signal" && f.source === "map");
+    const stop = features.find((f) => f.kind === "stop");
+    assert.ok(signal, "traffic signal beside the road");
+    assert.ok(stop, "stop sign beside the road");
+    const sc = signal!.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((n) => n / 4);
+    const tc = stop!.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((n) => n / 4);
+    // Centerline nodes get nudged onto the curb (toward the house at y≈0).
+    assert.ok(Math.abs(sc[1] + 14) > 2.5, `signal should leave the roadway centerline, y=${sc[1]}`);
+    assert.ok(Math.abs(tc[1] + 14) > 2.5, `stop should leave the roadway centerline, y=${tc[1]}`);
+    assert.ok(!features.some((f) => f.kind === "signal" && Math.hypot(f.polygon[0][0] - 200, f.polygon[0][1]) < 5));
+    assert.ok(!features.some((f) => f.kind === "stop" && f.polygon.some((p) => Math.abs(p[1] - 80) < 2)));
+  });
+
+  it("labels neighbor shells with mapped addresses when available", () => {
+    const house: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
+    const nbr: [number, number][] = [[10, -5], [18, -5], [18, 5], [10, 5]];
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: house,
+      structures: [
+        { id: 1, tag: "house", ring: house, area: 80 },
+        { id: 2, tag: "house", ring: nbr, area: 70, address: "18 Simonson Avenue" },
+      ],
+      fences: [],
+      pools: [],
+      parking: [],
+      parcel: null,
+      aerial: [],
+    });
+    const n = features.find((f) => f.kind === "neighbor");
+    assert.ok(n);
+    assert.equal(n!.label, "18 Simonson Avenue");
   });
 
   it("keeps farther connecting streets but caps road ribbon count", () => {

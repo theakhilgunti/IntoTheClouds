@@ -92,6 +92,125 @@ describe("door connectivity", () => {
     assert.equal(openingBetween("office", "living"), "open");
   });
 
+  it("never opens an outdoor arch — sealed-room shell openings are exit doors", () => {
+    // Hall reached; living only has exterior walls and sits >8 m away so shell fallback fires.
+    const walls: ConnectWall[] = [
+      { id: "w-hall", exterior: true, zones: ["hall", null], length: 5.0, a: [-1, -8], b: [1, -8] },
+      { id: "w-ext", exterior: true, zones: ["living", null], length: 4.0, a: [20, -2], b: [24, -2] },
+    ];
+    const { doors } = connectZonesWithDoors(walls, ["hall", "living"], {
+      preferredStart: ["hall"],
+      roomTypes: { hall: "hallway", living: "living" },
+      roomPolys: [
+        {
+          zone: "hall",
+          poly: [
+            [-1, -8],
+            [1, -8],
+            [1, 8],
+            [-1, 8],
+          ],
+        },
+        {
+          zone: "living",
+          poly: [
+            [20, -2],
+            [24, -2],
+            [24, 2],
+            [20, 2],
+          ],
+        },
+      ],
+    });
+    const shell = doors.filter((d) => d.wallId === "w-ext");
+    assert.ok(shell.length >= 1, "sealed living room needs a shell opening");
+    for (const d of shell) {
+      assert.equal(d.kind, "door", "outdoor opening must be a door, not an open arch");
+      assert.equal(d.exit, true);
+      assert.ok(d.width <= 1.05, `exit door should not be arch-wide, got ${d.width}`);
+    }
+    assert.ok(!doors.some((d) => d.kind === "open" && d.exit), "no open arch may exit outdoors");
+  });
+
+  it("does not turn a side-by-side shell wall into an outdoor open arch", () => {
+    // Living's south exterior wall; kitchen sits to the west (beside, not through the wall).
+    const living = {
+      zone: "living",
+      poly: [
+        [0, 0],
+        [6, 0],
+        [6, 5],
+        [0, 5],
+      ] as [number, number][],
+    };
+    const kitchen = {
+      zone: "kitchen",
+      poly: [
+        [-4, 0],
+        [0, 0],
+        [0, 5],
+        [-4, 5],
+      ] as [number, number][],
+    };
+    const walls: ConnectWall[] = [
+      { id: "shared", exterior: false, zones: ["living", "kitchen"], length: 5, a: [0, 0], b: [0, 5] },
+      { id: "south", exterior: true, zones: ["living", null], length: 6, a: [0, 0], b: [6, 0] },
+      { id: "k-south", exterior: true, zones: ["kitchen", null], length: 4, a: [-4, 0], b: [0, 0] },
+    ];
+    const { doors, wallPatches } = connectZonesWithDoors(walls, ["living", "kitchen"], {
+      preferredStart: ["living"],
+      roomTypes: { living: "living", kitchen: "kitchen" },
+      roomPolys: [living, kitchen],
+    });
+    assert.ok(!wallPatches.some((p) => p.id === "south"), "south shell must stay exterior");
+    const south = doors.filter((d) => d.wallId === "south");
+    for (const d of south) {
+      assert.notEqual(d.kind, "open", "no outdoor arch on the south shell");
+      if (d.exit) assert.equal(d.kind, "door");
+    }
+    assert.ok(!doors.some((d) => d.kind === "open" && d.exit));
+    const arch = doors.find((d) => d.wallId === "shared");
+    assert.ok(arch && arch.kind === "open" && !arch.exit, "living–kitchen arch stays indoors");
+  });
+
+  it("opens sealed rooms on existing outline walls — no synth pillar stubs", () => {
+    const hall = {
+      zone: "hall",
+      poly: [
+        [-1, -4],
+        [1, -4],
+        [1, 4],
+        [-1, 4],
+      ] as [number, number][],
+    };
+    const bed = {
+      zone: "bed",
+      poly: [
+        [3, -2],
+        [7, -2],
+        [7, 2],
+        [3, 2],
+      ] as [number, number][],
+    };
+    const walls: ConnectWall[] = [
+      { id: "h-e", exterior: true, zones: ["hall", null], length: 8, a: [1, -4], b: [1, 4] },
+      { id: "b-w", exterior: true, zones: ["bed", null], length: 4, a: [3, -2], b: [3, 2] },
+    ];
+    const { doors, reached, extraWalls, wallPatches } = connectZonesWithDoors(walls, ["hall", "bed"], {
+      preferredStart: ["hall"],
+      roomPolys: [hall, bed],
+      roomTypes: { hall: "hallway", bed: "bedroom" },
+    });
+    assert.ok(reached.has("bed"));
+    assert.ok(doors.length >= 1);
+    assert.equal(extraWalls.length, 0, "must not stack synth pillar walls");
+    assert.ok(
+      doors.every((d) => d.wallId === "h-e" || d.wallId === "b-w"),
+      "openings must use existing outline walls",
+    );
+    assert.ok(wallPatches.length >= 0);
+  });
+
   it("synthesizes an opening when rooms are separated by a clip gap", () => {
     const hall = {
       zone: "hall",
@@ -121,16 +240,19 @@ describe("door connectivity", () => {
       a: w.a,
       b: w.b,
     }));
-    const { doors, reached, extraWalls } = connectZonesWithDoors(walls, ["hall", "bed"], {
+    const { doors, reached, extraWalls, wallPatches } = connectZonesWithDoors(walls, ["hall", "bed"], {
       preferredStart: ["hall"],
       roomPolys: [hall, bed],
       roomTypes: { hall: "hallway", bed: "bedroom" },
     });
     assert.ok(reached.has("bed"), "bedroom must be reachable");
     assert.ok(doors.length >= 1);
+    assert.equal(extraWalls.length, 0, "clip-gap rescue must not invent pillar walls");
     assert.ok(
-      walls.some((w) => !w.exterior && w.zones.includes("bed")) || extraWalls.length > 0,
-      "should share an interior wall or synthesize one",
+      wallPatches.some((p) => !p.exterior && p.zones.includes("bed")) ||
+        walls.some((w) => !w.exterior && w.zones.includes("bed")) ||
+        doors.some((d) => d.exit),
+      "should convert a shared edge to interior or open an exit",
     );
   });
 });

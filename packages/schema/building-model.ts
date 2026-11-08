@@ -149,6 +149,7 @@ export const CompoundKind = z.enum([
   "trees",
   "road",
   "signal",
+  "stop",
   "hydrant",
   "neighbor",
   "steps",

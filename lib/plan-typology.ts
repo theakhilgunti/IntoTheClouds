@@ -32,6 +32,8 @@ export const PLAN_FINGERPRINT_BANK: BankEntry[] = [
   { program: "hotel", bedrooms: [6, 50], baths: [0, 6], corridorFrac: [0.08, 0.22], aspect: [0.3, 3.2], medianBays: 5 },
   { program: "hospital", bedrooms: [4, 40], baths: [0, 8], corridorFrac: [0.1, 0.28], aspect: [0.35, 3.0], medianBays: 5 },
   { program: "school", bedrooms: [0, 2], baths: [1, 8], corridorFrac: [0.08, 0.25], aspect: [0.4, 2.5], medianBays: 4 },
+  { program: "university", bedrooms: [0, 2], baths: [1, 10], corridorFrac: [0.08, 0.26], aspect: [0.35, 2.8], medianBays: 4 },
+  { program: "library", bedrooms: [0, 1], baths: [1, 6], corridorFrac: [0.04, 0.18], aspect: [0.4, 2.5], medianBays: 3 },
   { program: "office", bedrooms: [0, 1], baths: [1, 6], corridorFrac: [0.05, 0.2], aspect: [0.45, 2.2], medianBays: 3 },
   { program: "warehouse", bedrooms: [0, 0], baths: [0, 2], corridorFrac: [0.0, 0.08], aspect: [0.4, 2.5], medianBays: 2 },
   { program: "church", bedrooms: [0, 0], baths: [0, 2], corridorFrac: [0.05, 0.2], aspect: [0.5, 2.0], medianBays: 2 },
