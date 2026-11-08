@@ -8,3 +8,4 @@ echo =================================================================
 echo.
 "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" "%~dp0wifi_2d_grid_mapper.py"
 pause
+

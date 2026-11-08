@@ -115,12 +115,27 @@ class WLAN_BSS_ENTRY(ctypes.Structure):
     ]
 
 # =============================================================================
-# Global State & Configuration
+# Global State & Configuration Persistence
 # =============================================================================
+
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "anchors_config.json")
+
+def detect_lan_ip() -> str:
+    """Detect LAN IPv4 address for multi-device/phone access."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
 
 class GlobalState:
     def __init__(self):
         self.lock = threading.Lock()
+        self.lan_ip = detect_lan_ip()
         
         # Grid parameters (meters)
         self.grid_width = 30.0   # X-axis extent (meters)
@@ -214,6 +229,57 @@ class GlobalState:
         # Simulation / Mock mode
         self.mock_mode = False
         self.mock_phase = 0.0
+        
+        # Automatically load saved configuration if available
+        self.load_config()
+
+    def save_config(self):
+        """Persist current anchor assignments and calibration to JSON file."""
+        try:
+            cfg = {
+                "grid_width": self.grid_width,
+                "grid_height": self.grid_height,
+                "anchors": {
+                    str(aid): {
+                        "signal_id": a["signal_id"],
+                        "signal_name": a["signal_name"],
+                        "A_ref": a["A_ref"],
+                        "n_exp": a["n_exp"],
+                        "x": a["x"],
+                        "y": a["y"]
+                    } for aid, a in self.anchors.items()
+                }
+            }
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+            print(f"[CONFIG] Saved anchor settings to {CONFIG_PATH}")
+        except Exception as e:
+            print(f"[CONFIG] Save error: {e}")
+
+    def load_config(self):
+        """Restore anchor assignments and calibration from JSON file."""
+        if not os.path.exists(CONFIG_PATH):
+            return
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            if "grid_width" in cfg:
+                self.grid_width = float(cfg["grid_width"])
+            if "grid_height" in cfg:
+                self.grid_height = float(cfg["grid_height"])
+            if "anchors" in cfg:
+                for aid_str, a_cfg in cfg["anchors"].items():
+                    aid = int(aid_str)
+                    if aid in self.anchors:
+                        self.anchors[aid]["signal_id"] = a_cfg.get("signal_id")
+                        self.anchors[aid]["signal_name"] = a_cfg.get("signal_name", "Unassigned")
+                        self.anchors[aid]["A_ref"] = float(a_cfg.get("A_ref", -42.0))
+                        self.anchors[aid]["n_exp"] = float(a_cfg.get("n_exp", 2.40))
+                        self.anchors[aid]["x"] = float(a_cfg.get("x", self.anchors[aid]["x"]))
+                        self.anchors[aid]["y"] = float(a_cfg.get("y", self.anchors[aid]["y"]))
+            print(f"[CONFIG] Loaded saved anchor settings from {CONFIG_PATH}")
+        except Exception as e:
+            print(f"[CONFIG] Load error: {e}")
 
 STATE = GlobalState()
 
@@ -2056,6 +2122,7 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
                     anchor["last_rssi"] = sig["rssi"]
                     anchor["history"].clear()
                     print(f"[ASSIGN] Anchor {a_id} assigned to {sig['name']} ({sig['bssid_mac']})")
+                STATE.save_config()
                     
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2080,6 +2147,7 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
                     anchor["last_rssi"] = sig["rssi"]
                     anchor["history"].clear()
                     print(f"[AUTO-ASSIGN] Anchor {a_id} -> {sig['name']} ({sig['rssi']} dBm)")
+                STATE.save_config()
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2103,6 +2171,7 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
                     print(f"[CALIB] Anchor {a_id} calibrated at {calib_dist}m: New A_ref = {anchor['A_ref']} dBm")
                 else:
                     new_A = -42.0
+                STATE.save_config()
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2125,6 +2194,7 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
                     n = float(req_data["n_exp"])
                     for a in STATE.anchors.values():
                         a["n_exp"] = n
+                STATE.save_config()
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2210,7 +2280,9 @@ def main():
         httpd = HTTPServer(("0.0.0.0", args.port), RadarHTTPHandler)
 
     hud_url = f"http://127.0.0.1:{args.port}"
-    print(f"[+] Tactical Web HUD Live: {hud_url}")
+    lan_url = f"http://{STATE.lan_ip}:{args.port}"
+    print(f"[+] Local Web HUD:    {hud_url}")
+    print(f"[+] Mobile / Network: {lan_url}  (Open on phone/tablet while walking)")
     print("[*] Press Ctrl+C in this terminal to stop.")
     print("=" * 72)
 

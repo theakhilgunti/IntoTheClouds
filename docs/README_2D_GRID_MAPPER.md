@@ -110,3 +110,4 @@ Or double-click [RUN_2D_GRID_MAPPER.bat](file:///c:/Users/caleb/.gemini/antigrav
 - **Audio Sonar**: Toggle **🔊 Sound ON** to hear proximity sonar pings whose frequency increases as you approach the origin or anchors.
 - **CSV Logging**: Click **📥 Export CSV** anytime to download timestamped $X, Y$, speed, and RSSI logs.
 - **Simulation Mode**: Click **🎭 Simulate Walk** to run a virtual walk through the room even without physical hotspots active.
+
