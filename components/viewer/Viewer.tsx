@@ -528,7 +528,7 @@ function HydrantBeacon({
 }) {
   const glow = useRef<THREE.MeshStandardMaterial>(null);
   const beam = useRef<THREE.MeshStandardMaterial>(null);
-  const mastH = rank === 0 ? 12 : rank === 1 ? 9.5 : 7.5;
+  const mastH = rank === 0 ? 28 : rank === 1 ? 22 : 17;
   const tipY = 1.2 + mastH;
   const phase = rank * 0.9;
   useFrame(({ clock }) => {
@@ -1273,29 +1273,48 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         {shown.map((floor) => (
           <group key={floor.level} position={[0, floorY(floor), 0]}>
             {largeSite || floor.rooms.length > 10 ? (
-              <SimpleFloorDeck
-                floor={floor}
-                footprint={model.footprint}
-                xray={xray}
-                tipId={tip?.id ?? null}
-                onPick={(e, room) => {
-                  if (!tool) return;
-                  e.stopPropagation();
-                  setMarkers((m) => [
-                    ...m,
-                    {
-                      id: crypto.randomUUID(),
-                      type: tool,
-                      floor: floor.level,
-                      pos: [e.point.x, -e.point.z],
-                      note: room?.name ?? "",
-                      createdAt: new Date().toISOString(),
-                    },
-                  ]);
-                }}
-                onOver={showTip}
-                onOut={hideTip}
-              />
+              <>
+                <SimpleFloorDeck
+                  floor={floor}
+                  footprint={model.footprint}
+                  xray={xray}
+                  tipId={tip?.id ?? null}
+                  onPick={(e, room) => {
+                    if (!tool) return;
+                    e.stopPropagation();
+                    setMarkers((m) => [
+                      ...m,
+                      {
+                        id: crypto.randomUUID(),
+                        type: tool,
+                        floor: floor.level,
+                        pos: [e.point.x, -e.point.z],
+                        note: room?.name ?? "",
+                        createdAt: new Date().toISOString(),
+                      },
+                    ]);
+                  }}
+                  onOver={showTip}
+                  onOut={hideTip}
+                />
+                {/* Keep stair pads visible on the merged deck — they were lost in the perf flatten. */}
+                {floor.rooms
+                  .filter((r) => r.type === "stair")
+                  .map((room) => (
+                    <RoomSlab
+                      key={room.id}
+                      room={room}
+                      floorName={floor.name}
+                      xray={xray}
+                      showLabel
+                      hovered={tip?.id === room.id}
+                      y={0.14}
+                      onPick={dropMarker(floor)}
+                      onOver={showTip}
+                      onOut={hideTip}
+                    />
+                  ))}
+              </>
             ) : (
               floor.rooms.map((room) => (
                 <RoomSlab
@@ -1303,7 +1322,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
                   room={room}
                   floorName={floor.name}
                   xray={xray}
-                  showLabel={shown.length === 1 || exploded}
+                  showLabel={shown.length === 1 || exploded || room.type === "stair"}
                   hovered={tip?.id === room.id}
                   onPick={dropMarker(floor)}
                   onOver={showTip}

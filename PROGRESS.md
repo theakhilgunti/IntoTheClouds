@@ -114,3 +114,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 00:35 | Cursor | UI-26 | Nearest hydrant: tall red sky beacon POI with View toggle. |
 | 00:40 | Cursor | UI-27 | Hydrant beacons on the 3 nearest hydrants (tallest = closest). |
 | 00:42 | Cursor | UI-28 | Rotate 0° faces the front door (not road centroid). |
+| 01:05 | Cursor | UI-29 | Finished task |
+| 01:17 | Cursor | UI-30 | Finished task |
