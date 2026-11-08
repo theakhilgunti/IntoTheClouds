@@ -109,3 +109,6 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 23:55 | Cursor | UI-22 | Basement clears ground cover; stable outlines; gable edge-to-ridge mesh. |
 | 00:04 | Cursor | UI-23 | Hydrants: keep radius 250 m+, Overpass supplement, larger markers. |
 | 00:12 | Cursor | UI-24 | Large sites: single floor deck, lighter ground, orbit drag no longer fights HUD. |
+| 00:28 | Cursor | UI-25 | Flat roofs: ear-clip + split concave pads so lids stay on the building. |
+| 00:35 | Cursor | UI-26 | Nearest hydrant: tall red sky beacon POI with View toggle. |
+| 00:40 | Cursor | UI-27 | Hydrant beacons on the 3 nearest hydrants (tallest = closest). |

@@ -162,14 +162,68 @@ function nearestOnSeg(p: Pt, a: Pt, b: Pt): { at: Pt; d: number } {
   return { at, d: dist(p, at) };
 }
 
+function pointInTri(p: Pt, a: Pt, b: Pt, c: Pt): boolean {
+  const sign = (p1: Pt, p2: Pt, p3: Pt) => (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1]);
+  const b1 = sign(p, a, b) < 0;
+  const b2 = sign(p, b, c) < 0;
+  const b3 = sign(p, c, a) < 0;
+  return b1 === b2 && b2 === b3;
+}
+
+/**
+ * Ear-clip triangulation — stays inside concave rings (no centroid fan filling courtyards).
+ */
+function triangulateRing(ringIn: Pt[]): [Pt, Pt, Pt][] {
+  const ring = ccw(ringIn);
+  if (ring.length < 3) return [];
+  if (ring.length === 3) return [[ring[0], ring[1], ring[2]]];
+  const verts = ring.map((p) => [p[0], p[1]] as Pt);
+  const faces: [Pt, Pt, Pt][] = [];
+  let guard = verts.length * verts.length + 8;
+  while (verts.length > 3 && guard-- > 0) {
+    let clipped = false;
+    const n = verts.length;
+    for (let i = 0; i < n; i++) {
+      const prev = verts[(i - 1 + n) % n];
+      const cur = verts[i];
+      const next = verts[(i + 1) % n];
+      const cross = (cur[0] - prev[0]) * (next[1] - prev[1]) - (cur[1] - prev[1]) * (next[0] - prev[0]);
+      if (cross <= 1e-9) continue; // not a convex ear (CCW)
+      let empty = true;
+      for (let j = 0; j < n; j++) {
+        if (j === (i - 1 + n) % n || j === i || j === (i + 1) % n) continue;
+        if (pointInTri(verts[j], prev, cur, next)) {
+          empty = false;
+          break;
+        }
+      }
+      if (!empty) continue;
+      faces.push([prev, cur, next]);
+      verts.splice(i, 1);
+      clipped = true;
+      break;
+    }
+    if (!clipped) break;
+  }
+  if (verts.length === 3) faces.push([verts[0], verts[1], verts[2]]);
+  return faces;
+}
+
 function meshDeck(eaves: Pt[], h: number, out: number[]) {
   const ring = ccw(eaves);
   if (ring.length < 3) return;
-  const cx = ring.reduce((s, p) => s + p[0], 0) / ring.length;
-  const cy = ring.reduce((s, p) => s + p[1], 0) / ring.length;
-  const o: Pt = [cx, cy];
-  for (let i = 0; i < ring.length; i++) {
-    pushTri(out, ring[i], h, ring[(i + 1) % ring.length], h, o, h);
+  // Convex: cheap fan. Concave: ear-clip so triangles never cover courtyards / L notches.
+  if (!isConcave(ring)) {
+    const cx = ring.reduce((s, p) => s + p[0], 0) / ring.length;
+    const cy = ring.reduce((s, p) => s + p[1], 0) / ring.length;
+    const o: Pt = [cx, cy];
+    for (let i = 0; i < ring.length; i++) {
+      pushTri(out, ring[i], h, ring[(i + 1) % ring.length], h, o, h);
+    }
+    return;
+  }
+  for (const [a, b, c] of triangulateRing(ring)) {
+    pushTri(out, a, h, b, h, c, h);
   }
 }
 
@@ -346,7 +400,10 @@ function defaultRidge(poly: Pt[], along: "width" | "depth" | "auto"): [Pt, Pt] {
 }
 
 function meshFlatPiece(poly: Pt[], height: number, out: number[]) {
-  meshDeck(expandOut(simplifyRing(poly), 0.15), Math.max(0.14, height * 0.35), out);
+  const walls = simplifyRing(poly);
+  // Concave pads: no outward expand (miter can balloon past walls); tiny drip edge only if convex.
+  const eaves = isConcave(walls) ? walls : expandOut(walls, 0.12);
+  meshDeck(eaves, Math.max(0.14, height * 0.35), out);
 }
 
 function meshWing(wing: RoofWingMesh, out: number[]) {

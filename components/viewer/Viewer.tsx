@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Canvas, type ThreeEvent } from "@react-three/fiber";
+import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
 import { Edges, Line, OrbitControls } from "@react-three/drei";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import * as THREE from "three";
@@ -510,16 +510,101 @@ function OutbuildingMesh({
   );
 }
 
+/** Tall pulsing red beacon — rank 0 is nearest (tallest); 1–2 are slightly shorter. */
+function HydrantBeacon({
+  position,
+  hovered,
+  onOver,
+  onOut,
+  rank = 0,
+  label = "Nearest hydrant",
+}: {
+  position: [number, number, number];
+  hovered: boolean;
+  onOver: (e: ThreeEvent<PointerEvent>) => void;
+  onOut: () => void;
+  rank?: number;
+  label?: string;
+}) {
+  const glow = useRef<THREE.MeshStandardMaterial>(null);
+  const beam = useRef<THREE.MeshStandardMaterial>(null);
+  const mastH = rank === 0 ? 12 : rank === 1 ? 9.5 : 7.5;
+  const tipY = 1.2 + mastH;
+  const phase = rank * 0.9;
+  useFrame(({ clock }) => {
+    const pulse = 0.55 + Math.sin(clock.elapsedTime * 3.2 + phase) * 0.45;
+    if (glow.current) glow.current.emissiveIntensity = hovered ? 1.6 : pulse * (rank === 0 ? 1 : 0.75);
+    if (beam.current) beam.current.opacity = (0.18 + pulse * 0.28) * (rank === 0 ? 1 : 0.7);
+  });
+  return (
+    <group position={position} onPointerOver={onOver} onPointerOut={onOut}>
+      <mesh position={[0, 0.12, 0]}>
+        <cylinderGeometry args={[0.32, 0.38, 0.22, 10]} />
+        <meshStandardMaterial color="#1f2937" metalness={0.35} roughness={0.55} />
+      </mesh>
+      <mesh position={[0, 0.65, 0]}>
+        <cylinderGeometry args={[0.24, 0.26, 0.85, 10]} />
+        <meshStandardMaterial color="#dc2626" metalness={0.2} roughness={0.4} emissive="#dc2626" emissiveIntensity={rank === 0 ? 0.4 : 0.25} />
+      </mesh>
+      <mesh position={[0.3, 0.72, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[0.08, 0.09, 0.26, 8]} />
+        <meshStandardMaterial color="#dc2626" />
+      </mesh>
+      <mesh position={[-0.3, 0.72, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[0.08, 0.09, 0.26, 8]} />
+        <meshStandardMaterial color="#dc2626" />
+      </mesh>
+      <mesh position={[0, 1.15, 0]}>
+        <cylinderGeometry args={[0.13, 0.16, 0.22, 8]} />
+        <meshStandardMaterial color="#f8fafc" metalness={0.4} roughness={0.35} />
+      </mesh>
+      <mesh position={[0, 1.2 + mastH / 2, 0]}>
+        <cylinderGeometry args={[0.05, 0.085, mastH, 10]} />
+        <meshStandardMaterial color="#7f1d1d" metalness={0.3} roughness={0.45} />
+      </mesh>
+      <mesh position={[0, 1.2 + mastH / 2, 0]} raycast={noopRaycast}>
+        <cylinderGeometry args={[0.45, 0.75, mastH + 1.5, 14]} />
+        <meshStandardMaterial
+          ref={beam}
+          color="#ef4444"
+          emissive="#ef4444"
+          emissiveIntensity={1.1}
+          transparent
+          opacity={0.32}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      <mesh position={[0, tipY, 0]}>
+        <sphereGeometry args={[rank === 0 ? 0.45 : 0.32, 14, 14]} />
+        <meshStandardMaterial ref={glow} color="#fecaca" emissive="#ef4444" emissiveIntensity={1} toneMapped={false} />
+      </mesh>
+      <mesh position={[0, tipY, 0]} raycast={noopRaycast}>
+        <sphereGeometry args={[rank === 0 ? 1.1 : 0.75, 14, 14]} />
+        <meshBasicMaterial color="#ef4444" transparent opacity={0.18} depthWrite={false} />
+      </mesh>
+      <group position={[0, tipY + 1.0, 0]}>
+        <LabelSprite text={label} color="#7f1d1d" fit />
+      </group>
+    </group>
+  );
+}
+
 function SiteFeatureMesh({
   feature,
   hovered,
   onOver,
   onOut,
+  beacon = false,
+  beaconRank = 0,
 }: {
   feature: CompoundFeature;
   hovered: boolean;
   onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
   onOut: (id: string) => void;
+  /** Tall red sky beacon for a nearby hydrant POI. */
+  beacon?: boolean;
+  beaconRank?: number;
 }) {
   const center = useMemo(() => {
     const n = feature.polygon.length || 1;
@@ -605,36 +690,37 @@ function SiteFeatureMesh({
   }
 
   if (feature.kind === "hydrant") {
+    if (beacon) {
+      const label =
+        beaconRank === 0 ? "Nearest hydrant" : beaconRank === 1 ? "Hydrant #2" : `Hydrant #${beaconRank + 1}`;
+      return (
+        <HydrantBeacon
+          position={[center[0], 0, center[1]]}
+          hovered={hovered}
+          onOver={hover}
+          onOut={() => onOut(feature.id)}
+          rank={beaconRank}
+          label={label}
+        />
+      );
+    }
     const red = hovered ? "#f87171" : SITE_COLOR.hydrant;
     return (
-      <group position={[center[0], 0, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)} scale={1.65}>
-        {/* Ground disc so hydrants read from orbit distance */}
+      <group position={[center[0], 0, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)} scale={1.35}>
         <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} raycast={noopRaycast}>
-          <circleGeometry args={[0.55, 16]} />
-          <meshStandardMaterial color="#7f1d1d" transparent opacity={0.55} depthWrite={false} />
+          <circleGeometry args={[0.4, 12]} />
+          <meshStandardMaterial color="#7f1d1d" transparent opacity={0.45} depthWrite={false} />
         </mesh>
         <mesh position={[0, 0.1, 0]}>
-          <cylinderGeometry args={[0.28, 0.32, 0.18, 10]} />
+          <cylinderGeometry args={[0.22, 0.26, 0.16, 10]} />
           <meshStandardMaterial color="#1f2937" metalness={0.35} roughness={0.55} />
         </mesh>
-        <mesh position={[0, 0.55, 0]}>
-          <cylinderGeometry args={[0.2, 0.22, 0.7, 10]} />
-          <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} emissive={red} emissiveIntensity={hovered ? 0.45 : 0.2} />
+        <mesh position={[0, 0.48, 0]}>
+          <cylinderGeometry args={[0.16, 0.18, 0.6, 10]} />
+          <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} emissive={red} emissiveIntensity={hovered ? 0.4 : 0.15} />
         </mesh>
-        <mesh position={[0.26, 0.62, 0]} rotation={[0, 0, Math.PI / 2]}>
-          <cylinderGeometry args={[0.07, 0.08, 0.22, 8]} />
-          <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} />
-        </mesh>
-        <mesh position={[-0.26, 0.62, 0]} rotation={[0, 0, Math.PI / 2]}>
-          <cylinderGeometry args={[0.07, 0.08, 0.22, 8]} />
-          <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} />
-        </mesh>
-        <mesh position={[0, 0.62, 0.26]} rotation={[Math.PI / 2, 0, 0]}>
-          <cylinderGeometry args={[0.065, 0.075, 0.2, 8]} />
-          <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} />
-        </mesh>
-        <mesh position={[0, 1.0, 0]}>
-          <cylinderGeometry args={[0.11, 0.14, 0.2, 8]} />
+        <mesh position={[0, 0.88, 0]}>
+          <cylinderGeometry args={[0.09, 0.11, 0.16, 8]} />
           <meshStandardMaterial color="#f8fafc" metalness={0.4} roughness={0.4} />
         </mesh>
       </group>
@@ -841,6 +927,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const [exploded, setExploded] = useState(false);
   const [xray, setXray] = useState(false);
   const [roofOn, setRoofOn] = useState(true);
+  const [hydrantBeaconOn, setHydrantBeaconOn] = useState(true);
   const [tool, setTool] = useState<MarkerType | null>(null);
   const [marksOpen, setMarksOpen] = useState(false);
   const [help, setHelp] = useState<string | null>(null);
@@ -908,6 +995,17 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const floorY = (f: Floor) => f.elevation + (exploded ? f.level * EXPLODE_GAP : 0);
   const top = model.floors.find((f) => f.level === topLevel)!;
   const showRoof = !!model.roof && roofOn && !hidden.has(topLevel);
+  // Already distance-sorted as hydrant-0, hydrant-1, … — beacon the closest few.
+  const beaconHydrants = useMemo(() => {
+    const list = model.compound?.features.filter((f) => f.kind === "hydrant") ?? [];
+    const ranked = [...list].sort((a, b) => {
+      const ia = Number(a.id.replace("hydrant-", "")) || 99;
+      const ib = Number(b.id.replace("hydrant-", "")) || 99;
+      return ia - ib;
+    });
+    return ranked.slice(0, 3);
+  }, [model.compound?.features]);
+  const beaconHydrantIds = useMemo(() => new Set(beaconHydrants.map((f) => f.id)), [beaconHydrants]);
   // Basement open with ground floor gone → clear the yard/ground disc that sat on top of it.
   const peeringBasement = shown.some((f) => f.level < 0) && !shown.some((f) => f.level >= 0);
 
@@ -1002,6 +1100,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const HELP: Record<string, string> = {
     floor: "Show or hide this floor. Opening the basement hides floors above so you can look down into it.",
     roof: "Show or hide the roof. Turn it off to see straight down into the top floor.",
+    hydrant: "Red sky beacons on the few nearest fire hydrants. Tap again to hide the POIs.",
     explode: "Pulls the floors apart vertically so you can see every level at once. Tap again to stack them back.",
     xray: "See-through mode: walls turn to outlines so you can spot exits (green) and stairs (yellow) through them.",
     markers: "Open the hazard tools. Pick one, then tap a room to pin it so everyone sees it.",
@@ -1085,16 +1184,42 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
                   });
                 })()
               : feats;
-          return filtered.map((feature) => (
+          return filtered.map((feature) => {
+            // Beacon POIs replace the small meshes for the closest few when the toggle is on.
+            if (hydrantBeaconOn && beaconHydrantIds.has(feature.id)) return null;
+            return (
+              <SiteFeatureMesh
+                key={feature.id}
+                feature={feature}
+                hovered={tip?.id === feature.id}
+                onOver={showTip}
+                onOut={hideTip}
+              />
+            );
+          });
+        })()}
+
+        {hydrantBeaconOn &&
+          beaconHydrants.map((feature, rank) => (
             <SiteFeatureMesh
-              key={feature.id}
+              key={`beacon-${feature.id}`}
               feature={feature}
+              beacon
+              beaconRank={rank}
               hovered={tip?.id === feature.id}
-              onOver={showTip}
+              onOver={(e, id, title) =>
+                showTip(
+                  e,
+                  id,
+                  title,
+                  rank === 0
+                    ? "Closest mapped fire hydrant — primary water supply"
+                    : `Hydrant #${rank + 1} by distance — secondary supply`,
+                )
+              }
               onOut={hideTip}
             />
-          ));
-        })()}
+          ))}
 
         {shown.map((floor) => (
           <group key={floor.level} position={[0, floorY(floor), 0]}>
@@ -1331,6 +1456,17 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
               <button className={btn(xray)} onClick={() => setXray((v) => !v)} aria-pressed={xray} {...hint("xray")}>
                 See through walls
               </button>
+              {beaconHydrants.length > 0 && (
+                <button
+                  className={btn(hydrantBeaconOn)}
+                  onClick={() => setHydrantBeaconOn((v) => !v)}
+                  aria-pressed={hydrantBeaconOn}
+                  style={hydrantBeaconOn ? { background: "#dc2626", color: "#fff", borderColor: "#fecaca" } : undefined}
+                  {...hint("hydrant")}
+                >
+                  Hydrant beacons ({beaconHydrants.length})
+                </button>
+              )}
             </div>
           </div>
           <div className="flex shrink-0 flex-col gap-1 border-l border-bp-ink/30 pl-3">

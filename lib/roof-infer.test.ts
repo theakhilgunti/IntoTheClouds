@@ -82,6 +82,26 @@ test("OSM flat overrides footprint", () => {
   assert.equal(plan.source, "map");
 });
 
+test("flat L roofs split into volumes and do not fill the courtyard", () => {
+  const plan = inferRoofPlan({ footprint: ell, osmTags: { "roof:shape": "flat" } });
+  assert.ok(plan.wings.length >= 2, "flat L should be multi-wing");
+  assert.ok(plan.wings.every((w) => w.shape === "flat"));
+  const pos = buildRoofPositions(ell, {
+    shape: "flat",
+    ridgeAlong: "depth",
+    height: 0.5,
+    wings: plan.wings,
+  });
+  assert.ok(pos.length > 20);
+  // Courtyard of the L (around [8,8]) should not sit under a triangle centroid fan.
+  // Spot-check: no vertex lands deep in the missing corner.
+  for (let i = 0; i < pos.length; i += 3) {
+    const x = pos[i];
+    const y = -pos[i + 2];
+    assert.ok(!(x > 5 && y > 5), `flat roof leaked into courtyard at ${x},${y}`);
+  }
+});
+
 test("gable mesh peaks along a ridge line, not a single apex", () => {
   const plan = inferRoofPlan({ footprint: rect });
   const pos = buildRoofPositions(rect, {

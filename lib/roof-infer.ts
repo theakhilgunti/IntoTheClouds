@@ -575,6 +575,17 @@ export function inferRoofPlan(opts: {
     shape === "flat" ? "flat" : shape === "hip" || shape === "other" ? "hip" : "gable";
 
   if (meshShape === "flat" || foot.kind === "flat_pad") {
+    // Concave / multi-wing pads: one flat per rectangle volume so courtyards stay open.
+    if (isConcave(poly) || foot.kind === "complex" || foot.kind === "L") {
+      const parts = decomposeRoofVolumes(poly);
+      if (parts.length >= 2) {
+        const wings = parts.map((p) => {
+          const vol = nearlyRect(p) || (!isConcave(p) && p.length <= 6) ? ccw(p) : snapToObbRect(p);
+          return wingFromPoly(vol, "flat", true);
+        });
+        return { kind: "wings", wings, source, shape: "flat", ridgeAlong };
+      }
+    }
     const w = wingFromPoly(poly, "flat", true);
     return { kind: "flat", wings: [w], source, shape, ridgeAlong };
   }
