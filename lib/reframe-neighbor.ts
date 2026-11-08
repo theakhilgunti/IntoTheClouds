@@ -177,6 +177,24 @@ export function reframeScanToNeighbor(result: ScanResult, wayId: number): ScanRe
       return s + p[0] * q[1] - q[0] * p[1];
     }, 0) / 2));
   }
+  const nearbyById = new Map<number, string>();
+  for (const n of result.summary.nearby ?? []) {
+    if (n.id != null && n.label) nearbyById.set(n.id, n.label);
+  }
+  for (const f of model.compound?.features ?? []) {
+    if (f.kind !== "neighbor") continue;
+    const m = /^neighbor-(\d+)$/.exec(f.id);
+    if (!m) continue;
+    const label = f.label?.trim();
+    if (!label || /^neighbor$/i.test(label) || /^building\s+\d+$/i.test(label)) continue;
+    nearbyById.set(Number(m[1]), label);
+  }
+  // Current focus house address belongs in the list too.
+  const focus = /^osm-(\d+)$/.exec(model.id);
+  if (focus && model.address?.trim()) {
+    nearbyById.set(Number(focus[1]), model.address.trim());
+  }
+
   return {
     ...result,
     model,
@@ -191,6 +209,7 @@ export function reframeScanToNeighbor(result: ScanResult, wayId: number): ScanRe
       area,
       stories: model.floors.filter((f) => f.level >= 0).length,
       match: "nearest",
+      nearby: [...nearbyById.entries()].map(([id, label]) => ({ id, label })),
     },
     createdAt: new Date().toISOString(),
   };

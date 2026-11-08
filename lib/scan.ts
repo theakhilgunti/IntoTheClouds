@@ -955,7 +955,9 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       const heightRaw = parseFloat(String(s.tags.height ?? "").replace(/m$/i, "").trim());
       const num = s.tags["addr:housenumber"];
       const street = s.tags["addr:street"];
-      const address = num && street ? `${num} ${street}` : num ? String(num) : null;
+      const city = s.tags["addr:city"];
+      const address =
+        num && street ? (city ? `${num} ${street}, ${city}` : `${num} ${street}`) : num ? String(num) : null;
       return {
         id: s.id,
         tag: s.tags.building ?? "",
@@ -1209,7 +1211,22 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     ],
     summary: {
       width: built.width, depth: built.depth, area: Math.round(footprint ? polygonArea(footprint) : built.width * built.depth), facing: built.facing, stories, streetDir,
-      nearby: osm?.nearby ?? [],
+      nearby: (() => {
+        const byId = new Map<number, string>();
+        for (const n of osm?.nearby ?? []) {
+          if (n.id != null && n.label) byId.set(n.id, n.label);
+        }
+        // Prefer addresses already on rendered neighbor shells (housenumber + street from OSM).
+        for (const f of built.model.compound?.features ?? []) {
+          if (f.kind !== "neighbor") continue;
+          const m = /^neighbor-(\d+)$/.exec(f.id);
+          if (!m) continue;
+          const label = f.label?.trim();
+          if (!label || /^neighbor$/i.test(label) || /^building\s+\d+$/i.test(label)) continue;
+          byId.set(Number(m[1]), label);
+        }
+        return [...byId.entries()].map(([id, label]) => ({ id, label }));
+      })(),
       match: osm?.chosenBy === "nearest" || osm?.chosenBy === "in-view-direction" ? "nearest" : osm?.chosenBy === "contains-point" ? "point" : "address",
     },
     createdAt: new Date().toISOString(),

@@ -54,6 +54,12 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 08:25 | Cursor | UI-146 | Fix homepage sheet anim skip: sheetGo from nearby overlay; restart go() mid-transition instead of bare push. |
+| 08:20 | Cursor | UI-145 | Wrong house? lists street addresses for known OSM neighbors (compound + nearby merge). |
+| 08:18 | Cursor | UI-144 | Wrong-house overlay always visible; hold ~450ms + carry across route change until viewer ready. |
+| 08:15 | Cursor | UI-143 | Fix wrong-house switch: stop stale v55 background rescan; sync reframe (no laggy timers). |
+| 08:13 | Cursor | UI-142 | Wrong-house switch shows fade-in overlay + brief progress (reframe path). |
+| 08:08 | Cursor | UI-141 | Streets always above parking: higher road layer/Y/offset; parking plates skip street-deck lift. |
 | 07:12 | Cursor | UI-140 | Mild foundation-scaled grid disc; cull fences/features outside disc; drop long OSM fence spans (compound-v68). |
 | 07:06 | Cursor | UI-139 | Soften road avoid (inside-only); raise street-run cap so curb roads stay (compound-v67). |
 | 07:04 | Cursor | UI-138 | Skip street ribbon chunks through house/neighbor/shed pads; narrower ribbons (compound-v66). |

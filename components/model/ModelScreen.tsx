@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useSheetHold } from "@/components/ui/SheetTransition";
+import { useSheetHold, useSheetNav } from "@/components/ui/SheetTransition";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -44,20 +44,106 @@ function shortAddress(address: string): string {
   return parts.slice(0, 2).join(", ") || address;
 }
 
+/** Prefer real street addresses over generic "Neighbor" / "Building N" placeholders. */
+function isKnownNeighborAddress(label: string | null | undefined): boolean {
+  const s = label?.trim() ?? "";
+  if (!s) return false;
+  if (/^neighbor$/i.test(s)) return false;
+  if (/^building\s+\d+$/i.test(s)) return false;
+  return true;
+}
+
+/** Wrong-house choices: summary.nearby merged with addressed neighbor shells in the compound. */
+function neighborHouseChoices(
+  summaryNearby: { id: number; label: string }[],
+  model: { id: string; compound?: { features: { id: string; kind: string; label?: string | null }[] } | null },
+): { id: number; label: string }[] {
+  const byId = new Map<number, string>();
+  for (const n of summaryNearby) {
+    if (n.id == null || !n.label) continue;
+    byId.set(n.id, n.label);
+  }
+  for (const f of model.compound?.features ?? []) {
+    if (f.kind !== "neighbor") continue;
+    const m = /^neighbor-(\d+)$/.exec(f.id);
+    if (!m) continue;
+    const label = f.label?.trim();
+    if (!isKnownNeighborAddress(label)) continue;
+    byId.set(Number(m[1]), label!);
+  }
+  const main = /^osm-(\d+)$/.exec(model.id);
+  const rows = [...byId.entries()].map(([id, label]) => ({ id, label }));
+  // Prefer known addresses; keep current house even if label is weak so "Wrong house?" still opens.
+  const known = rows.filter((h) => isKnownNeighborAddress(h.label));
+  if (known.length >= 1) {
+    if (main) {
+      const mainId = Number(main[1]);
+      if (!known.some((h) => h.id === mainId)) {
+        const fallback = rows.find((h) => h.id === mainId);
+        if (fallback) known.unshift(fallback);
+      }
+    }
+    return known;
+  }
+  return rows;
+}
+
 export default function ModelScreen({ id }: { id: string }) {
   const router = useRouter();
   const [state, setState] = useState<State>({ kind: "loading" });
   const [panel, setPanel] = useState(false);
   const [rescanning, setRescanning] = useState(false);
   const [nearbyLoading, setNearbyLoading] = useState<string | null>(null);
+  const [nearbyMode, setNearbyMode] = useState<"switch" | "load" | null>(null);
   const [nearbyProgress, setNearbyProgress] = useState(0);
   const [nearbyStep, setNearbyStep] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const [wrongOpen, setWrongOpen] = useState(false);
   const [viewerReady, setViewerReady] = useState(false);
   const holdSheet = useSheetHold();
+  const sheetGo = useSheetNav();
   const releaseSheet = useRef<(() => void) | null>(null);
   const rescanAbort = useRef<AbortController | null>(null);
+  /** Bumps to cancel an in-flight instant neighbor reframe transition. */
+  const switchGen = useRef(0);
+  const switchHold = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Restore the switch overlay after navigating to the neighbor's model URL.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("cloudscan:nearbySwitch");
+      if (!raw) return;
+      sessionStorage.removeItem("cloudscan:nearbySwitch");
+      const parsed = JSON.parse(raw) as { label?: string };
+      setNearbyMode("switch");
+      setNearbyLoading(parsed.label || "nearby house");
+      setNearbyProgress(100);
+      setNearbyStep("Opening model…");
+      setRescanning(true);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Drop the carried-over switch overlay once the new viewer has painted.
+  useEffect(() => {
+    if (!viewerReady || nearbyMode !== "switch" || nearbyProgress < 100) return;
+    if (switchHold.current) return;
+    switchHold.current = setTimeout(() => {
+      switchHold.current = null;
+      setRescanning(false);
+      setNearbyMode(null);
+      setNearbyLoading(null);
+      setNearbyProgress(0);
+      setNearbyStep(null);
+    }, 280);
+    return () => {
+      if (switchHold.current) {
+        clearTimeout(switchHold.current);
+        switchHold.current = null;
+      }
+    };
+  }, [viewerReady, nearbyMode, nearbyProgress]);
 
   // Keep the page-change sheet down until the model has drawn its first frame.
   useEffect(() => {
@@ -73,6 +159,7 @@ export default function ModelScreen({ id }: { id: string }) {
     return () => {
       rescanAbort.current?.abort();
       rescanAbort.current = null;
+      if (switchHold.current) clearTimeout(switchHold.current);
     };
   }, []);
 
@@ -83,11 +170,15 @@ export default function ModelScreen({ id }: { id: string }) {
       const empty = model.interior?.status === "unknown" && model.floors.every((f) => f.rooms.length === 0);
       const stale =
         (model.source === "address" || model.source === "photo") &&
-        (model.compound?.basis !== "compound-v55" || model.roof?.basis !== "roof-v4");
+        (model.compound?.basis !== "compound-v68" || model.roof?.basis !== "roof-v4");
+      // Neighbor reframes are already valid site data — don't background-rescan the old address.
+      if (model.interior?.source?.includes("neighbor reframe")) return;
       if ((!empty && !stale) || !scan.query.address) return;
       const form = new FormData();
       form.append("address", scan.query.address);
       form.append("rescan", "1");
+      const osmWay = /^osm-(\d+)$/.exec(model.id);
+      if (osmWay) form.append("wayId", osmWay[1]!);
       streamScan(form, () => {})
         .then(({ result: fresh }) => {
           if (cancel) return;
@@ -129,34 +220,77 @@ export default function ModelScreen({ id }: { id: string }) {
     };
   }, [id]);
 
-  /** Instant Wrong-house switch: reuse compound / DEM, rebuild only the new focus. */
+  /** Wrong-house switch: visible overlay, then reframe; hold overlay so it isn't a one-frame flash. */
   function switchToNeighbor(wayId: number, nearbyLabel?: string) {
     if (state.kind !== "scan") return;
-    if (state.scan.result.model.id === `osm-${wayId}`) return;
-    if (!findNeighborFeature(state.scan.result.model, wayId)) {
+    const prev = state.scan;
+    if (prev.result.model.id === `osm-${wayId}`) return;
+    if (!findNeighborFeature(prev.result.model, wayId)) {
       // Shell missing from compound — fall back to a full rescan for this way.
       void rescan(wayId, nearbyLabel);
       return;
     }
-    try {
-      const result = reframeScanToNeighbor(state.scan.result, wayId);
-      const scan = {
-        ...state.scan,
-        result,
-        query: { ...state.scan.query, address: result.model.address || state.scan.query.address },
-      };
-      saveScan(scan);
-      setWrongOpen(false);
-      if (result.model.id !== id) {
-        router.push(`/model/${encodeURIComponent(result.model.id)}`);
-        return;
-      }
-      setState({ kind: "scan", scan });
-      setVersion((v) => v + 1);
-    } catch {
-      // Reframe failed — fall back to a full network rescan.
-      void rescan(wayId, nearbyLabel);
+    const label = nearbyLabel || "nearby house";
+    const gen = ++switchGen.current;
+    const started = performance.now();
+    rescanAbort.current?.abort();
+    rescanAbort.current = null;
+    if (switchHold.current) {
+      clearTimeout(switchHold.current);
+      switchHold.current = null;
     }
+    setWrongOpen(false);
+    setRescanning(true);
+    setNearbyMode("switch");
+    setNearbyLoading(label);
+    setNearbyProgress(20);
+    setNearbyStep("Switching focus…");
+
+    // Double rAF: first paint shows the overlay, second runs the reframe.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (switchGen.current !== gen) return;
+        setNearbyProgress(65);
+        setNearbyStep("Reframing site…");
+        try {
+          const result = reframeScanToNeighbor(prev.result, wayId);
+          const scan = {
+            ...prev,
+            result,
+            query: {
+              ...prev.query,
+              address: result.model.address || prev.query.address,
+              lat: result.model.lat,
+              lng: result.model.lng,
+            },
+          };
+          saveScan(scan);
+          setNearbyProgress(100);
+          setNearbyStep("Opening model…");
+          const finish = () => {
+            if (switchGen.current !== gen) return;
+            if (result.model.id !== id) {
+              try {
+                sessionStorage.setItem("cloudscan:nearbySwitch", JSON.stringify({ label }));
+              } catch {
+                /* ignore */
+              }
+              router.push(`/model/${encodeURIComponent(result.model.id)}`);
+              return;
+            }
+            setViewerReady(false);
+            setState({ kind: "scan", scan });
+            setVersion((v) => v + 1);
+            // Keep overlay until the remounted viewer reports ready (see effect above).
+          };
+          const holdMs = Math.max(0, 450 - (performance.now() - started));
+          switchHold.current = setTimeout(finish, holdMs);
+        } catch {
+          if (switchGen.current !== gen) return;
+          void rescan(wayId, nearbyLabel);
+        }
+      });
+    });
   }
 
   async function rescan(wayId?: number, nearbyLabel?: string) {
@@ -174,6 +308,7 @@ export default function ModelScreen({ id }: { id: string }) {
     const ac = new AbortController();
     rescanAbort.current = ac;
     setRescanning(true);
+    setNearbyMode(wayId != null ? "load" : null);
     setNearbyLoading(wayId != null ? nearbyLabel || "nearby house" : null);
     setNearbyProgress(wayId != null ? 4 : 0);
     setNearbyStep(wayId != null ? STEP_LABELS.locate : null);
@@ -208,6 +343,7 @@ export default function ModelScreen({ id }: { id: string }) {
       // Skip state updates after unmount / home navigation abort.
       if (!ac.signal.aborted) {
         setRescanning(false);
+        setNearbyMode(null);
         setNearbyLoading(null);
         setNearbyProgress(0);
         setNearbyStep(null);
@@ -215,11 +351,22 @@ export default function ModelScreen({ id }: { id: string }) {
     }
   }
 
-  /** Stop an in-flight nearby-house rescan and stay on the current model. */
+  /** Stop an in-flight nearby-house load / reframe and stay on the current model. */
   function cancelNearbyLoad() {
+    switchGen.current += 1;
+    if (switchHold.current) {
+      clearTimeout(switchHold.current);
+      switchHold.current = null;
+    }
+    try {
+      sessionStorage.removeItem("cloudscan:nearbySwitch");
+    } catch {
+      /* ignore */
+    }
     rescanAbort.current?.abort();
     rescanAbort.current = null;
     setRescanning(false);
+    setNearbyMode(null);
     setNearbyLoading(null);
     setNearbyProgress(0);
     setNearbyStep(null);
@@ -228,7 +375,7 @@ export default function ModelScreen({ id }: { id: string }) {
   /** Abort nearby load and leave the model page. */
   function goHomeFromNearby() {
     cancelNearbyLoad();
-    router.push("/");
+    sheetGo("/");
   }
 
   function applyPlan(next: BuildingModel) {
@@ -274,7 +421,10 @@ export default function ModelScreen({ id }: { id: string }) {
 
   const model = state.kind === "demo" ? state.model : state.scan.result.model;
   const interior = model.interior;
-  const nearby = state.kind === "scan" ? state.scan.result.summary.nearby ?? [] : [];
+  const nearby =
+    state.kind === "scan"
+      ? neighborHouseChoices(state.scan.result.summary.nearby ?? [], state.scan.result.model)
+      : [];
   const match = state.kind === "scan" ? state.scan.result.summary.match : undefined;
   const interiorLine =
     interior?.status === "verified"
@@ -374,12 +524,14 @@ export default function ModelScreen({ id }: { id: string }) {
 
       {nearbyLoading && (
         <div
-          className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-bp-deep/55"
+          className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-bp-deep/65"
           role="status"
           aria-live="polite"
         >
           <div className="pointer-events-auto border border-bp-ink/70 bg-bp-deep px-6 py-5 text-center shadow-lg">
-            <div className="font-display text-2xl uppercase tracking-[0.04em] text-white">Loading house</div>
+            <div className="font-display text-2xl uppercase tracking-[0.04em] text-white">
+              {nearbyMode === "switch" ? "Switching house" : "Loading house"}
+            </div>
             <div className="mt-2 font-data text-sm text-bp-ink">{nearbyLoading}</div>
             {nearbyStep && (
               <div className="mt-2 font-data text-[11px] uppercase tracking-[0.1em] text-bp-line">{nearbyStep}</div>
@@ -390,7 +542,7 @@ export default function ModelScreen({ id }: { id: string }) {
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={nearbyProgress}
-              aria-label="Scan progress"
+              aria-label="House switch progress"
             >
               <div
                 className="h-full bg-bp-red transition-[width] duration-300 ease-out"

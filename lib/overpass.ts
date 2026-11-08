@@ -315,7 +315,21 @@ export type AddressHint = {
 function houseLabel(b: OsmBuilding): string {
   const num = b.tags["addr:housenumber"];
   const street = b.tags["addr:street"];
-  return num && street ? `${num} ${street}` : `Building ${b.id}`;
+  const city = b.tags["addr:city"];
+  if (num && street) {
+    return city ? `${num} ${street}, ${city}` : `${num} ${street}`;
+  }
+  if (num) return String(num);
+  return `Building ${b.id}`;
+}
+
+/** True when a nearby/neighbor label is a real address, not a generic placeholder. */
+export function isKnownNeighborAddress(label: string | null | undefined): boolean {
+  const s = label?.trim() ?? "";
+  if (!s) return false;
+  if (/^neighbor$/i.test(s)) return false;
+  if (/^building\s+\d+$/i.test(s)) return false;
+  return true;
 }
 
 /**
@@ -510,10 +524,16 @@ out tags geom;`;
   }
 
   const nearby = buildings
-    .filter((b) => b.tags["addr:housenumber"] && b.area > 25 && !NON_HOUSE.has(b.tags.building) && distToRing(here, b.ring) < 70)
+    .filter(
+      (b) =>
+        b.tags["addr:housenumber"] &&
+        b.area > 25 &&
+        !NON_HOUSE.has(b.tags.building) &&
+        distToRing(here, b.ring) < 140,
+    )
     .map((b) => ({ id: b.id, label: houseLabel(b), d: distToRing(here, b.ring) }))
     .sort((a, b) => a.d - b.d)
-    .slice(0, 6)
+    .slice(0, 12)
     .map(({ id, label }) => ({ id, label }));
   if (building && !nearby.some((n) => n.id === building!.id) && building.tags["addr:housenumber"]) {
     nearby.unshift({ id: building.id, label: houseLabel(building) });

@@ -35,6 +35,10 @@ function reducedMotion() {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
+function pathOnly(href: string) {
+  return href.split(/[?#]/)[0] ?? href;
+}
+
 export default function SheetTransition({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -46,10 +50,20 @@ export default function SheetTransition({ children }: { children: React.ReactNod
   const holds = useRef(new Set<symbol>());
   const liftTimer = useRef<number | null>(null);
   const timers = useRef<number[]>([]);
+  const goGen = useRef(0);
 
   const set = useCallback((p: Phase) => {
     phaseRef.current = p;
     setPhase(p);
+  }, []);
+
+  const clearNavTimers = useCallback(() => {
+    for (const t of timers.current) window.clearTimeout(t);
+    timers.current = [];
+    if (liftTimer.current != null) {
+      window.clearTimeout(liftTimer.current);
+      liftTimer.current = null;
+    }
   }, []);
 
   // Lift the sheet once: sheet is down, route has changed, nothing is still loading.
@@ -74,27 +88,74 @@ export default function SheetTransition({ children }: { children: React.ReactNod
 
   const go = useCallback(
     (href: string) => {
-      if (reducedMotion() || phaseRef.current !== "idle") {
+      if (reducedMotion()) {
         router.push(href);
         return;
       }
-      target.current = href.split(/[?#]/)[0];
-      set("down");
-      timers.current.push(
-        window.setTimeout(() => {
-          coveredAt.current = Date.now();
-          router.push(href);
-          check();
-        }, DOWN_MS),
-        window.setTimeout(() => {
-          if (phaseRef.current === "down") {
-            holds.current.clear();
-            set("up");
-          }
-        }, DOWN_MS + MAX_WAIT_MS),
-      );
+
+      const path = pathOnly(href);
+
+      // Already covering this destination — let the current cover/lift finish.
+      if (phaseRef.current === "down" && target.current === path && coveredAt.current) {
+        return;
+      }
+
+      clearNavTimers();
+      holds.current.clear();
+      target.current = path;
+      const gen = ++goGen.current;
+
+      const armMaxWait = (delayMs: number) => {
+        timers.current.push(
+          window.setTimeout(() => {
+            if (goGen.current !== gen) return;
+            if (phaseRef.current === "down") {
+              holds.current.clear();
+              set("up");
+            }
+          }, delayMs),
+        );
+      };
+
+      const coverAndPush = () => {
+        if (goGen.current !== gen) return;
+        coveredAt.current = Date.now();
+        router.push(href);
+        check();
+        armMaxWait(MAX_WAIT_MS);
+      };
+
+      // Sheet already fully down (e.g. mid-load hold) — retarget underneath without a bare push skip.
+      if (phaseRef.current === "down" && coveredAt.current) {
+        coverAndPush();
+        return;
+      }
+
+      const beginDown = () => {
+        if (goGen.current !== gen) return;
+        coveredAt.current = 0;
+        set("down");
+        timers.current.push(
+          window.setTimeout(() => {
+            if (goGen.current !== gen) return;
+            coverAndPush();
+          }, DOWN_MS),
+        );
+        armMaxWait(DOWN_MS + MAX_WAIT_MS);
+      };
+
+      // Mid-lift: snap the sheet away first so the next roll-down is a full beat, not a half-gesture.
+      if (phaseRef.current === "up") {
+        set("idle");
+        requestAnimationFrame(() => {
+          requestAnimationFrame(beginDown);
+        });
+        return;
+      }
+
+      beginDown();
     },
-    [router, set, check],
+    [router, set, check, clearNavTimers],
   );
 
   useEffect(() => {

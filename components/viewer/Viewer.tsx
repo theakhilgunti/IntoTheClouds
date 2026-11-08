@@ -27,6 +27,7 @@ import {
   gradeHeight,
   outdoorReachFromNeighbors,
   roadDeckHeight,
+  sampleDemHeight,
   smoothHeightSeries,
   terrainGridLinePositions,
   wallAbutsNeighbor,
@@ -596,10 +597,10 @@ function SimpleFloorDeck({
 const LAYER_Y: Record<string, number> = {
   terrain: -0.04,
   yard: 0.0,
-  driveway: 0.04,
+  driveway: 0.03,
   pool: 0.05,
-  road: 0.08,
-  patio: 0.09,
+  road: 0.14,
+  patio: 0.1,
   fence: 0.0,
 };
 
@@ -609,10 +610,10 @@ const LAYER_ORDER: Record<string, number> = {
   yard: 1,
   driveway: 2,
   pool: 3,
-  road: 4,
-  patio: 5,
-  fence: 6,
-  steps: 7,
+  patio: 4,
+  road: 6,
+  fence: 7,
+  steps: 8,
 };
 
 function groundMat(
@@ -992,10 +993,12 @@ function SiteFeatureMesh({
   const isBuildingPad = feature.kind === "terrain" && feature.id !== "terrain-radius";
   // Street ribbons + simple driveway quads drape on DEM; complex parking stays a rigid plate.
   const isRoadSurface = feature.kind === "road" || feature.kind === "driveway";
+  const isParkingLot =
+    feature.kind === "driveway" && (feature.label === "Parking" || feature.polygon.length > 6);
   const roadFollowsGrade =
     !!grade &&
     (!!grade.dem || grade.slope > 0) &&
-    (feature.kind === "road" || (feature.kind === "driveway" && feature.polygon.length <= 6));
+    (feature.kind === "road" || (feature.kind === "driveway" && !isParkingLot && feature.polygon.length <= 6));
   const stripStep = grade?.dem ? Math.max(4, Math.min(8, grade.dem.cell * 0.4)) : 8;
   const slabGeo = useMemo(() => {
     if (
@@ -1210,12 +1213,17 @@ function SiteFeatureMesh({
       : feature.kind === "yard"
         ? -4
         : feature.kind === "driveway"
-          ? -2
+          ? -1
           : feature.kind === "road"
-            ? -6
+            ? -10
             : feature.kind === "pool"
               ? -3
               : -1;
+  // Parking plates use plain DEM/grade (no street deck lift) so draped roads stay above them.
+  const parkingDeck =
+    grade?.dem != null
+      ? (sampleDemHeight(centerModel, grade.dem) ?? gradeHeight(centerModel, grade))
+      : gradeHeight(centerModel, grade);
   // Main house pad stays at slab level (DEM is relative to y=0). DEM street strips bake height into verts.
   const padY = isBuildingPad
     ? feature.id === "terrain-main"
@@ -1223,9 +1231,11 @@ function SiteFeatureMesh({
       : slabY + gy
     : roadFollowsGrade
       ? 0
-      : isRoadSurface
-        ? slabY + roadDeckHeight(centerModel, grade)
-        : slabY;
+      : isParkingLot
+        ? slabY + parkingDeck
+        : isRoadSurface
+          ? slabY + roadDeckHeight(centerModel, grade)
+          : slabY;
   const drawOrder = LAYER_ORDER[feature.kind] ?? 1;
   return (
     <mesh
@@ -2220,8 +2230,13 @@ export default function Viewer({
               !(hasDem && f.id.startsWith("terrain-nbr")) &&
               (f.id === "terrain-radius" || inGrid(f.polygon)),
           );
-          // Draw terrain first so pads sit under structures.
-          const ordered = [...noYard].sort((a, b) => Number(a.kind !== "terrain") - Number(b.kind !== "terrain"));
+          // Terrain first, then by layer order so streets paint after parking lots.
+          const ordered = [...noYard].sort((a, b) => {
+            const ta = a.kind === "terrain" ? 0 : 1;
+            const tb = b.kind === "terrain" ? 0 : 1;
+            if (ta !== tb) return ta - tb;
+            return (LAYER_ORDER[a.kind] ?? 1) - (LAYER_ORDER[b.kind] ?? 1);
+          });
           const filtered = peeringBasement
             ? ordered.filter(
                 (f) =>
