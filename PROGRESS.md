@@ -54,6 +54,7 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 06:28 | Cursor | UI-134 | Widen roadReach floor/scale (~110 m+) so street ribbons stretch farther (compound-v63). |
 | 06:19 | Cursor | UI-133 | Raise scan/floorplan maxDuration to 300s; longer Overpass/DEM/Gemini fetch timeouts. |
 | 06:16 | Cursor | UI-132 | Restore roads/signs: outdoor disc follows roadReach; street ribbon cap decoupled from shells (compound-v62). |
 | 06:14 | Cursor | UI-131 | Neighbor shell cap flat 15 for all footprints (compound-v61). |

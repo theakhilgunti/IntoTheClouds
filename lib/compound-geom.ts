@@ -659,11 +659,11 @@ export function neighborReach(mainRing: Point[], parcel?: Point[] | null): numbe
 export function roadReach(mainRing: Point[], parcel?: Point[] | null): number {
   const plot = plotExtent(mainRing, parcel);
   const ext = foundationExtent(mainRing);
-  const fromPlot = Math.round(plot * 2.8 + 36);
-  const fromHouse = Math.round(ext * 3.1 + 48);
+  const fromPlot = Math.round(plot * 3.15 + 44);
+  const fromHouse = Math.round(ext * 3.45 + 56);
   const raw = Math.max(fromPlot, fromHouse);
-  const ceil = Math.round(siteReach(mainRing) * 0.92);
-  return Math.min(ceil, Math.max(90, raw));
+  const ceil = Math.round(siteReach(mainRing) * 0.96);
+  return Math.min(ceil, Math.max(110, raw));
 }
 
 /** How many nearest neighbor shells to keep (flat cap for every footprint size). */

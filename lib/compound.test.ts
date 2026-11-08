@@ -179,7 +179,7 @@ describe("street and driveway", () => {
     assert.ok(roadRibbonCap(campus) > neighborShellCap(campus), "streets keep more runs than neighbor shells");
     assert.ok(neighborReach(campus) < siteReach(campus) * 0.5, "large complexes stay well inside siteReach");
     assert.ok(roadReach(house) > neighborReach(house), "small lots still give streets a bit more room");
-    assert.ok(roadReach(house) >= 90, "street disc has a usable floor");
+    assert.ok(roadReach(house) >= 110, "street disc has a usable floor");
     const estH = estimateNeighborCloudReach(house);
     const estC = estimateNeighborCloudReach(campus);
     assert.ok(estH <= neighborReach(house) && estH >= 40);
