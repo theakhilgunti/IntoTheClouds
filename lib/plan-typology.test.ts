@@ -50,19 +50,31 @@ describe("plan typology", () => {
     assert.ok(fp.corridorFrac > 0);
   });
 
-  it("typologyDistance is zero inside bands", () => {
+  it("typologyDistance is zero inside CubiCasa5K house bands", () => {
     const d = typologyDistance(
       { program: "house", bedrooms: 3, baths: 2, corridorFrac: 0.1, aspect: 1 },
       {
         program: "house",
-        bedrooms: [2, 4],
+        bedrooms: [1, 5],
         baths: [1, 3],
         corridorFrac: [0.04, 0.16],
-        aspect: [0.65, 1.55],
+        aspect: [0.55, 1.75],
         medianBays: 3,
       },
     );
     assert.equal(d, 0);
+  });
+
+  it("accepts a 1-bed house under CubiCasa5K bands", () => {
+    const check = softCheckTypology({
+      program: "house",
+      bedrooms: 1,
+      baths: 1,
+      corridorFrac: 0.08,
+      aspect: 1.0,
+    });
+    assert.equal(check.ok, true);
+    assert.match(check.note, /CubiCasa5K/);
   });
 });
 

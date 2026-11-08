@@ -2,8 +2,9 @@
  * Soft typology check: compare an assumed layout fingerprint to a small public
  * plan-statistics bank. Never claims the bank entry is this address's real plan.
  *
- * Bank bands are mirrored in data/plan-fingerprints.json (hand-derived from public
- * residential / multi-unit plan statistics — not address-geocoded).
+ * House bands come from CubiCasa5K residential room-mix summaries; other programs
+ * stay hand-derived from public multi-unit / campus plan stats. Mirrored in
+ * data/plan-fingerprints.json. Not address-geocoded.
  */
 import type { BuildingUse } from "./layout-use";
 
@@ -24,9 +25,10 @@ export type BankEntry = {
   medianBays: number;
 };
 
-/** Compact typology bank (same content as data/plan-fingerprints.json). */
+/** Compact typology bank (same content as data/plan-fingerprints.json). House = CubiCasa5K. */
 export const PLAN_FINGERPRINT_BANK: BankEntry[] = [
-  { program: "house", bedrooms: [2, 4], baths: [1, 3], corridorFrac: [0.04, 0.16], aspect: [0.65, 1.55], medianBays: 3 },
+  // CubiCasa5K residential room-mix summary (keep in sync with lib/cubicasa-priors.ts).
+  { program: "house", bedrooms: [1, 5], baths: [1, 3], corridorFrac: [0.04, 0.16], aspect: [0.55, 1.75], medianBays: 3 },
   { program: "apartments", bedrooms: [4, 24], baths: [0, 8], corridorFrac: [0.08, 0.22], aspect: [0.35, 2.8], medianBays: 4 },
   { program: "dormitory", bedrooms: [6, 40], baths: [1, 10], corridorFrac: [0.08, 0.24], aspect: [0.3, 3.0], medianBays: 5 },
   { program: "hotel", bedrooms: [6, 50], baths: [0, 6], corridorFrac: [0.08, 0.22], aspect: [0.3, 3.2], medianBays: 5 },
@@ -119,14 +121,20 @@ export function softCheckTypology(fp: PlanFingerprint): TypologyCheck {
     return {
       ok: true,
       distance,
-      note: "Typology check vs public plan stats: room mix looks plausible for this program.",
+      note:
+        entry.program === "house"
+          ? "Typology check vs CubiCasa5K residential priors: room mix looks plausible."
+          : "Typology check vs public plan stats: room mix looks plausible for this program.",
       nudgeBays: null,
     };
   }
   return {
     ok: false,
     distance,
-    note: `Typology check vs public plan stats: assumed layout is unusually far from typical ${entry.program} room mixes (distance ${distance.toFixed(2)}).`,
+    note:
+      entry.program === "house"
+        ? `Typology check vs CubiCasa5K residential priors: assumed layout is unusually far from typical house room mixes (distance ${distance.toFixed(2)}).`
+        : `Typology check vs public plan stats: assumed layout is unusually far from typical ${entry.program} room mixes (distance ${distance.toFixed(2)}).`,
     nudgeBays: entry.medianBays,
   };
 }

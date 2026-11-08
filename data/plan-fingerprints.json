@@ -1,14 +1,15 @@
 {
-  "version": 1,
-  "note": "Hand-derived room-mix bands from public residential / multi-unit plan statistics (ResPlan-style). Not address-geocoded; used only for soft typology checks.",
+  "version": 2,
+  "note": "House bands summarized from CubiCasa5K residential room mixes (Kalervo et al. 2019). Other programs hand-derived from public multi-unit / campus plan statistics. Not address-geocoded; used only for soft typology checks and estimated-plan bay priors.",
   "entries": [
     {
       "program": "house",
-      "bedrooms": [2, 4],
+      "bedrooms": [1, 5],
       "baths": [1, 3],
       "corridorFrac": [0.04, 0.16],
-      "aspect": [0.65, 1.55],
-      "medianBays": 3
+      "aspect": [0.55, 1.75],
+      "medianBays": 3,
+      "source": "CubiCasa5K"
     },
     {
       "program": "apartments",

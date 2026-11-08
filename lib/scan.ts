@@ -35,6 +35,7 @@ import {
 } from "./layout";
 import { fetchIndoorRooms, overlayIndoorOnModel } from "./indoor-osm";
 import { fingerprintLayout, softCheckTypology } from "./plan-typology";
+import { cubicasaHousePrior } from "./cubicasa-priors";
 import { analyzeAerialRoof } from "./aerial-roof";
 import { analyzeAerialSite } from "./aerial-site";
 import { inferRoofPlan } from "./roof-infer";
@@ -221,7 +222,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v38" || saved.model.roof?.basis !== "roof-v3");
+      (saved.model.compound?.basis !== "compound-v39" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -695,10 +696,30 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       note: "Vision card totals — used as shell/program cues, not a measured floor plan",
     });
   }
-  const vgsiBays =
+  const footprintArea = b?.area ?? (footprint ? polygonArea(footprint) : 100);
+  const cubiPrior =
+    buildingUse === "house"
+      ? cubicasaHousePrior(footprintArea, stories, vgsi?.beds ?? null, vgsi?.baths ?? null)
+      : null;
+  // Prefer assessor bed count for bay rhythm; else CubiCasa5K size→program prior.
+  const layoutBays =
     buildingUse === "house" && vgsi?.beds != null && vgsi.beds >= 2 && vgsi.beds <= 6
       ? Math.round(vgsi.beds)
-      : null;
+      : cubiPrior?.bays ?? null;
+  if (cubiPrior && buildingUse === "house") {
+    sources.push({
+      id: "cubicasa5k",
+      name: "CubiCasa5K priors",
+      status: "used",
+      detail: cubiPrior.note,
+    });
+    attributes.push({
+      field: "Estimated room program",
+      value: `${cubiPrior.targetBeds} bed · ${cubiPrior.targetBaths} bath · ${cubiPrior.bays} bay`,
+      from: "estimated",
+      note: cubiPrior.note,
+    });
+  }
   const verified = verifiedInterior(id);
   let built = buildHouse({
     id,
@@ -717,7 +738,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     roofPlan,
     garageAt: buildingUse === "house" ? garageAt : null,
     use: buildingUse,
-    bays: vgsiBays,
+    bays: layoutBays,
     facade:
       buildingUse === "house" && sure
         ? {
@@ -952,7 +973,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const entrySteps = entryStairFeatures({ streetDir, grade, exits });
   built.model.compound = {
     features: [...kept, ...access, ...entrySteps],
-    basis: "compound-v38",
+    basis: "compound-v39",
     grade: grade ?? undefined,
   };
   if (grade?.dem) {

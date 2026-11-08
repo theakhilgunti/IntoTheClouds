@@ -136,12 +136,18 @@ export type ApplyResult =
   | { ok: true; model: BuildingModel; notes: string[]; roomCount: number }
   | { ok: false; reasons: string[] };
 
+export type ApplyFloorPlanOpts = {
+  /** Provenance written into interior.source (e.g. CubiCasa SVG vs Gemini image). */
+  sourceLabel?: string;
+};
+
 /** Put one floor's read plan onto the model. Returns the new model, or why it can't be trusted. */
 export function applyFloorPlan(
   model: BuildingModel,
   plan: PlanRead,
   level: number,
   streetDir: Point | null,
+  opts: ApplyFloorPlanOpts = {},
 ): ApplyResult {
   const levelName = FLOOR_NAMES[level] ?? `Level ${level}`;
   if (!plan.readable) {
@@ -317,6 +323,7 @@ export function applyFloorPlan(
   };
   const floors = [...model.floors.filter((f) => f.level !== level), floor].sort((p, q) => p.level - q.level);
 
+  const sourceLabel = opts.sourceLabel ?? "uploaded floor plan, read by AI";
   const interior = summarizeInterior(
     floors,
     {
@@ -327,6 +334,7 @@ export function applyFloorPlan(
       notes: model.interior?.notes ?? [],
     },
     notes,
+    sourceLabel,
   );
   return { ok: true, model: { ...model, floors, interior }, notes, roomCount: boxes.length };
 }

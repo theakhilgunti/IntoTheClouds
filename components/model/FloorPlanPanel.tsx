@@ -20,6 +20,11 @@ async function shrink(file: File): Promise<Blob> {
   return new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("encode failed"))), "image/jpeg", 0.88));
 }
 
+function isSvgFile(file: File): boolean {
+  const n = file.name.toLowerCase();
+  return n.endsWith(".svg") || file.type === "image/svg+xml" || file.type === "text/xml";
+}
+
 export default function FloorPlanPanel({
   model,
   streetDir,
@@ -42,9 +47,13 @@ export default function FloorPlanPanel({
     setProblems([]);
     setDone(null);
     try {
-      const blob = await shrink(file);
       const form = new FormData();
-      form.append("file", new File([blob], "plan.jpg", { type: "image/jpeg" }));
+      if (isSvgFile(file)) {
+        form.append("file", file, file.name.endsWith(".svg") ? file.name : "plan.svg");
+      } else {
+        const blob = await shrink(file);
+        form.append("file", new File([blob], "plan.jpg", { type: "image/jpeg" }));
+      }
       form.append("model", JSON.stringify(model));
       form.append("level", String(level));
       form.append("streetDir", JSON.stringify(streetDir));
@@ -57,7 +66,9 @@ export default function FloorPlanPanel({
         setProblems((out.reasons as string[]) ?? ["The plan could not be used."]);
       }
     } catch {
-      setProblems(["Couldn't read that file. Use a clear photo or screenshot of the floor plan (JPEG, PNG or WebP)."]);
+      setProblems([
+        "Couldn't read that file. Use a CubiCasa / CubiCasa5K SVG, or a clear photo of the floor plan (JPEG, PNG or WebP).",
+      ]);
     } finally {
       setBusy(false);
       if (input.current) input.current.value = "";
@@ -66,7 +77,10 @@ export default function FloorPlanPanel({
 
   return (
     <div className="mt-3 border-t border-bp-ink/30 pt-3">
-      <div className="font-data text-xs text-bp-red">Have a floor plan? Add it to make this floor real.</div>
+      <div className="font-data text-xs text-bp-red">Have a real floor plan? Add it to make this floor verified.</div>
+      <p className="mt-1 text-xs text-bp-line">
+        Best: CubiCasa / CubiCasa5K SVG (vector rooms). Or a clear photo — AI reads rooms only if they are drawn.
+      </p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <select
           value={level}
@@ -90,7 +104,7 @@ export default function FloorPlanPanel({
         <input
           ref={input}
           type="file"
-          accept="image/jpeg,image/png,image/webp"
+          accept="image/jpeg,image/png,image/webp,image/svg+xml,.svg"
           className="hidden"
           onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
         />
@@ -107,9 +121,11 @@ export default function FloorPlanPanel({
       )}
       {done && (
         <div className="mt-2 border border-bp-ink p-2 text-xs text-bp-ink">
-          Plan added. It was read by AI, so compare the 3D rooms with your plan.
+          Plan added. Compare the 3D rooms with your source.
           {done.map((n) => (
-            <div key={n} className="mt-1 text-bp-red">• {n}</div>
+            <div key={n} className="mt-1 text-bp-red">
+              • {n}
+            </div>
           ))}
         </div>
       )}

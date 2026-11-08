@@ -144,8 +144,10 @@ export default function ScanReport({
 
       {onApplied && (
         <section className="mb-5">
-          <h3 className="mb-1 font-data text-xs uppercase tracking-widest text-bp-line/80">Have a real floor plan?</h3>
-          <p className="mb-2 text-sm text-bp-line">Upload it to replace the typical rooms on one floor.</p>
+          <h3 className="mb-1 font-data text-xs uppercase tracking-widest text-bp-line/80">Import a verified floor plan</h3>
+          <p className="mb-2 text-sm text-bp-line">
+            Upload a CubiCasa SVG or plan photo to replace the estimated rooms on one floor. Shell still comes from the map.
+          </p>
           <FloorPlanPanel
             model={result.model}
             streetDir={(result.summary.streetDir as Point | null | undefined) ?? null}

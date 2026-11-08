@@ -54,6 +54,7 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 07:35 | Cursor | UI-79 | CubiCasa5K priors for estimated house plans + CubiCasa SVG verified import (compound-v39). |
 | 07:10 | Cursor | UI-78 | Stop synth pillar walls — openings punch existing outline walls only (compound-v38). |
 | 07:00 | Cursor | UI-77 | Kill pillar stubs: safe edge snap, collinear wall union, absorb door remnants / drop synth crumbs (compound-v37). |
 | 06:50 | Cursor | UI-76 | Curb-offset stops/signals; nearby-house loading overlay + abort on home; neighbor address hover (compound-v36). |
@@ -173,3 +174,4 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 04:50 | Cursor | UI-63 | Finished task |
 | 05:00 | Cursor | UI-64 | Finished task |
 | 05:05 | Cursor | UI-65 | Finished task |
+| 06:34 | Cursor | UI-79 | Finished task |
