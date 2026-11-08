@@ -87,3 +87,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 01:25 | Antigravity | MAP-01 | Created 2D 30mx30m Wi-Fi hotspot grid mapper with native wlanapi sub-second scanning, 3-anchor trilateration HUD, and calibration |
 | 07:01 | Claude Code | MAP-02 | Finished task |
 | 10:20 | Claude Code | MAP-02 | wifi_2d_grid_mapper.py runs on macOS: CoreWLAN Wi-Fi driver (MacWlanDriver), iPhone compass heading polled from the backend /api/phone with a Set +X button (POST /api/align), ThreadingHTTPServer so the live stream no longer blocks other requests; not committed; beacons not visible at test time |
+| 07:09 | Claude Code | MAP-03 | Finished task |
+| 10:50 | Claude Code | MAP-03 | Mac Wi-Fi signals keyed by SSID (not SSID+channel) so laptop hotspots that hop channel keep their anchor assignment; strongest AP per SSID; not committed |

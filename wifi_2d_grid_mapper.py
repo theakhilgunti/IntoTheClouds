@@ -633,12 +633,19 @@ class MacWlanDriver:
                 rssi = int(n.rssiValue())
                 if not (-110 < rssi < 0):
                     continue
-                key = bssid or f"{ssid.lower() or 'hidden'}|ch{chan}|{band.lower()}"
+                # macOS hides BSSIDs. Key by SSID alone so a hotspot that hops channel or band keeps its
+                # identity (anchor assignments survive); only truly hidden SSIDs fall back to channel.
+                key = bssid or (ssid.lower() if ssid else f"hidden|ch{chan}|{band.lower()}")
                 results.append({
                     "signal_id": f"wifi:{key}", "name": ssid or "<Hidden Hotspot>", "bssid_mac": key,
                     "radio_type": f"Wi-Fi {band}", "rssi": rssi,
                     "quality": max(0, min(100, int(round(2 * (rssi + 100))))),
                     "freq_mhz": 0.0, "timestamp": time.time()})
+            by_key = {}
+            for r in results:  # several APs share an SSID (eduroam): keep the strongest, newest wins ties
+                if r["signal_id"] not in by_key or r["rssi"] > by_key[r["signal_id"]]["rssi"]:
+                    by_key[r["signal_id"]] = r
+            results = list(by_key.values())
             if hidden and not results and not self._hidden_warned:
                 self._hidden_warned = True
                 print(f"[WLAN] {hidden} networks hidden: allow Location Services for your terminal (System Settings > Privacy & Security).")
