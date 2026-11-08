@@ -54,6 +54,7 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 08:46 | Cursor | UI-149 | Neighbor shell cap 20 → 25. |
 | 08:41 | Cursor | UI-148 | Soft-prefer address street within +15m; require matching street suffixes (ct≠dr). |
 | 08:33 | Cursor | UI-147 | Ignore Nominatim highway wayIds; prefer address street for roadDir/ribbons/driveway; warn on street-only geocode. |
 | 08:25 | Cursor | UI-146 | Fix homepage sheet anim skip: sheetGo from nearby overlay; restart go() mid-transition instead of bare push. |

@@ -670,7 +670,7 @@ export function roadReach(mainRing: Point[], parcel?: Point[] | null): number {
 
 /** How many nearest neighbor shells to keep (flat cap for every footprint size). */
 export function neighborShellCap(_mainRing: Point[]): number {
-  return Math.min(MAX_NEIGHBOR_SHELLS, 20);
+  return Math.min(MAX_NEIGHBOR_SHELLS, 25);
 }
 
 /** How many nearest street runs to keep — wider than the neighbor shell cap. */

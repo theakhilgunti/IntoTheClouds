@@ -285,8 +285,8 @@ describe("street and driveway", () => {
     assert.ok(accessoryReach(house) >= 18, "garage/shed still has a usable lot radius");
     assert.ok(accessoryReach(house) < neighborReach(house), "garage/shed lot radius stays tighter than neighbors");
     assert.ok(accessoryReach(house) < accessoryReach(campus), "small houses keep accessories closer");
-    assert.equal(neighborShellCap(house), 20);
-    assert.equal(neighborShellCap(campus), 20);
+    assert.equal(neighborShellCap(house), 25);
+    assert.equal(neighborShellCap(campus), 25);
     assert.ok(neighborShellCap(campus) <= MAX_NEIGHBOR_SHELLS);
     assert.ok(roadRibbonCap(campus) > neighborShellCap(campus), "streets keep more runs than neighbor shells");
     assert.ok(neighborReach(campus) < siteReach(campus) * 0.5, "large complexes stay well inside siteReach");
