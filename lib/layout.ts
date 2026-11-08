@@ -24,6 +24,7 @@ import {
   type BuildingUse,
 } from "./layout-use";
 import { planCorridorUnits } from "./layout-corridor";
+import { connectZonesWithDoors } from "./door-connect";
 
 export type { BuildingUse };
 export { buildingUseFromTag, buildingUseFromTags, maxStoriesForUse, planWordForUse };
@@ -461,6 +462,12 @@ function placeDoors(
   isGround: boolean,
   drivewaySide: "left" | "right" | null,
   facade?: FacadeOpenings | null,
+  opts?: {
+    preferredStart?: string[] | null;
+    roomPolys?: { zone: string; poly: Point[] }[] | null;
+    /** Original plan zone + type keyed by room id (wall zones use room ids). */
+    roomMeta?: { id: string; type: RoomType; zone: string }[] | null;
+  },
 ) {
   const walls: ZWall[] = raw.map((w, i) => ({
     id: `${prefix}w${i}`,
@@ -470,52 +477,96 @@ function placeDoors(
     exterior: w.exterior,
     zones: w.zones,
   }));
-  const len = (w: Wall) => Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
+  const len = (w: { a: Point; b: Point }) => Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
   const mid = (w: Wall): Point => [(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2];
   const across = (w: Wall) => Math.abs(w.b[0] - w.a[0]) >= Math.abs(w.b[1] - w.a[1]);
-  const between = (z1: string, z2: string) =>
-    walls.filter((w) => !w.exterior && w.zones.includes(z1) && w.zones.includes(z2) && len(w) >= 0.7);
   const doors: Door[] = [];
-  const addDoor = (w: ZWall, width = 0.85, exit = false, t = 0.5) =>
+  const addDoor = (
+    w: ZWall,
+    width = 0.85,
+    exit = false,
+    t = 0.5,
+    kind: "door" | "open" = "door",
+  ) =>
     doors.push({
       id: `${prefix}d${doors.length}`,
       wallId: w.id,
       t: Math.min(0.9, Math.max(0.1, t)),
       width: Math.min(width, Math.max(0.6, len(w) - 0.2)),
       exit,
+      kind,
     });
 
-  const start = zones.includes("hall") ? "hall" : zones.includes("base") ? "base" : zones[0];
-  const reached = new Set(start ? [start] : []);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const z of zones) {
-      if (reached.has(z)) continue;
-      const options = [...reached].flatMap((r) => between(z, r)).sort((a, b) => len(b) - len(a));
-      if (options[0]) {
-        addDoor(options[0]);
-        reached.add(z);
-        changed = true;
-      }
-    }
+  // Connect every room (unique zone id) into the circulation graph; synthesize openings if still sealed.
+  const roomTypes = Object.fromEntries((opts?.roomMeta ?? []).map((m) => [m.id, m.type]));
+  const linked = connectZonesWithDoors(
+    walls.map((w) => ({
+      id: w.id,
+      exterior: w.exterior,
+      zones: w.zones,
+      length: len(w),
+      a: w.a,
+      b: w.b,
+    })),
+    zones,
+    { preferredStart: opts?.preferredStart, roomPolys: opts?.roomPolys, roomTypes },
+  );
+  for (const extra of linked.extraWalls) {
+    if (!extra.a || !extra.b) continue;
+    walls.push({
+      id: extra.id.startsWith(prefix) ? extra.id : `${prefix}${extra.id}`,
+      a: extra.a,
+      b: extra.b,
+      thickness: 0.12,
+      exterior: false,
+      zones: extra.zones,
+    });
+  }
+  const byId = new Map(walls.map((w) => [w.id, w]));
+  // Synthetic walls may have been prefixed above — also index unprefixed ids from linker.
+  for (const w of walls) {
+    if (w.id.startsWith(prefix)) byId.set(w.id.slice(prefix.length), w);
+  }
+  for (const d of linked.doors) {
+    const w = byId.get(d.wallId) ?? byId.get(`${prefix}${d.wallId}`);
+    if (w) addDoor(w, d.width, false, d.t, d.kind ?? "door");
   }
 
   if (isGround) {
+    const meta = new Map((opts?.roomMeta ?? []).map((m) => [m.id, m]));
+    const planZone = (id: string | null | undefined) => (id && meta.get(id)?.zone) || id || "";
+    const roomType = (id: string | null | undefined) => (id && meta.get(id)?.type) || null;
+    const touches = (w: ZWall, pred: (planZ: string, t: RoomType | null) => boolean) =>
+      w.zones.some((z) => !!z && pred(planZone(z), roomType(z)));
     const ext = walls.filter((w) => w.exterior && len(w) >= 1.05);
     const pick = (pred: (w: ZWall) => boolean, score: (w: ZWall) => number) =>
       ext.filter(pred).sort((a, b) => score(a) - score(b))[0];
-    const frontDoor = pick((w) => across(w) && (w.zones.includes("hall") || w.zones.includes("living")), (w) => mid(w)[1]);
+    const frontDoor = pick(
+      (w) =>
+        across(w) &&
+        touches(
+          w,
+          (z, t) =>
+            z === "hall" || z === "lobby" || z === "living" || z === "narthex" || t === "hallway" || t === "living",
+        ),
+      (w) => mid(w)[1],
+    );
     if (frontDoor) {
       const fromLeft = facade?.frontDoorFromLeft ?? 0.5;
       addDoor(frontDoor, 1.0, true, tFromLeftOnWall(frontDoor, fromLeft));
     }
     const backDoor = pick(
-      (w) => across(w) && w !== frontDoor && (w.zones.includes("kitchen") || w.zones.includes("hall") || w.zones.includes("mud")),
+      (w) =>
+        across(w) &&
+        w !== frontDoor &&
+        touches(w, (z, t) => z === "kitchen" || z === "hall" || z === "mud" || t === "kitchen" || t === "hallway"),
       (w) => -mid(w)[1],
     );
     if (backDoor) addDoor(backDoor, 0.9, true);
-    const garageDoor = pick((w) => across(w) && w.zones.includes("garage"), (w) => mid(w)[1]);
+    const garageDoor = pick(
+      (w) => across(w) && touches(w, (z, t) => z === "garage" || t === "garage"),
+      (w) => mid(w)[1],
+    );
     if (garageDoor) addDoor(garageDoor, Math.min(4.8, len(garageDoor) - 0.2), true);
     const sidePref =
       facade?.sideEntry === "left" || facade?.sideEntry === "right"
@@ -523,7 +574,9 @@ function placeDoors(
         : drivewaySide;
     if (sidePref) {
       const sideWalls = ext.filter((w) => !across(w));
-      const preferred = sideWalls.filter((w) => w.zones.includes("kitchen") || w.zones.includes("hall"));
+      const preferred = sideWalls.filter((w) =>
+        touches(w, (z, t) => z === "kitchen" || z === "hall" || t === "kitchen" || t === "hallway"),
+      );
       const pool = preferred.length ? preferred : sideWalls;
       const sideDoor = pool.sort((a, b) => (sidePref === "right" ? mid(b)[0] - mid(a)[0] : mid(a)[0] - mid(b)[0]))[0];
       if (sideDoor && sideDoor !== frontDoor && sideDoor !== backDoor) addDoor(sideDoor, 0.9, true);
@@ -531,6 +584,58 @@ function placeDoors(
   }
 
   return { walls: walls.map((w) => ({ id: w.id, a: w.a, b: w.b, thickness: w.thickness, exterior: w.exterior })), doors };
+}
+
+function openingsForRooms(
+  prefix: string,
+  rooms: { id: string; type: RoomType; poly: Point[]; zone: string }[],
+  isGround: boolean,
+  drivewaySide: "left" | "right" | null,
+  facade?: FacadeOpenings | null,
+) {
+  // Unique zone per room so every pocket can get its own door (shared plan-zone labels collapsed adjacency).
+  const zoned = rooms.map((r) => ({ zone: r.id, poly: r.poly }));
+  const preferredStart = rooms
+    .filter(
+      (r) =>
+        r.type === "hallway" ||
+        r.type === "stair" ||
+        r.zone === "hall" ||
+        r.zone === "lobby" ||
+        r.zone === "narthex" ||
+        r.zone === "base",
+    )
+    .map((r) => r.id);
+  return placeDoors(
+    prefix,
+    wallsAlongOutline(zoned),
+    zoned.map((r) => r.zone),
+    isGround,
+    drivewaySide,
+    facade,
+    {
+      preferredStart,
+      roomPolys: zoned,
+      roomMeta: rooms.map((r) => ({ id: r.id, type: r.type, zone: r.zone })),
+    },
+  );
+}
+
+/**
+ * Rebuild walls/doors from room polygons so circulation matches the rooms
+ * (e.g. after OSM indoor overlay replaces room rings but left stale walls).
+ */
+export function rebuildFloorCirculation(floor: Floor): Floor {
+  if (floor.rooms.length === 0) return floor;
+  const prefix = floor.level < 0 ? "b-" : `f${floor.level}-`;
+  const { walls, doors } = openingsForRooms(
+    prefix,
+    floor.rooms.map((r) => ({ id: r.id, type: r.type, poly: r.polygon, zone: r.id })),
+    floor.level === 0,
+    null,
+    null,
+  );
+  return { ...floor, walls, doors };
 }
 
 const RISE: Record<RoofShape, (span: number) => number> = {
@@ -658,10 +763,9 @@ export function buildHouse(input: BuildInput): BuildOutput {
       .map((r) => ({ ...r, poly: clipPolyToRect(fpPlan, r.r) }))
       .filter((r) => r.poly.length >= 3 && Math.abs(signedArea(r.poly)) >= 0.3);
     const rooms = cut.length ? cut : pf.rooms.map((r) => ({ ...r, poly: rectPoly(r.r) }));
-    const { walls, doors } = placeDoors(
+    const { walls, doors } = openingsForRooms(
       prefix,
-      wallsAlongOutline(rooms.map((r) => ({ zone: r.zone, poly: r.poly }))),
-      [...new Set(rooms.map((r) => r.zone))],
+      rooms.map((r) => ({ id: r.id, type: r.type, poly: r.poly, zone: r.zone })),
       pf.level === 0,
       drivewaySide,
       facadeOpenings,

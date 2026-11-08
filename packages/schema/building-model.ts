@@ -52,6 +52,8 @@ export const Door = z.object({
   t: z.number().min(0).max(1).describe("Position of door center along the wall, 0 = a, 1 = b"),
   width: z.number().positive().default(0.9),
   exit: z.boolean().default(false).describe("True if it leads outside"),
+  /** "open" = cased / arch opening with no door leaf (typical into living/kitchen/dining). */
+  kind: z.enum(["door", "open"]).default("door").optional(),
 });
 
 export const Stairs = z.object({

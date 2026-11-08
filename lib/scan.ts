@@ -23,7 +23,7 @@ import {
 import { fetchSiteDem, withDem } from "./elevation";
 import { fetchStreetViewFacade } from "./streetview";
 import { inNyc, lookupParcel, type ParcelHit } from "./parcel";
-import { buildHouse, buildingUseFromTags, maxStoriesForUse, planWordForUse, type GarageSide } from "./layout";
+import { buildHouse, buildingUseFromTags, maxStoriesForUse, planWordForUse, rebuildFloorCirculation, type GarageSide } from "./layout";
 import { fetchIndoorRooms, overlayIndoorOnModel } from "./indoor-osm";
 import { fingerprintLayout, softCheckTypology } from "./plan-typology";
 import { analyzeAerialRoof } from "./aerial-roof";
@@ -166,7 +166,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v24" || saved.model.roof?.basis !== "roof-v3");
+      (saved.model.compound?.basis !== "compound-v28" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -614,7 +614,11 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       const rawIndoor = await fetchIndoorRooms(center, Math.max(40, Math.sqrt(b?.area ?? 100) * 1.2));
       const overlay = overlayIndoorOnModel(built.model, rawIndoor);
       if (overlay) {
-        built.model = overlay.model;
+        // Re-cut walls/doors to the indoor rooms so nothing stays sealed behind stale template walls.
+        built.model = {
+          ...overlay.model,
+          floors: overlay.model.floors.map((f) => rebuildFloorCirculation(f)),
+        };
         indoorUsed = overlay.used;
         sources.push({
           id: "osm-indoor",
@@ -806,7 +810,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const entrySteps = entryStairFeatures({ streetDir, grade, exits });
   built.model.compound = {
     features: [...kept, ...access, ...entrySteps],
-    basis: "compound-v24",
+    basis: "compound-v28",
     grade: grade ?? undefined,
   };
   if (grade?.dem) {

@@ -238,13 +238,70 @@ function edgeKey(a: Pt, b: Pt): string {
   return u < v ? `${u}|${v}` : `${v}|${u}`;
 }
 
+const NEIGHBOR_PROBE_DISTS = [0.08, 0.16, 0.28, 0.45, 0.7];
+
+/**
+ * Pull nearly-adjacent room edges onto a shared line so footprint clipping gaps
+ * still produce interior walls (and therefore doors).
+ */
+export function snapNearRoomEdges(
+  rooms: { zone: string; poly: Pt[] }[],
+  maxGap = 0.55,
+): { zone: string; poly: Pt[] }[] {
+  const out = rooms
+    .map((r) => ({ zone: r.zone, poly: ccw(r.poly).map((p) => [p[0], p[1]] as Pt) }))
+    .filter((r) => r.poly.length >= 3);
+  for (let i = 0; i < out.length; i++) {
+    for (let j = i + 1; j < out.length; j++) {
+      if (out[i].zone === out[j].zone) continue;
+      const A = out[i].poly;
+      const B = out[j].poly;
+      for (let ai = 0; ai < A.length; ai++) {
+        const a0 = A[ai];
+        const a1 = A[(ai + 1) % A.length];
+        const aLen = Math.hypot(a1[0] - a0[0], a1[1] - a0[1]);
+        if (aLen < 0.5) continue;
+        const aUx = (a1[0] - a0[0]) / aLen;
+        const aUy = (a1[1] - a0[1]) / aLen;
+        for (let bi = 0; bi < B.length; bi++) {
+          const b0 = B[bi];
+          const b1 = B[(bi + 1) % B.length];
+          const bLen = Math.hypot(b1[0] - b0[0], b1[1] - b0[1]);
+          if (bLen < 0.5) continue;
+          const bUx = (b1[0] - b0[0]) / bLen;
+          const bUy = (b1[1] - b0[1]) / bLen;
+          // Opposite / parallel edges (facing each other).
+          const dot = aUx * bUx + aUy * bUy;
+          if (Math.abs(dot) < 0.92) continue;
+          const midA: Pt = [(a0[0] + a1[0]) / 2, (a0[1] + a1[1]) / 2];
+          const midB: Pt = [(b0[0] + b1[0]) / 2, (b0[1] + b1[1]) / 2];
+          const gap = Math.hypot(midA[0] - midB[0], midA[1] - midB[1]);
+          if (gap > maxGap || gap < 1e-4) continue;
+          // Project midA onto B's infinite line; require overlap along the edge.
+          const nx = -aUy, ny = aUx;
+          const sep = (midB[0] - midA[0]) * nx + (midB[1] - midA[1]) * ny;
+          if (Math.abs(sep) > maxGap) continue;
+          const mid: Pt = [(midA[0] + midB[0]) / 2, (midA[1] + midB[1]) / 2];
+          // Snap both edges onto the midline, preserving length direction of A.
+          const half = Math.min(aLen, bLen) / 2;
+          A[ai] = [mid[0] - aUx * half, mid[1] - aUy * half];
+          A[(ai + 1) % A.length] = [mid[0] + aUx * half, mid[1] + aUy * half];
+          B[bi] = [mid[0] + aUx * half, mid[1] + aUy * half];
+          B[(bi + 1) % B.length] = [mid[0] - aUx * half, mid[1] - aUy * half];
+        }
+      }
+    }
+  }
+  return out.map((r) => ({ zone: r.zone, poly: dropCollinear(ccw(r.poly)) }));
+}
+
 /** Walls from clipped room polygons. An edge with a neighbor on the outside is interior; the outline is exterior. */
 export function wallsAlongOutline(rooms: { zone: string; poly: Pt[] }[]): OutlineWall[] {
-  const polys = rooms
+  const polys = snapNearRoomEdges(rooms)
     .map((r) => ({ zone: r.zone, poly: ccw(r.poly) }))
     .filter((r) => r.poly.length >= 3);
   const walls: OutlineWall[] = [];
-  const seen = new Set<string>();
+  const byKey = new Map<string, OutlineWall>();
   for (const room of polys) {
     const poly = room.poly;
     for (let i = 0; i < poly.length; i++) {
@@ -253,19 +310,40 @@ export function wallsAlongOutline(rooms: { zone: string; poly: Pt[] }[]): Outlin
       const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
       if (len < 0.08) continue;
       const key = edgeKey(a, b);
-      if (seen.has(key)) continue;
-      seen.add(key);
       const mid: Pt = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
       const rx = (b[1] - a[1]) / len;
       const ry = -(b[0] - a[0]) / len;
-      const probe: Pt = [mid[0] + rx * 0.12, mid[1] + ry * 0.12];
-      const other = polys.find((o) => o !== room && pointInRing(probe, o.poly));
-      walls.push({
+      // Probe both sides at several distances — clip gaps often exceed 12 cm.
+      let other: (typeof polys)[number] | undefined;
+      for (const d of NEIGHBOR_PROBE_DISTS) {
+        const probeA: Pt = [mid[0] + rx * d, mid[1] + ry * d];
+        const probeB: Pt = [mid[0] - rx * d, mid[1] - ry * d];
+        other =
+          polys.find((o) => o !== room && o.zone !== room.zone && pointInRing(probeA, o.poly)) ??
+          polys.find((o) => o !== room && o.zone !== room.zone && pointInRing(probeB, o.poly));
+        if (other) break;
+      }
+      const existing = byKey.get(key);
+      if (existing) {
+        // Same edge seen from the adjoining room — mark interior and fill both zones.
+        if (other || existing.zones[0] !== room.zone) {
+          existing.exterior = false;
+          if (other && !existing.zones.includes(other.zone)) {
+            existing.zones = [existing.zones[0], other.zone];
+          } else if (!existing.zones.includes(room.zone)) {
+            existing.zones = [existing.zones[0], room.zone];
+          }
+        }
+        continue;
+      }
+      const wall: OutlineWall = {
         a,
         b,
         exterior: !other,
         zones: other ? [room.zone, other.zone] : [room.zone, null],
-      });
+      };
+      byKey.set(key, wall);
+      walls.push(wall);
     }
   }
   return walls;

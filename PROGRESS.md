@@ -59,6 +59,10 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 05:15 | Cursor | UI-66 | Realistic openings: no bedroom↔bedroom / bathroom↔living illicit doors; living/kitchen/dining get wide open arches (compound-v28). |
+| 05:05 | Cursor | UI-65 | Illicit openings through every shared interior wall (+ near-miss shell walls) so rooms stay enterable (compound-v27). |
+| 05:00 | Cursor | UI-64 | Stronger openings: unique room zones, snap near edges, multi-probe walls, synthesize doors into sealed rooms (compound-v26). |
+| 04:50 | Cursor | UI-63 | Door connectivity rescue so rooms are not sealed after footprint clip; rebuild openings after OSM indoor (compound-v25). |
 | 04:40 | Cursor | UI-62 | Wider neighbor (~90–180 m) and road (~120–240 m) reach with max caps; OSM fetch 350 m (compound-v24). |
 | 04:35 | Cursor | UI-61 | Streets render above driveways/parking (layer Y + polygonOffset + renderOrder). |
 | 04:25 | Cursor | UI-60 | Per-level programs: hotel/hospital/dorm/apt ground ≠ upper floors; school upper classrooms only (compound-v23). |
@@ -159,3 +163,6 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 04:25 | Cursor | UI-60 | Finished task |
 | 04:35 | Cursor | UI-61 | Finished task |
 | 04:40 | Cursor | UI-62 | Finished task |
+| 04:50 | Cursor | UI-63 | Finished task |
+| 05:00 | Cursor | UI-64 | Finished task |
+| 05:05 | Cursor | UI-65 | Finished task |
