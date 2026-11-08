@@ -54,6 +54,16 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 10:23 | Cursor | UI-173 | Cloud fleet set to 10 spaced lanes. |
+| 10:22 | Cursor | UI-172 | Raise cloud fleet to 11 spaced lanes. |
+| 10:20 | Cursor | UI-171 | Edge-only cloud fades; 8 spaced lanes; less overlap (max ~8 on screen). |
+| 10:18 | Cursor | UI-170 | Slower fly-through (28–56s); phase-offset fleet keeps ~6 clouds visible. |
+| 10:16 | Cursor | UI-169 | Fly-through cloud field: continuous one-way pass + parallax + fade loop. |
+| 10:14 | Cursor | UI-168 | Scatter clouds across sheet; faster visible drift (18–38s); all layers animate. |
+| 10:12 | Cursor | UI-167 | Staggered near/mid/far cloud layers; slow wind-pass drift (55–120s). |
+| 10:10 | Cursor | UI-166 | Larger side clouds from viewport edges; no gutter clip; tuck on mobile. |
+| 10:08 | Cursor | UI-165 | Diversify side-cloud shapes; edge-only on small screens so forms stay clear. |
+| 10:05 | Cursor | UI-164 | Blueprint side clouds flanking the home sheet (SVG + slow drift). |
 | 09:40 | Cursor | UI-163 | Rebuild preferred curb perpendicular to driveway on mid-gap line (compound-v81). |
 | 09:36 | Cursor | UI-162 | Seat curb mid-gap house↔opposing neighbors; restore facade→curb driveway (compound-v80). |
 | 09:30 | Cursor | UI-161 | Short driveway (~3.5 m) meets pulled curb near-edge; road brought in so they touch (compound-v79). |
