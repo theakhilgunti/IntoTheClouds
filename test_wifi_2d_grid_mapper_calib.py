@@ -268,5 +268,58 @@ class PhoneApi(ServerCase):
         self.assertFalse(d["moved"])
 
 
+class StepTracking(unittest.TestCase):
+    def setUp(self):
+        with M.STATE.lock:
+            M.STATE.kf_state = M.np.array([1.0, 1.0, 0.0, 0.0])
+            M.STATE.kf_cov = M.np.eye(4) * 0.25
+            M.STATE.pdr_pending, M.STATE.pdr_last_step_t, M.STATE.pdr_steps_total = [], 1000.0, 0
+
+    def test_step_log_dedup(self):
+        log = [{"t": 999.0, "step": True}, {"t": 1001.0, "step": True}, {"t": 1001.5}, {"t": 1002.0, "step": True}]
+        with M.STATE.lock:
+            self.assertEqual(M.ingest_step_log(log), 2)
+            self.assertEqual(M.ingest_step_log(log), 0)  # same log polled again
+            self.assertEqual(M.STATE.pdr_steps_total, 2)
+
+    def test_steps_move_along_heading(self):
+        with M.STATE.lock:
+            M.pdr_kalman_step(4, 0.7, 90.0, 0.2, None)  # 4 steps facing +y
+            self.assertAlmostEqual(M.STATE.pos_x, 1.0, places=6)
+            self.assertAlmostEqual(M.STATE.pos_y, 1.0 + 2.8, places=6)
+            M.pdr_kalman_step(0, 0.7, 90.0, 0.2, None)  # standing: no movement
+            self.assertAlmostEqual(M.STATE.pos_y, 3.8, places=6)
+
+    def test_wifi_fix_pulls_drifted_track(self):
+        with M.STATE.lock:
+            M.pdr_kalman_step(10, 0.7, 0.0, 0.2, None)        # dead reckoning says x = 8
+            M.pdr_kalman_step(0, 0.7, 0.0, 0.2, (6.0, 1.0, 0.5))  # beacons say x = 6
+            self.assertTrue(6.0 < M.STATE.pos_x < 8.0)
+
+    def test_wild_fix_is_gated(self):
+        with M.STATE.lock:
+            M.pdr_kalman_step(0, 0.7, 0.0, 0.2, (25.0, 25.0, 0.5))
+            self.assertLess(M.STATE.pos_x, 1.5)
+
+    def test_no_new_wifi_does_not_re_measure(self):
+        with M.STATE.lock:
+            M.STATE.kf_state = M.np.array([2.0, 2.0, 0.0, 0.0])
+            M.update_kalman_filter(5.0, 5.0, 0.2, None)
+            self.assertAlmostEqual(M.STATE.pos_x, 2.0, places=6)
+
+
+class StrideApi(ServerCase):
+    def test_stride_calibration_walk(self):
+        s, d = self.post({"action": "stride_start"}, "/api/phone_calib")
+        self.assertEqual(s, 200, d)
+        with M.STATE.lock:
+            M.STATE.pdr_steps_total += 10
+        s, d = self.post({"action": "stride_finish", "distance_m": 7.3}, "/api/phone_calib")
+        self.assertEqual(s, 200, d)
+        self.assertAlmostEqual(d["stride_m"], 0.73, places=3)
+        self.assertEqual(self.post({"action": "stride_finish", "distance_m": 7.3}, "/api/phone_calib")[0], 400)
+        self.assertEqual(self.post({"action": "set", "stride_m": 3}, "/api/phone_calib")[0], 400)
+
+
 if __name__ == "__main__":
     unittest.main()

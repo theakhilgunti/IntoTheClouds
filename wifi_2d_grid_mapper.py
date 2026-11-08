@@ -130,6 +130,10 @@ PHONE_CFG_DEFAULTS = {
     "gyro_bias": [0.0, 0.0, 0.0],
     "gyro_noise_dps": 0.0,
     "compass_jitter_deg": 0.0,
+    # Step dead reckoning (MAP-07): steps from /walker x stride along the phone heading move the dot between
+    # the slow Wi-Fi fixes; each Wi-Fi fix then corrects the accumulated drift.
+    "pdr_enabled": True,
+    "stride_m": 0.7,
 }
 # Map heading (0 = +x, counter-clockwise) of each axis you can face during alignment
 AXIS_HEADING = {"+x": 0.0, "+y": 90.0, "-x": 180.0, "-y": 270.0}
@@ -249,6 +253,14 @@ class GlobalState:
         self.phone_axis_caps = {}        # {"+x": compass_deg, ...} captured while facing each map axis
         self.phone_capture = None        # list collecting samples during a hold-still gyro calibration
         self.phone_cfg = dict(PHONE_CFG_DEFAULTS)
+        self.wifi_rev = 0                # bumps on every fresh beacon reading; KF only re-measures when it changes
+        self.wifi_rev_used = -1
+        self.pdr_pending = []            # step timestamps not yet applied to the position filter
+        self.pdr_step_times = deque(maxlen=50)
+        self.pdr_steps_total = 0
+        self.pdr_last_step_t = time.time()   # ignore steps logged before the mapper started
+        self.pdr_dist_m = 0.0
+        self.stride_cal = None           # {"start_steps": n} while a stride calibration walk is running
         self.hdop = 1.0
         self.fix_type = "INITIALIZING" # "3-ANCHOR FIX", "2-ANCHOR FIX", "DEAD RECKONING"
         self.last_update_time = time.time()
@@ -363,6 +375,7 @@ def apply_anchor_reading(anchor: dict, rssi: float, now: float):
     anchor["samples_count"] += 1
     anchor["history"].append(rssi)
     anchor["last_fresh_t"] = now
+    STATE.wifi_rev += 1
     med = float(np.median(list(anchor["history"])[-SMOOTH_MEDIAN_N:]))
     prev = anchor.get("ema_rssi")
     anchor["ema_rssi"] = med if prev is None else EMA_ALPHA * med + (1.0 - EMA_ALPHA) * prev
@@ -562,7 +575,51 @@ def solve_trilateration(anchors_data: list[dict], grid_w: float, grid_h: float) 
 
     return STATE.pos_x, STATE.pos_y, "SEARCHING", 9.9
 
-def update_kalman_filter(z_x: float, z_y: float, dt: float, hdop: float):
+def pdr_active() -> bool:
+    """Step dead reckoning needs a live, aligned phone heading (motion heading would be circular)."""
+    return STATE.phone_cfg["pdr_enabled"] and phone_heading_active()
+
+
+def pdr_kalman_step(steps: int, stride_m: float, heading_deg: float, dt: float, wifi_meas):
+    """MAP-07 position filter while walking with the phone: position is a random walk driven by steps.
+    Each step moves stride_m along the map heading (0 = +x, counter-clockwise); no steps = standing still.
+    wifi_meas = (x, y, hdop) when a new beacon fix arrived, else None."""
+    x = STATE.kf_state.copy()
+    P = STATE.kf_cov.copy()
+    if steps:
+        h = math.radians(heading_deg)
+        x[0] += steps * stride_m * math.cos(h)
+        x[1] += steps * stride_m * math.sin(h)
+        # per-step noise: ~15 % stride length error + ~10 deg heading error, perpendicular
+        q = steps * ((0.15 * stride_m) ** 2 + (stride_m * math.radians(10)) ** 2)
+        P[0, 0] += q
+        P[1, 1] += q
+        STATE.pdr_dist_m += steps * stride_m
+    P[0, 0] += 0.01 * dt   # tiny drift while standing
+    P[1, 1] += 0.01 * dt
+    x[2] = x[3] = 0.0      # velocity comes from the step rate, not the filter
+    if wifi_meas is not None:
+        zx, zy, hdop = wifi_meas
+        H = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
+        # RSSI ranging is ~1.5-3 m noisy; trust it less than a few steps of dead reckoning
+        R = np.eye(2) * max(1.5, hdop * 0.8) ** 2
+        y = np.array([zx, zy]) - H @ x
+        S = H @ P @ H.T + R
+        if float(y @ np.linalg.solve(S, y)) < 25.0:   # Mahalanobis gate: drop wild multipath fixes
+            K = P @ H.T @ np.linalg.inv(S)
+            x = x + K @ y
+            P = (np.eye(4) - K @ H) @ P
+    STATE.kf_state, STATE.kf_cov = x, P
+    STATE.pos_x = float(np.clip(x[0], -2.0, STATE.grid_width + 2.0))
+    STATE.pos_y = float(np.clip(x[1], -2.0, STATE.grid_height + 2.0))
+    now = time.time()
+    recent = [t for t in STATE.pdr_step_times if now - t < 2.0]
+    STATE.speed = round(len(recent) * stride_m / 2.0, 2)
+    h = math.radians(heading_deg)
+    STATE.vel_x, STATE.vel_y = STATE.speed * math.cos(h), STATE.speed * math.sin(h)
+
+
+def update_kalman_filter(z_x: float, z_y: float, dt: float, hdop):
     """
     Continuous White Noise Acceleration 2D Kinematic Kalman Filter.
     State x = [x, y, vx, vy]^T
@@ -593,6 +650,17 @@ def update_kalman_filter(z_x: float, z_y: float, dt: float, hdop: float):
     x_pred = F @ STATE.kf_state
     P_pred = F @ STATE.kf_cov @ F.T + Q
     
+    if hdop is None:
+        # No new Wi-Fi data (MAP-07): predict only, and bleed off velocity so the dot coasts to a stop
+        # instead of flying off between slow fixes.
+        x_pred[2:] *= 0.5 ** (dt / 0.5)
+        STATE.kf_state, STATE.kf_cov = x_pred, P_pred
+        STATE.pos_x = float(np.clip(x_pred[0], -2.0, STATE.grid_width + 2.0))
+        STATE.pos_y = float(np.clip(x_pred[1], -2.0, STATE.grid_height + 2.0))
+        STATE.vel_x, STATE.vel_y = float(x_pred[2]), float(x_pred[3])
+        STATE.speed = float(np.hypot(STATE.vel_x, STATE.vel_y))
+        return
+
     # Measurement Matrix H (we observe x, y)
     H = np.array([
         [1.0, 0.0, 0.0, 0.0],
@@ -855,6 +923,9 @@ def phone_status_dict() -> dict:
         "heading_deg": round(STATE.heading_deg, 1), "heading_source": "motion" if heading_uses_motion() else "phone",
         "axis_caps": STATE.phone_axis_caps, "axis_fit": fit_axis_offset(STATE.phone_axis_caps) if STATE.phone_axis_caps else None,
         "cfg": STATE.phone_cfg,
+        "pdr": {"active": pdr_active(), "steps": STATE.pdr_steps_total, "dist_m": round(STATE.pdr_dist_m, 2),
+                "speed_mps": STATE.speed if pdr_active() else None,
+                "stride_cal_steps": None if STATE.stride_cal is None else STATE.pdr_steps_total - STATE.stride_cal["start_steps"]},
     }
 
 
@@ -908,6 +979,39 @@ def background_phone_thread():
                 warned = True
                 print(f"[PHONE] backend not reachable at {PHONE_URL} ({e}); heading falls back to motion direction.")
         time.sleep(0.15)
+
+
+def ingest_step_log(entries) -> int:
+    """Queue steps from the backend's /api/phone/log that are newer than the last one seen.
+    Call with STATE.lock held. Returns the number of new steps."""
+    new = sorted(float(e["t"]) for e in entries
+                 if isinstance(e, dict) and e.get("step") is True and isinstance(e.get("t"), (int, float))
+                 and float(e["t"]) > STATE.pdr_last_step_t)
+    for t in new:
+        STATE.pdr_pending.append(t)
+        STATE.pdr_step_times.append(t)
+        STATE.pdr_steps_total += 1
+    if new:
+        STATE.pdr_last_step_t = new[-1]
+    return len(new)
+
+
+def background_step_thread():
+    """MAP-07: the /walker page detects steps from the iPhone accelerometer; the backend logs them.
+    Poll that log so the mapper can dead-reckon between slow Wi-Fi fixes."""
+    import ssl
+    import urllib.request
+    ctx = ssl.create_default_context()
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    while True:
+        try:
+            with urllib.request.urlopen(PHONE_URL + "/api/phone/log?last=80", timeout=2, context=ctx) as r:
+                entries = json.load(r)
+            with STATE.lock:
+                ingest_step_log(entries)
+        except Exception:
+            pass
+        time.sleep(0.3)
 
 
 # =============================================================================
@@ -1075,6 +1179,7 @@ def positioning_engine_thread():
                         anchor["dist_ci_low"] = round(ci_low, 2)
                         anchor["dist_ci_high"] = round(ci_high, 2)
                         anchor["last_fresh_t"] = t_now
+                    STATE.wifi_rev += 1
 
                 # MAP-05: anchors with no fresh scan stop feeding the solver
                 expire_stale_anchors(STATE.anchors, t_now)
@@ -1085,8 +1190,18 @@ def positioning_engine_thread():
                     anchors_list, STATE.grid_width, STATE.grid_height
                 )
                 
-                # Update Kalman Filter
-                update_kalman_filter(meas_x, meas_y, dt, hdop)
+                # Update Kalman Filter. MAP-07: re-measure only on new Wi-Fi data (on a Mac a fix arrives every
+                # ~8-20 s; re-applying the same fix 5x/s dragged the dot back to stale positions), and move by
+                # detected steps in between when the phone heading is live.
+                new_wifi = STATE.wifi_rev != STATE.wifi_rev_used and fix_type != "INSUFFICIENT SIGNALS"
+                STATE.wifi_rev_used = STATE.wifi_rev
+                if pdr_active():
+                    steps, STATE.pdr_pending = len(STATE.pdr_pending), []
+                    pdr_kalman_step(steps, STATE.phone_cfg["stride_m"], STATE.heading_deg, dt,
+                                    (meas_x, meas_y, hdop) if new_wifi else None)
+                else:
+                    STATE.pdr_pending = []
+                    update_kalman_filter(meas_x, meas_y, dt, hdop if new_wifi else None)
                 STATE.fix_type = fix_type
                 STATE.hdop = round(hdop, 2)
                 
@@ -2001,6 +2116,14 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
             Turn threshold <input id="phTh" type="number" step="1" style="width:50px"> °/s
             Fresh timeout <input id="phFr" type="number" step="0.5" style="width:45px"> s
             <button class="btn-calib secondary" onclick="phCal('set',{turn_thresh_dps:parseFloat(phTh.value),fresh_s:parseFloat(phFr.value)})">Apply</button></div>
+          <div style="margin-top:6px;padding:4px;border:1px solid #00f0ff55;border-radius:4px"><b>5. Step tracking (accelerometer)</b><br>
+            <label><input type="checkbox" id="pdrOn" onchange="phCal('set',{pdr_enabled:pdrOn.checked})"> move dot by steps between Wi-Fi fixes</label><br>
+            Stride <input id="pdrStride" type="number" step="0.01" style="width:55px"> m <button class="btn-calib secondary" onclick="phCal('set',{stride_m:parseFloat(pdrStride.value)})">Apply</button>
+            <button class="btn-calib secondary" onclick="phCal('pdr_reset')">Reset count</button>
+            <div id="pdrLive" style="font-family:monospace;font-size:0.72rem">--</div>
+            <b>Stride calibration:</b> stand at a start mark, <button class="btn-calib secondary" onclick="phCal('stride_start')">▶ Start walk</button>
+            walk normally in a straight line, then enter distance <input id="pdrDist" type="number" step="0.1" value="7.3" style="width:50px"> m
+            <button class="btn-calib" onclick="phCal('stride_finish',{distance_m:parseFloat(pdrDist.value)})">■ Finish</button></div>
           <div style="margin-top:6px"><b>4. Check</b> face an axis:
             <select id="phChkAxis"><option value="+x">+X</option><option value="+y">+Y</option><option value="-x">-X</option><option value="-y">-Y</option></select>
             <button class="btn-calib" onclick="phCal('check',{axis:phChkAxis.value})">Check</button>
@@ -2734,6 +2857,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
       let m = action + ' ok';
       if (d.offset_deg !== undefined) m += `, offset ${d.offset_deg}°`;
       if (d.max_error_deg !== undefined) m += `, axis spread error ${d.max_error_deg}°` + (d.max_error_deg > 15 ? ' (magnetic interference: move away from laptops/metal)' : '');
+      if (d.stride_m !== undefined) m = `stride calibrated: ${d.steps} steps -> ${d.stride_m} m per step`;
       if (d.error_deg !== undefined) m = `heading ${d.heading_deg}° vs ${d.expected_deg}°: error ${d.error_deg}°` + (Math.abs(d.error_deg) > 10 ? ' (re-align or nudge)' : ' ✓');
       phMsg.innerText = m;
       phInit = false; refreshPhone();
@@ -2759,7 +2883,11 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
           `\ngyro ${p.gyro_rate_dps} °/s ${p.turning ? 'TURNING' : 'still'}`;
         phArrow.style.transform = `rotate(${90 - p.heading_deg}deg)`;
         phAxes.innerText = p.axis_fit ? Object.entries(p.axis_caps).map(([k, v]) => `${k}: compass ${v}° (resid ${p.axis_fit.residuals_deg[k]}°)`).join('\n') + `\nfit offset ${p.axis_fit.offset_deg}°, spread error ${p.axis_fit.max_error_deg}°` : '';
+        const q = p.pdr;
+        pdrLive.innerText = `${q.active ? '● ACTIVE' : '○ off (needs phone connected + aligned + enabled)'}  steps ${q.steps}, ${q.dist_m} m walked` +
+          (q.speed_mps !== null ? `, ${q.speed_mps} m/s` : '') + (q.stride_cal_steps !== null ? `\nstride walk running: ${q.stride_cal_steps} steps so far` : '');
         if (!phInit) {
+          pdrOn.checked = p.cfg.pdr_enabled; pdrStride.value = p.cfg.stride_m;
           phInit = true; const c = p.cfg;
           phMode.value = c.mode; phSm.value = c.smoothing; phTs.value = c.turn_smoothing;
           phTh.value = c.turn_thresh_dps; phFr.value = c.fresh_s; phOff.value = p.offset_deg;
@@ -3479,6 +3607,36 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
                             if "offset_deg" in req_data:
                                 STATE.phone_offset = float(req_data["offset_deg"]) % 360.0
                                 STATE.phone_aligned = True
+                            if "pdr_enabled" in req_data:
+                                cfg["pdr_enabled"] = bool(req_data["pdr_enabled"])
+                            if "stride_m" in req_data:
+                                v = float(req_data["stride_m"])
+                                if not (0.3 <= v <= 1.2):
+                                    raise ValueError("stride_m must be 0.3-1.2")
+                                cfg["stride_m"] = round(v, 3)
+                        elif act == "stride_start":
+                            STATE.stride_cal = {"start_steps": STATE.pdr_steps_total}
+                        elif act == "stride_finish":
+                            if STATE.stride_cal is None:
+                                raise ValueError("press Start walk first")
+                            d = float(req_data.get("distance_m", 0))
+                            n = STATE.pdr_steps_total - STATE.stride_cal["start_steps"]
+                            if n < 4:
+                                raise ValueError(f"only {n} steps counted; walk at least 5 steps (is /walker counting steps?)")
+                            if not (1.0 <= d <= 100.0):
+                                raise ValueError("distance_m must be 1-100")
+                            stride = d / n
+                            if not (0.3 <= stride <= 1.2):
+                                raise ValueError(f"{d} m / {n} steps = {stride:.2f} m per step: implausible, adjust step sensitivity on /walker")
+                            STATE.phone_cfg["stride_m"] = round(stride, 3)
+                            STATE.stride_cal = None
+                            res.update(steps=n, stride_m=STATE.phone_cfg["stride_m"])
+                        elif act == "stride_cancel":
+                            STATE.stride_cal = None
+                        elif act == "pdr_reset":
+                            STATE.pdr_dist_m = 0.0
+                            STATE.pdr_steps_total = 0
+                            STATE.stride_cal = None
                         elif act == "reset":
                             STATE.phone_cfg = dict(PHONE_CFG_DEFAULTS, gyro_bias=[0.0, 0.0, 0.0])
                             STATE.phone_offset, STATE.phone_aligned, STATE.phone_axis_caps = 0.0, False, {}
@@ -3573,6 +3731,7 @@ def main():
 
     PHONE_URL = args.phone_url.rstrip("/")
     threading.Thread(target=background_phone_thread, daemon=True, name="PhoneCompass").start()
+    threading.Thread(target=background_step_thread, daemon=True, name="PhoneSteps").start()
     print(f"[+] iPhone compass feed: polling {PHONE_URL}/api/phone")
 
     # Start BLE Scanner thread if available
