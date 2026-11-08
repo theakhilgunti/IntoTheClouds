@@ -13,12 +13,14 @@ import {
   accessFeatures,
   assembleCompound,
   boxToPolygon,
+  buildLotGrade,
   compoundReach,
   crossVerifySiteFeatures,
+  entryStairFeatures,
   pickGarage,
 } from "./compound-geom";
 import { inNyc, lookupParcel, type ParcelHit } from "./parcel";
-import { buildHouse, type GarageSide } from "./layout";
+import { buildHouse, buildingUseFromTag, type GarageSide } from "./layout";
 import { analyzeAerialRoof } from "./aerial-roof";
 import { analyzeAerialSite } from "./aerial-site";
 import { inferRoofPlan } from "./roof-infer";
@@ -129,7 +131,12 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       warnings.push("We couldn't match this address to a specific mapped building, so we used the closest one. It may be a neighbor. Check it against the aerial photo.");
     }
     if (NOT_A_HOUSE.has(b.tags.building)) {
-      warnings.push(`OpenStreetMap lists this as "${b.tags.building}", not a house. The room layout assumes a home.`);
+      const useHint = buildingUseFromTag(b.tags.building);
+      if (useHint === "house") {
+        warnings.push(`OpenStreetMap lists this as "${b.tags.building}", not a house. The room layout assumes a home.`);
+      } else {
+        warnings.push(`OpenStreetMap lists this as "${b.tags.building}". Using a typical ${useHint} room layout (estimated).`);
+      }
     }
     if (!address && b.tags["addr:street"]) {
       address = [b.tags["addr:housenumber"], b.tags["addr:street"], b.tags["addr:city"]].filter(Boolean).join(" ");
@@ -154,7 +161,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v12" || saved.model.roof?.basis !== "roof-v3");
+      (saved.model.compound?.basis !== "compound-v16" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -432,6 +439,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   if (facts) confidence += 0.15 * facts.confidence;
   confidence = Math.min(0.9, confidence);
 
+  const buildingUse = buildingUseFromTag(b?.tags.building);
   const verified = verifiedInterior(id);
   const built = buildHouse({
     id,
@@ -443,12 +451,13 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     footprint,
     streetDir,
     stories,
-    basement,
-    garage,
+    basement: buildingUse === "house" ? basement : false,
+    garage: buildingUse === "house" ? garage : "none",
     roof,
     ridgeAlong,
     roofPlan,
-    garageAt,
+    garageAt: buildingUse === "house" ? garageAt : null,
+    use: buildingUse,
   });
 
   if (verified) {
@@ -461,13 +470,33 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     }
   }
   if (!verified) {
+    const planWord =
+      buildingUse === "school"
+        ? "school"
+        : buildingUse === "office"
+          ? "office"
+          : buildingUse === "commercial"
+            ? "commercial"
+            : buildingUse === "church"
+              ? "worship"
+              : "house";
     built.model.interior = {
       status: "estimated",
-      source: "typical layout inside the mapped outline",
+      source: `typical ${planWord} layout inside the mapped outline`,
       reasons: [],
       knownLevels: [],
-      notes: ["Rooms follow a common house plan. They are not a measured scan of this house."],
+      notes: [
+        buildingUse === "house"
+          ? "Rooms follow a common house plan. They are not a measured scan of this house."
+          : `Rooms follow a typical ${planWord} plan for OSM building=${b?.tags.building ?? "yes"}. They are not a measured scan.`,
+      ],
     };
+    attributes.push({
+      field: "Building type",
+      value: b?.tags.building ? String(b.tags.building) : "house",
+      from: b?.tags.building ? "map" : "estimated",
+      note: `Interior uses a typical ${planWord} room layout`,
+    });
     warnings.push(...built.notes);
   } else {
     warnings.push(...built.notes);
@@ -527,7 +556,36 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const kept = access.some((f) => f.kind === "driveway")
     ? verifiedSite.filter((f) => !(f.kind === "driveway" && f.source === "aerial"))
     : verifiedSite;
-  built.model.compound = { features: [...kept, ...access], basis: "compound-v12" };
+  const grade = buildLotGrade(built.model.footprint, streetDir);
+  const exits: Point[] = [];
+  for (const floor of built.model.floors) {
+    if (floor.level !== 0) continue;
+    for (const door of floor.doors) {
+      if (!door.exit) continue;
+      const wall = floor.walls.find((w) => w.id === door.wallId);
+      if (!wall) continue;
+      exits.push([
+        wall.a[0] + (wall.b[0] - wall.a[0]) * door.t,
+        wall.a[1] + (wall.b[1] - wall.a[1]) * door.t,
+      ]);
+    }
+  }
+  const entrySteps = entryStairFeatures({ streetDir, grade, exits });
+  built.model.compound = {
+    features: [...kept, ...access, ...entrySteps],
+    basis: "compound-v16",
+    grade: grade ?? undefined,
+  };
+  if (grade) {
+    attributes.push({
+      field: "Lot grade",
+      value: `~${Math.round(grade.slope * 100)}% toward street`,
+      from: "estimated",
+      note: entrySteps.length
+        ? "Mild street-side slope, entry stairs, and ground pads under houses"
+        : "Mild street-side slope with ground pads under houses and neighbors",
+    });
+  }
   const hydrantN = access.filter((f) => f.kind === "hydrant").length;
   if (hydrantN) {
     attributes.push({

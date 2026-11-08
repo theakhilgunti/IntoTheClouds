@@ -22,6 +22,25 @@ type PlanFloor = { level: number; rooms: PlanRoom[]; stair: Rect | null };
 
 export type GarageSide = "none" | "left" | "right";
 
+/** Interior program — OSM building=* when known. */
+export type BuildingUse = "house" | "school" | "office" | "church" | "commercial";
+
+export function buildingUseFromTag(tag: string | undefined | null): BuildingUse {
+  const t = (tag ?? "").toLowerCase().trim();
+  if (!t || t === "yes" || t === "house" || t === "detached" || t === "semidetached_house" || t === "terrace" || t === "bungalow" || t === "static_caravan" || t === "residential") {
+    return "house";
+  }
+  if (t === "school" || t === "kindergarten" || t === "university" || t === "college" || t === "college_building") return "school";
+  if (t === "church" || t === "cathedral" || t === "chapel" || t === "mosque" || t === "synagogue" || t === "temple" || t === "place_of_worship") {
+    return "church";
+  }
+  if (t === "office" || t === "commercial" || t === "retail" || t === "supermarket" || t === "warehouse" || t === "industrial" || t === "public") {
+    return t === "office" ? "office" : "commercial";
+  }
+  if (t === "apartments" || t === "dormitory" || t === "hotel") return "house";
+  return "house";
+}
+
 export type HouseSpec = {
   width: number; // across the front
   depth: number; // front to back
@@ -30,6 +49,7 @@ export type HouseSpec = {
   garage: GarageSide;
   /** Which side the driveway is on, as you stand on the street looking at the front door. */
   drivewaySide: "left" | "right" | null;
+  use?: BuildingUse;
 };
 
 const FLOOR_NAMES: Record<number, string> = { [-1]: "Basement", 0: "1st Floor", 1: "2nd Floor", 2: "3rd Floor" };
@@ -216,6 +236,152 @@ function planHouse(spec: HouseSpec, notes: string[]): PlanFloor[] {
   return floors;
 }
 
+/** Double-loaded corridor with classrooms — typical school wing. */
+function planSchool(spec: HouseSpec, notes: string[]): PlanFloor[] {
+  const W = spec.width, D = spec.depth;
+  const x0 = -W / 2, x1 = W / 2, y0 = -D / 2, y1 = D / 2;
+  const hallW = Math.min(2.4, Math.max(1.6, W * 0.12));
+  const mid = 0;
+  const hx0 = mid - hallW / 2, hx1 = mid + hallW / 2;
+  const hasStairs = spec.stories > 1;
+  const stairLen = Math.min(STAIR_LEN, D * 0.2);
+  const front = y0 + Math.min(5, D * 0.18);
+  const stair: Rect | null = hasStairs ? { x0: hx0, y0: front, x1: hx1, y1: front + stairLen } : null;
+  const floors: PlanFloor[] = [];
+
+  const classRows = Math.max(2, Math.min(5, Math.round(D / 8)));
+  const edges = Array.from({ length: classRows + 1 }, (_, i) => y0 + (D * i) / classRows);
+
+  for (let lv = 0; lv < spec.stories; lv++) {
+    const prefix = lv === 0 ? "s" : `s${lv}`;
+    const rooms: PlanRoom[] = [
+      { id: `${prefix}-hall`, name: "Main Hall", type: "hallway", r: { x0: hx0, y0, x1: hx1, y1 }, zone: "hall" },
+    ];
+    if (stair) rooms.push({ id: `${prefix}-stair`, name: "Stairs", type: "stair", r: stair, zone: "hall" });
+    if (lv === 0) {
+      rooms.push(
+        { id: `${prefix}-office`, name: "Main Office", type: "office", r: { x0, y0, x1: hx0, y1: front }, zone: "admin" },
+        { id: `${prefix}-nurse`, name: "Nurse / Counselor", type: "office", r: { x0: hx1, y0, x1, y1: front }, zone: "nurse" },
+      );
+    }
+    let classNo = 1;
+    for (let i = 0; i < classRows; i++) {
+      const yA = Math.max(edges[i], lv === 0 ? front : y0);
+      const yB = edges[i + 1];
+      if (yB - yA < 2.2) continue;
+      // Skip the stair band on the hall strip — classrooms sit left/right of the corridor.
+      rooms.push({
+        id: `${prefix}-cL${i}`,
+        name: `Classroom ${lv + 1}${String(classNo).padStart(2, "0")}`,
+        type: "other",
+        r: { x0, y0: yA, x1: hx0, y1: yB },
+        zone: `cL${i}`,
+      });
+      classNo++;
+      rooms.push({
+        id: `${prefix}-cR${i}`,
+        name: `Classroom ${lv + 1}${String(classNo).padStart(2, "0")}`,
+        type: "other",
+        r: { x0: hx1, y0: yA, x1, y1: yB },
+        zone: `cR${i}`,
+      });
+      classNo++;
+    }
+    // Rear specials on ground floor when deep enough; restrooms sit mid-hall otherwise at the back.
+    if (lv === 0 && D >= 22) {
+      const rear = y1 - Math.min(7, D * 0.22);
+      rooms.push(
+        { id: `${prefix}-cafe`, name: "Cafeteria", type: "other", r: { x0, y0: rear, x1: hx0, y1 }, zone: "cafe" },
+        { id: `${prefix}-gym`, name: "Gym / Multi-purpose", type: "other", r: { x0: hx1, y0: rear, x1, y1 }, zone: "gym" },
+        {
+          id: `${prefix}-bath`,
+          name: "Restrooms",
+          type: "bathroom",
+          r: { x0: hx0, y0: rear - 3.2, x1: hx1, y1: rear },
+          zone: "bath",
+        },
+      );
+    } else if (lv === 0) {
+      rooms.push(
+        { id: `${prefix}-bathL`, name: "Restrooms", type: "bathroom", r: { x0, y0: y1 - 3.2, x1: x0 + Math.min(4, W * 0.2), y1 }, zone: "bathL" },
+        { id: `${prefix}-bathR`, name: "Restrooms", type: "bathroom", r: { x0: x1 - Math.min(4, W * 0.2), y0: y1 - 3.2, x1, y1 }, zone: "bathR" },
+      );
+    }
+    floors.push({ level: lv, rooms, stair });
+  }
+  notes.push(
+    `School-style layout: a center hall with classrooms on both sides` +
+      (spec.stories > 1 ? ` across ${spec.stories} floors` : "") +
+      `. Rooms are a typical wing plan, not a measured floor plan.`,
+  );
+  return floors;
+}
+
+/** Lobby + open work areas + meeting rooms — office / commercial. */
+function planOffice(spec: HouseSpec, notes: string[], commercial: boolean): PlanFloor[] {
+  const W = spec.width, D = spec.depth;
+  const x0 = -W / 2, x1 = W / 2, y0 = -D / 2, y1 = D / 2;
+  const lobbyD = Math.min(6, Math.max(3.5, D * 0.22));
+  const hasStairs = spec.stories > 1;
+  const hx0 = -1.1, hx1 = 1.1;
+  const stair: Rect | null = hasStairs
+    ? { x0: hx0, y0: y0 + lobbyD, x1: hx1, y1: y0 + lobbyD + Math.min(STAIR_LEN, D * 0.18) }
+    : null;
+  const floors: PlanFloor[] = [];
+  for (let lv = 0; lv < spec.stories; lv++) {
+    const prefix = `o${lv}`;
+    const rooms: PlanRoom[] = [];
+    if (lv === 0) {
+      rooms.push({ id: `${prefix}-lobby`, name: commercial ? "Sales Floor / Lobby" : "Lobby", type: "hallway", r: { x0, y0, x1, y1: y0 + lobbyD }, zone: "lobby" });
+    } else {
+      rooms.push({ id: `${prefix}-hall`, name: "Elevator Lobby", type: "hallway", r: { x0: hx0 - 1, y0, x1: hx1 + 1, y1: y0 + 4 }, zone: "hall" });
+    }
+    if (stair) rooms.push({ id: `${prefix}-stair`, name: "Stairs", type: "stair", r: stair, zone: "hall" });
+    const workY0 = lv === 0 ? y0 + lobbyD : y0 + 4;
+    const midY = (workY0 + y1) / 2;
+    rooms.push(
+      { id: `${prefix}-openL`, name: commercial ? "Retail / Open Area" : "Open Office", type: "office", r: { x0, y0: workY0, x1: 0, y1: midY }, zone: "openL" },
+      { id: `${prefix}-openR`, name: commercial ? "Stock / Open Area" : "Open Office", type: "office", r: { x0: 0, y0: workY0, x1, y1: midY }, zone: "openR" },
+      { id: `${prefix}-meet`, name: "Conference / Meeting", type: "office", r: { x0, y0: midY, x1: hx0, y1 }, zone: "meet" },
+      { id: `${prefix}-break`, name: commercial ? "Back Office" : "Break Room", type: "utility", r: { x0: hx1, y0: midY, x1, y1 }, zone: "break" },
+      { id: `${prefix}-bath`, name: "Restrooms", type: "bathroom", r: { x0: hx0, y0: midY, x1: hx1, y1: midY + Math.min(3.5, (y1 - midY) * 0.5) }, zone: "bath" },
+    );
+    floors.push({ level: lv, rooms, stair });
+  }
+  notes.push(
+    `${commercial ? "Commercial" : "Office"}-style layout: lobby/sales at the front and open work areas behind. Estimated, not measured.`,
+  );
+  return floors;
+}
+
+/** Nave + side rooms — place of worship. */
+function planChurch(spec: HouseSpec, notes: string[]): PlanFloor[] {
+  const W = spec.width, D = spec.depth;
+  const x0 = -W / 2, x1 = W / 2, y0 = -D / 2, y1 = D / 2;
+  const narthex = y0 + Math.min(4.5, D * 0.15);
+  const chancel = y1 - Math.min(5, D * 0.18);
+  const rooms: PlanRoom[] = [
+    { id: "narthex", name: "Entrance / Narthex", type: "hallway", r: { x0, y0, x1, y1: narthex }, zone: "narthex" },
+    { id: "nave", name: "Nave / Sanctuary", type: "other", r: { x0: x0 + W * 0.08, y0: narthex, x1: x1 - W * 0.08, y1: chancel }, zone: "nave" },
+    { id: "chancel", name: "Chancel / Altar", type: "other", r: { x0: x0 + W * 0.15, y0: chancel, x1: x1 - W * 0.15, y1 }, zone: "chancel" },
+    { id: "aisleL", name: "Side Aisle", type: "hallway", r: { x0, y0: narthex, x1: x0 + W * 0.08, y1: chancel }, zone: "aisleL" },
+    { id: "aisleR", name: "Side Aisle", type: "hallway", r: { x0: x1 - W * 0.08, y0: narthex, x1, y1: chancel }, zone: "aisleR" },
+    { id: "sacristy", name: "Office / Sacristy", type: "office", r: { x0, y0: chancel, x1: x0 + W * 0.15, y1 }, zone: "sacristy" },
+    { id: "choir", name: "Vestry / Choir", type: "other", r: { x0: x1 - W * 0.15, y0: chancel, x1, y1 }, zone: "choir" },
+  ];
+  notes.push("Church-style layout: entrance, nave, and chancel. Estimated worship plan, not a measured survey.");
+  return [{ level: 0, rooms, stair: null }];
+}
+
+function planBuilding(spec: HouseSpec, notes: string[]): PlanFloor[] {
+  const use = spec.use ?? "house";
+  if (use === "school") return planSchool(spec, notes);
+  if (use === "office") return planOffice(spec, notes, false);
+  if (use === "commercial") return planOffice(spec, notes, true);
+  if (use === "church") return planChurch({ ...spec, stories: 1, basement: false }, notes);
+  return planHouse(spec, notes);
+}
+
 function bayEdges(y0: number, depth: number, n: number): number[] {
   const frac = n === 4 ? [0, 0.3, 0.54, 0.7, 1] : n === 3 ? [0, 0.36, 0.66, 1] : [0, 0.55, 1];
   return frac.map((t) => y0 + depth * t);
@@ -313,6 +479,8 @@ export type BuildInput = {
   roofPlan?: RoofPlan | null;
   /** Garage centroid in the model frame, used to put the hall and side door on the driveway side. */
   garageAt?: Point | null;
+  /** Interior program from OSM building=* (house, school, office, …). */
+  use?: BuildingUse;
 };
 
 export type BuildOutput = { model: BuildingModel; width: number; depth: number; facing: string; notes: string[] };
@@ -353,7 +521,19 @@ export function buildHouse(input: BuildInput): BuildOutput {
     const s = input.garageAt[0] * xAxis[0] + input.garageAt[1] * xAxis[1];
     if (Math.abs(s) > 0.4) drivewaySide = s > 0 ? "right" : "left";
   }
-  const plan = planHouse({ width, depth, stories, basement: input.basement, garage: input.garage, drivewaySide }, notes);
+  const use = input.use ?? "house";
+  const plan = planBuilding(
+    {
+      width,
+      depth,
+      stories: use === "church" ? 1 : stories,
+      basement: use === "house" ? input.basement : false,
+      garage: use === "house" ? input.garage : "none",
+      drivewaySide: use === "house" ? drivewaySide : null,
+      use,
+    },
+    notes,
+  );
 
   const floors: Floor[] = plan.map((pf) => {
     const prefix = pf.level < 0 ? "b-" : `f${pf.level}-`;

@@ -13,7 +13,9 @@ export type CompoundKind =
   | "road"
   | "signal"
   | "hydrant"
-  | "neighbor";
+  | "neighbor"
+  | "steps"
+  | "terrain";
 
 export type SiteFeature = {
   id: string;
@@ -22,6 +24,13 @@ export type SiteFeature = {
   polygon: Point[];
   height: number;
   source: "map" | "aerial" | "parcel" | "estimated";
+};
+
+/** Mild lot tilt: street downhill, house slab stays at y = 0. */
+export type LotGrade = {
+  downhill: Point;
+  slope: number;
+  origin: Point;
 };
 
 const OUTBUILDING: Record<string, "garage" | "shed"> = {
@@ -69,6 +78,8 @@ const HEIGHT: Record<CompoundKind, number> = {
   signal: 3.2,
   hydrant: 0.85,
   neighbor: 6.5,
+  steps: 0.18,
+  terrain: 0.04,
 };
 
 const LABEL: Record<CompoundKind, string> = {
@@ -84,7 +95,166 @@ const LABEL: Record<CompoundKind, string> = {
   signal: "Traffic light",
   hydrant: "Fire hydrant",
   neighbor: "Neighbor",
+  steps: "Entry stairs",
+  terrain: "Ground",
 };
+
+/** Push ring vertices outward from the centroid (meters). */
+export function expandRing(ring: Point[], pad: number): Point[] {
+  if (ring.length < 3 || pad <= 0) return ring.map((p) => [p[0], p[1]] as Point);
+  const c = ringCentroid(ring);
+  return ring.map(([x, y]) => {
+    const dx = x - c[0];
+    const dy = y - c[1];
+    const len = Math.hypot(dx, dy) || 1;
+    return [x + (dx / len) * pad, y + (dy / len) * pad] as Point;
+  });
+}
+
+/** Approximate a circle in the model frame (for the rendered-neighborhood ground disc). */
+export function circlePoly(center: Point, radius: number, sides = 48): Point[] {
+  const n = Math.max(12, Math.min(64, Math.round(sides)));
+  const out: Point[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    out.push([center[0] + Math.cos(a) * radius, center[1] + Math.sin(a) * radius]);
+  }
+  return out;
+}
+
+/**
+ * Graded ground under the focus house + neighbors, plus a disc covering the
+ * neighbor render radius so topology reads across the whole scene.
+ */
+export function neighborhoodTerrainFeatures(
+  main: Point[] | null,
+  neighborRings: Point[][],
+  radiusM?: number,
+): SiteFeature[] {
+  const out: SiteFeature[] = [];
+  const origin: Point = main && main.length >= 3 ? ringCentroid(main) : [0, 0];
+  const radius = Math.max(40, radiusM ?? (main ? neighborReach(main) : 60));
+
+  // Full rendered-radius disc first (drawn under everything else).
+  out.push({
+    id: "terrain-radius",
+    kind: "terrain",
+    label: "Neighborhood grade",
+    polygon: circlePoly(origin, radius, 48),
+    height: HEIGHT.terrain * 0.55,
+    source: "estimated",
+  });
+
+  if (main && main.length >= 3) {
+    out.push({
+      id: "terrain-main",
+      kind: "terrain",
+      label: "Building pad",
+      polygon: expandRing(main, 2.8),
+      height: HEIGHT.terrain,
+      source: "estimated",
+    });
+  }
+  neighborRings.forEach((ring, i) => {
+    if (ring.length < 3) return;
+    out.push({
+      id: `terrain-nbr-${i}`,
+      kind: "terrain",
+      label: "Neighbor pad",
+      polygon: expandRing(ring, 2.4),
+      height: HEIGHT.terrain,
+      source: "estimated",
+    });
+  });
+  return out;
+}
+
+/** Build a gentle street→backyard grade so outdoor pads read as terrain, not a flat table. */
+export function buildLotGrade(footprint: Point[], streetDir: Point | null): LotGrade | null {
+  if (footprint.length < 3) return null;
+  const raw = streetDir ?? ([0, -1] as Point);
+  const len = Math.hypot(raw[0], raw[1]) || 1;
+  return {
+    downhill: [raw[0] / len, raw[1] / len],
+    // ~3.5% — readable from orbit without cartoon cliffs.
+    slope: 0.035,
+    origin: ringCentroid(footprint),
+  };
+}
+
+/** Vertical offset (m) at a model-frame point. Streetward is negative (lower). */
+export function gradeHeight(p: Point, grade: LotGrade | null | undefined): number {
+  if (!grade || grade.slope <= 0) return 0;
+  const dx = p[0] - grade.origin[0];
+  const dy = p[1] - grade.origin[1];
+  return -(dx * grade.downhill[0] + dy * grade.downhill[1]) * grade.slope;
+}
+
+/**
+ * Porch / front-entry steps from street grade up to the house slab.
+ * One feature per tread; `height` is the top surface Y (slab = 0 at the door).
+ */
+export function entryStairFeatures(opts: {
+  streetDir: Point | null;
+  grade: LotGrade | null;
+  /** Front exit door midpoints in the model frame. */
+  exits: Point[];
+}): SiteFeature[] {
+  const dir = opts.streetDir;
+  if (!dir || opts.exits.length === 0) return [];
+  const len = Math.hypot(dir[0], dir[1]) || 1;
+  const downhill: Point = [dir[0] / len, dir[1] / len];
+  const side: Point = [-downhill[1], downhill[0]];
+  const out: SiteFeature[] = [];
+  let flight = 0;
+  for (const door of opts.exits) {
+    // Sample ground a few treads toward the street — bottom of the run.
+    const sample: Point = [door[0] + downhill[0] * 2.2, door[1] + downhill[1] * 2.2];
+    const ground = gradeHeight(sample, opts.grade);
+    // Top of stairs flush with the slab (y=0); always at least a short porch rise.
+    const topY = 0.02;
+    const bottomY = Math.min(topY - 0.4, ground - 0.05);
+    const rise = topY - bottomY;
+    const n = Math.max(2, Math.min(6, Math.round(rise / 0.17)));
+    const riser = rise / n;
+    const tread = 0.3;
+    const halfW = 0.7;
+    for (let i = 0; i < n; i++) {
+      // i=0 is the bottom tread (furthest toward the street).
+      const along = (n - i) * tread + 0.15;
+      const c: Point = [door[0] + downhill[0] * along, door[1] + downhill[1] * along];
+      const depth = tread * 0.92;
+      const a: Point = [
+        c[0] - downhill[0] * (depth / 2) + side[0] * halfW,
+        c[1] - downhill[1] * (depth / 2) + side[1] * halfW,
+      ];
+      const b: Point = [
+        c[0] + downhill[0] * (depth / 2) + side[0] * halfW,
+        c[1] + downhill[1] * (depth / 2) + side[1] * halfW,
+      ];
+      const d: Point = [
+        c[0] + downhill[0] * (depth / 2) - side[0] * halfW,
+        c[1] + downhill[1] * (depth / 2) - side[1] * halfW,
+      ];
+      const e: Point = [
+        c[0] - downhill[0] * (depth / 2) - side[0] * halfW,
+        c[1] - downhill[1] * (depth / 2) - side[1] * halfW,
+      ];
+      out.push({
+        id: `steps-${flight}-${i}`,
+        kind: "steps",
+        label: i === n - 1 ? "Entry stairs" : "Step",
+        polygon: [a, b, d, e],
+        // Absolute top Y of this tread (slab ≈ 0; lower treads are negative).
+        height: bottomY + (i + 1) * riser,
+        source: "estimated",
+      });
+    }
+    flight++;
+    if (flight >= 2) break;
+  }
+  return out;
+}
 
 function isHouseLike(tag: string, area: number): boolean {
   if (OUTBUILDING[tag]) return false;
@@ -98,12 +268,12 @@ function isHouseLike(tag: string, area: number): boolean {
  * Neighbor shells: tagged houses, or untagged building=yes pads that clearly touch / sit next door.
  * Centroid checks alone miss large attached wings whose center sits far from our wall.
  */
-function isNeighborCandidate(tag: string, area: number, separationM: number): boolean {
+function isNeighborCandidate(tag: string, area: number, _separationM: number): boolean {
   if (OUTBUILDING[tag]) return false;
   if (area < 35 || area > 4000) return false;
   if (isHouseLike(tag, area)) return true;
-  // Close, house-sized, but tagged only as building=yes / missing tag — still a dwelling obstacle.
-  if ((tag === "yes" || !tag) && separationM <= 14 && area >= 40) return true;
+  // Untagged house-sized pads anywhere inside the neighbor radius.
+  if ((tag === "yes" || !tag) && area >= 45) return true;
   return false;
 }
 
@@ -118,12 +288,20 @@ export function ringSeparation(a: Point[], b: Point[]): number {
   return best;
 }
 
-/** Reach for ghost neighbor shells — wider than garages so attached / next-door units show. */
+/**
+ * How far a neighbor may sit from the focus foundation (meters).
+ * Floored at ~60 m so across-the-street and next-door houses stay in the scene.
+ */
 export function neighborReach(mainRing: Point[]): number {
   const ext = foundationExtent(mainRing);
   const accessory = accessoryReach(mainRing);
-  // Room for large attached wings whose far wall sits well past the old centroid check.
-  return Math.min(120, Math.max(accessory * 1.55, ext * 2.1 + 18));
+  return Math.min(100, Math.max(60, accessory * 1.7, ext * 2.6 + 24));
+}
+
+/** Distance used for neighbor radius: ring gap, falling back to centroid→foundation. */
+export function neighborDistance(main: Point[] | null, mainC: Point, ring: Point[]): number {
+  if (main && main.length >= 3 && ring.length >= 3) return ringSeparation(main, ring);
+  return dist(ringCentroid(ring), mainC);
 }
 
 export type NeighborHeightInput = {
@@ -398,22 +576,21 @@ export function assembleCompound(site: {
     });
   }
 
-  // Attached / next-door dwellings: ghost shells so they read as obstacles, not the focus house.
-  // Use ring-to-ring gap (not centroid) so large attached wings still qualify.
+  // Dwellings within neighborReach of the focus foundation — attached, next-door, across the street.
   const neighborHits = site.structures
     .filter((s) => {
       if (s.id === site.mainId || s.ring.length < 3) return false;
       if (s.area > maxNeighborArea) return false;
-      const sep = main ? ringSeparation(main, s.ring) : dist(ringCentroid(s.ring), mainC);
-      if (sep > neighborR) return false;
-      return isNeighborCandidate(s.tag, s.area, sep);
+      const d = neighborDistance(main, mainC, s.ring);
+      if (d > neighborR) return false;
+      return isNeighborCandidate(s.tag, s.area, d);
     })
     .map((s) => ({
       s,
-      d: main ? ringSeparation(main, s.ring) : dist(ringCentroid(s.ring), mainC),
+      d: neighborDistance(main, mainC, s.ring),
     }))
     .sort((a, b) => a.d - b.d)
-    .slice(0, 10);
+    .slice(0, 16);
   const neighborRings = neighborHits.map((h) => h.s.ring);
   const neighborSoft = Math.min(30, Math.max(14, accessoryR * 0.9));
   const nearNeighborhood = (p: Point) =>
@@ -694,7 +871,10 @@ export function assembleCompound(site: {
     }
   }
 
-  return { features: features.slice(0, 180) };
+  // Graded ground for the full neighbor render radius + pads under each building.
+  features.unshift(...neighborhoodTerrainFeatures(main, neighborRings, neighborR));
+
+  return { features: features.slice(0, 220) };
 }
 
 /**

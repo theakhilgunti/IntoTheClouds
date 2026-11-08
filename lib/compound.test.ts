@@ -5,9 +5,14 @@ import {
   accessoryReach,
   assembleCompound,
   boxToPolygon,
+  buildLotGrade,
   compoundReach,
   crossVerifySiteFeatures,
+  entryStairFeatures,
+  expandRing,
   foundationExtent,
+  gradeHeight,
+  neighborhoodTerrainFeatures,
   neighborReach,
   neighborShellHeight,
   pointInRing,
@@ -146,7 +151,9 @@ describe("compound assembly", () => {
   it("draws attached next-door houses as ghost neighbor shells, not garages", () => {
     const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
     const attached: [number, number][] = [[5, -4], [15, -4], [15, 4], [5, 4]];
-    const far: [number, number][] = [[60, -4], [70, -4], [70, 4], [60, 4]];
+    // Beyond the ~60–100 m neighbor radius.
+    const far: [number, number][] = [[130, -4], [140, -4], [140, 4], [130, 4]];
+    assert.ok(neighborReach(house) >= 60);
     assert.ok(neighborReach(house) >= accessoryReach(house));
     const { features } = assembleCompound({
       mainId: 1,
@@ -167,6 +174,62 @@ describe("compound assembly", () => {
     assert.ok(neighbors[0].polygon.some(([x]) => x > 5));
     assert.ok(Math.abs(neighbors[0].height - 5.5) < 0.2, `2-level neighbor should be ~5.5 m, got ${neighbors[0].height}`);
     assert.equal(features.filter((f) => f.kind === "garage" && f.polygon.some(([x]) => x > 5 && x < 20)).length, 0);
+  });
+
+  it("lays graded terrain pads under the house and each neighbor", () => {
+    const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const nbr: [number, number][] = [[12, -4], [22, -4], [22, 4], [12, 4]];
+    const grown = expandRing(house, 2);
+    assert.ok(grown.every((p, i) => Math.hypot(p[0], p[1]) > Math.hypot(house[i][0], house[i][1]) - 0.01));
+    const pads = neighborhoodTerrainFeatures(house, [nbr]);
+    assert.ok(pads.some((f) => f.id === "terrain-main"));
+    assert.ok(pads.some((f) => f.id.startsWith("terrain-nbr")));
+    assert.ok(pads.some((f) => f.id === "terrain-radius"));
+    const disc = pads.find((f) => f.id === "terrain-radius")!;
+    const reach = neighborReach(house);
+    const extent = Math.max(...disc.polygon.map(([x, y]) => Math.hypot(x, y)));
+    assert.ok(extent >= reach * 0.9, `radius disc should reach ~${reach} m, got ${extent}`);
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: house,
+      structures: [
+        { id: 1, tag: "house", ring: house, area: 80 },
+        { id: 2, tag: "house", ring: nbr, area: 80 },
+      ],
+      fences: [],
+      pools: [],
+      parcel: null,
+      aerial: [],
+      streetDir: [0, -1],
+    });
+    const terrain = features.filter((f) => f.kind === "terrain");
+    assert.ok(terrain.length >= 3, `expected radius + house + neighbor pads, got ${terrain.length}`);
+  });
+
+  it("keeps every house-like building inside the neighbor radius around the focus house", () => {
+    const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const across: [number, number][] = [[-5, -35], [5, -35], [5, -28], [-5, -28]];
+    const side: [number, number][] = [[25, -4], [35, -4], [35, 4], [25, 4]];
+    const r = neighborReach(house);
+    assert.ok(r >= 60);
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: house,
+      structures: [
+        { id: 1, tag: "house", ring: house, area: 80 },
+        { id: 2, tag: "house", ring: across, area: 70 },
+        { id: 3, tag: "residential", ring: side, area: 85 },
+        { id: 4, tag: "yes", ring: [[40, 10], [48, 10], [48, 18], [40, 18]], area: 64 },
+      ],
+      fences: [],
+      pools: [],
+      parcel: null,
+      aerial: [],
+      streetDir: [0, -1],
+      mainEaveHeight: 5.4,
+    });
+    const neighbors = features.filter((f) => f.kind === "neighbor");
+    assert.ok(neighbors.length >= 3, `expected across/side/yes within ${r} m, got ${neighbors.length}`);
   });
 
   it("sizes neighbor shells from OSM levels/height or the focus house eave", () => {
@@ -313,6 +376,24 @@ describe("compound assembly", () => {
       features.some((f) => f.kind === "fence" && f.source === "estimated" && f.id.includes("nbr")),
       "empty neighbor rear should get estimated fence",
     );
+  });
+
+  it("tilts the lot downhill toward the street and builds entry stairs to the slab", () => {
+    const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const grade = buildLotGrade(house, [0, -1]);
+    assert.ok(grade);
+    assert.ok(gradeHeight([0, -10], grade) < gradeHeight([0, 0], grade), "street side should sit lower");
+    assert.ok(Math.abs(gradeHeight([0, 0], grade)) < 0.05, "house origin stays near slab");
+    const steps = entryStairFeatures({
+      streetDir: [0, -1],
+      grade,
+      exits: [[0, -4]],
+    });
+    assert.ok(steps.length >= 2, `expected entry treads, got ${steps.length}`);
+    assert.ok(steps.every((s) => s.kind === "steps" && s.source === "estimated"));
+    const tops = steps.map((s) => s.height).sort((a, b) => a - b);
+    assert.ok(tops[0] < tops[tops.length - 1], "treads rise toward the door");
+    assert.ok(Math.abs(tops[tops.length - 1]) < 0.08, "top tread meets the slab");
   });
 
   it("infers a backyard fence and trees when the rear lot is empty", () => {

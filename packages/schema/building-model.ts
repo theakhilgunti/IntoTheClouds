@@ -149,7 +149,19 @@ export const CompoundKind = z.enum([
   "signal",
   "hydrant",
   "neighbor",
+  "steps",
+  "terrain",
 ]);
+
+/** Gentle lot tilt: street side downhill, house slab stays at y=0. */
+export const LotGrade = z.object({
+  /** Unit vector in model meters toward the street (downhill). */
+  downhill: z.tuple([z.number(), z.number()]),
+  /** Meters of rise per meter of run along -downhill (typically ~0.03). */
+  slope: z.number().nonnegative(),
+  /** Point where grade offset is 0 (house centroid). */
+  origin: z.tuple([z.number(), z.number()]),
+});
 
 /** A lot, outbuilding, or surface around the house. Approximate: map lot, mapped shed, or an aerial box. */
 export const CompoundFeature = z.object({
@@ -157,13 +169,15 @@ export const CompoundFeature = z.object({
   kind: CompoundKind,
   label: z.string(),
   polygon: Polygon,
-  height: z.number().nonnegative().default(0),
+  /** Extrude depth, neighbor eave, or step tread top Y (may be below slab for entry stairs). */
+  height: z.number().default(0),
   source: z.enum(["map", "aerial", "parcel", "estimated"]),
 });
 
 export const Compound = z.object({
   features: z.array(CompoundFeature),
   basis: z.string().optional().describe("Set when the lot, street, and driveway pass has run"),
+  grade: LotGrade.optional().describe("Mild street-to-backyard slope for outdoor meshes"),
 });
 
 export const BuildingModel = z.object({
@@ -197,5 +211,6 @@ export type MarkerType = z.infer<typeof MarkerType>;
 export type Marker = z.infer<typeof Marker>;
 export type CompoundKind = z.infer<typeof CompoundKind>;
 export type CompoundFeature = z.infer<typeof CompoundFeature>;
+export type LotGrade = z.infer<typeof LotGrade>;
 export type Compound = z.infer<typeof Compound>;
 export type BuildingModel = z.infer<typeof BuildingModel>;

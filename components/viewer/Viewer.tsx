@@ -9,6 +9,7 @@ import type {
   BuildingModel,
   CompoundFeature,
   Floor,
+  LotGrade,
   Marker,
   MarkerType,
   Point,
@@ -17,9 +18,24 @@ import type {
   Wall,
 } from "@/packages/schema/building-model";
 import { buildRoofPositions, type Pt } from "@/lib/roof-geom";
+import { gradeHeight } from "@/lib/compound-geom";
 import { buildNav, routeToMarker, type Route } from "@/lib/route";
 // Model frame: x = east, y = north. Three.js frame: x = east, y = up, z = south.
 const toXZ = ([x, y]: Point): [number, number] => [x, -y];
+
+/** After Shape/Extrude + rotateX(-π/2), vertices sit on XZ (z = −modelY). Lift by lot grade. */
+function applyGradeToGeometry(geo: THREE.BufferGeometry, grade: LotGrade | null | undefined, extraY = 0) {
+  if (!grade || grade.slope <= 0) return geo;
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const mx = pos.getX(i);
+    const my = -pos.getZ(i);
+    pos.setY(i, pos.getY(i) + gradeHeight([mx, my], grade) + extraY);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
 
 function LabelSprite({
   text,
@@ -88,7 +104,7 @@ const ROOM_WORDS: Record<Room["type"], string> = {
   closet: "Closet",
   office: "Office",
   basement: "Basement",
-  other: "Room",
+  other: "Room / classroom",
 };
 
 const SITE_COLOR: Record<CompoundFeature["kind"], string> = {
@@ -104,6 +120,8 @@ const SITE_COLOR: Record<CompoundFeature["kind"], string> = {
   signal: "#facc15",
   hydrant: "#dc2626",
   neighbor: "#8eb0e8",
+  steps: "#c5d6f4",
+  terrain: "#123a8a",
 };
 
 const SITE_NOTE: Record<CompoundFeature["source"], string> = {
@@ -413,6 +431,7 @@ function SimpleFloorDeck({
 
 /** Stack ground surfaces so large lots do not z-fight. */
 const LAYER_Y: Record<string, number> = {
+  terrain: -0.04,
   yard: 0.0,
   road: 0.05,
   driveway: 0.07,
@@ -446,11 +465,13 @@ function NeighborMesh({
   hovered,
   onOver,
   onOut,
+  grade,
 }: {
   feature: CompoundFeature;
   hovered: boolean;
   onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
   onOut: (id: string) => void;
+  grade?: LotGrade | null;
 }) {
   const wallH = Math.max(3.5, Math.min(14, feature.height || 5.5));
   const geo = useMemo(() => {
@@ -458,8 +479,9 @@ function NeighborMesh({
     const shape = new THREE.Shape(feature.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
     const g = new THREE.ExtrudeGeometry(shape, { depth: wallH, bevelEnabled: false, steps: 1 });
     g.rotateX(-Math.PI / 2);
+    applyGradeToGeometry(g, grade);
     return g;
-  }, [feature.polygon, wallH]);
+  }, [feature.polygon, wallH, grade]);
   if (!geo) return null;
   const hover = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
@@ -487,14 +509,21 @@ function OutbuildingMesh({
   hovered,
   onOver,
   onOut,
+  grade,
 }: {
   feature: CompoundFeature;
   hovered: boolean;
   onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
   onOut: (id: string) => void;
+  grade?: LotGrade | null;
 }) {
   const wallH = Math.max(2.2, feature.height || 2.6);
   const roofH = Math.min(2.2, Math.max(1.1, wallH * 0.35));
+  const baseY = useMemo(() => {
+    const n = feature.polygon.length || 1;
+    const c = feature.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]] as Point, [0, 0] as Point);
+    return gradeHeight([c[0] / n, c[1] / n], grade);
+  }, [feature.polygon, grade]);
   const walls = useMemo(() => {
     const ring = feature.polygon;
     const out: { key: string; pos: [number, number, number]; rot: number; len: number }[] = [];
@@ -504,10 +533,10 @@ function OutbuildingMesh({
       const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
       if (len < 0.15) continue;
       const [x, z] = toXZ([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
-      out.push({ key: `${i}`, pos: [x, wallH / 2, z], rot: Math.atan2(b[1] - a[1], b[0] - a[0]), len });
+      out.push({ key: `${i}`, pos: [x, baseY + wallH / 2, z], rot: Math.atan2(b[1] - a[1], b[0] - a[0]), len });
     }
     return out;
-  }, [feature.polygon, wallH]);
+  }, [feature.polygon, wallH, baseY]);
   const roofGeo = useMemo(() => {
     const poly = feature.polygon as Pt[];
     if (poly.length < 3) return null;
@@ -536,12 +565,12 @@ function OutbuildingMesh({
           <meshStandardMaterial color={color} roughness={0.9} />
         </mesh>
       ))}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, baseY + 0.02, 0]}>
         <shapeGeometry args={[new THREE.Shape(feature.polygon.map(([x, y]) => new THREE.Vector2(x, y)))]} />
         <meshStandardMaterial color="#2a5ab8" roughness={1} />
       </mesh>
       {roofGeo && (
-        <group position={[0, wallH, 0]}>
+        <group position={[0, baseY + wallH, 0]}>
           <mesh geometry={roofGeo} raycast={noopRaycast}>
             <meshStandardMaterial
               color="#1c3f86"
@@ -647,6 +676,7 @@ function SiteFeatureMesh({
   onOut,
   beacon = false,
   beaconRank = 0,
+  grade = null,
 }: {
   feature: CompoundFeature;
   hovered: boolean;
@@ -655,26 +685,34 @@ function SiteFeatureMesh({
   /** Tall red sky beacon for a nearby hydrant POI. */
   beacon?: boolean;
   beaconRank?: number;
+  grade?: LotGrade | null;
 }) {
-  const center = useMemo(() => {
+  const centerModel = useMemo(() => {
     const n = feature.polygon.length || 1;
     const c = feature.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]] as Point, [0, 0] as Point);
-    return toXZ([c[0] / n, c[1] / n]);
+    return [c[0] / n, c[1] / n] as Point;
   }, [feature.polygon]);
+  const center = useMemo(() => toXZ(centerModel), [centerModel]);
+  const gy = gradeHeight(centerModel, grade);
 
   const slabY =
-    feature.kind === "yard"
-      ? LAYER_Y.yard
-      : feature.kind === "road"
-        ? LAYER_Y.road
-        : feature.kind === "driveway"
-          ? LAYER_Y.driveway
-          : feature.kind === "patio"
-            ? LAYER_Y.patio
-            : feature.kind === "pool"
-              ? LAYER_Y.pool
-              : LAYER_Y.fence;
+    feature.kind === "terrain"
+      ? LAYER_Y.terrain
+      : feature.kind === "yard"
+        ? LAYER_Y.yard
+        : feature.kind === "road"
+          ? LAYER_Y.road
+          : feature.kind === "driveway"
+            ? LAYER_Y.driveway
+            : feature.kind === "patio"
+              ? LAYER_Y.patio
+              : feature.kind === "pool"
+                ? LAYER_Y.pool
+                : feature.kind === "steps"
+                  ? 0
+                  : LAYER_Y.fence;
 
+  const stepRiser = 0.16;
   const slabGeo = useMemo(() => {
     if (
       feature.kind === "trees" ||
@@ -685,6 +723,13 @@ function SiteFeatureMesh({
       feature.kind === "neighbor"
     )
       return null;
+    if (feature.polygon.length < 3) return null;
+    if (feature.kind === "steps") {
+      const shape = new THREE.Shape(feature.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
+      const g = new THREE.ExtrudeGeometry(shape, { depth: stepRiser, bevelEnabled: false });
+      g.rotateX(-Math.PI / 2);
+      return g;
+    }
     const simplified =
       feature.polygon.length > 24
         ? feature.polygon.filter((_, i) => i % Math.ceil(feature.polygon.length / 16) === 0)
@@ -695,21 +740,54 @@ function SiteFeatureMesh({
     if (feature.kind === "fence") {
       const g = new THREE.ExtrudeGeometry(shape, { depth: Math.max(0.8, feature.height), bevelEnabled: false });
       g.rotateX(-Math.PI / 2);
+      applyGradeToGeometry(g, grade);
       return g;
     }
     const g = new THREE.ShapeGeometry(shape);
     g.rotateX(-Math.PI / 2);
+    applyGradeToGeometry(g, grade);
     return g;
-  }, [feature.kind, feature.polygon, feature.height]);
+  }, [feature.kind, feature.polygon, feature.height, grade, stepRiser]);
 
   const hover = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
-    onOver(e, feature.id, feature.label, SITE_NOTE[feature.source]);
+    onOver(
+      e,
+      feature.id,
+      feature.label,
+      feature.kind === "steps"
+        ? "Estimated front entry stairs"
+        : feature.kind === "terrain"
+          ? feature.id === "terrain-radius"
+            ? "Estimated ground grade across the mapped neighborhood radius"
+            : "Estimated ground grade under buildings"
+          : SITE_NOTE[feature.source],
+    );
   };
+
+  if (feature.kind === "steps") {
+    if (!slabGeo) return null;
+    // feature.height is the absolute top Y of this tread (slab ≈ 0).
+    return (
+      <mesh
+        geometry={slabGeo}
+        position={[0, feature.height - stepRiser, 0]}
+        onPointerOver={hover}
+        onPointerOut={() => onOut(feature.id)}
+      >
+        <meshStandardMaterial
+          color={hovered ? "#eaf1ff" : SITE_COLOR.steps}
+          roughness={0.85}
+          emissive={hovered ? "#ffffff" : "#000000"}
+          emissiveIntensity={hovered ? 0.2 : 0}
+        />
+      </mesh>
+    );
+  }
 
   if (feature.kind === "trees") {
     return (
-      <group position={[center[0], 0, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
+      <group position={[center[0], gy, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
         <mesh position={[0, 1.1, 0]}>
           <cylinderGeometry args={[0.14, 0.2, 2.2, 6]} />
           <meshStandardMaterial color="#9ebcff" />
@@ -724,7 +802,7 @@ function SiteFeatureMesh({
 
   if (feature.kind === "signal") {
     return (
-      <group position={[center[0], 0, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
+      <group position={[center[0], gy, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
         <mesh position={[0, 1.6, 0]}>
           <cylinderGeometry args={[0.08, 0.1, 3.2, 8]} />
           <meshStandardMaterial color="#1a1a1a" metalness={0.4} roughness={0.55} />
@@ -753,7 +831,7 @@ function SiteFeatureMesh({
         beaconRank === 0 ? "Nearest hydrant" : beaconRank === 1 ? "Hydrant #2" : `Hydrant #${beaconRank + 1}`;
       return (
         <HydrantBeacon
-          position={[center[0], 0, center[1]]}
+          position={[center[0], gy, center[1]]}
           hovered={hovered}
           onOver={hover}
           onOut={() => onOut(feature.id)}
@@ -764,7 +842,7 @@ function SiteFeatureMesh({
     }
     const red = hovered ? "#f87171" : SITE_COLOR.hydrant;
     return (
-      <group position={[center[0], 0, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)} scale={1.35}>
+      <group position={[center[0], gy, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)} scale={1.35}>
         <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} raycast={noopRaycast}>
           <circleGeometry args={[0.4, 12]} />
           <meshStandardMaterial color="#7f1d1d" transparent opacity={0.45} depthWrite={false} />
@@ -786,23 +864,39 @@ function SiteFeatureMesh({
   }
 
   if (feature.kind === "neighbor") {
-    return <NeighborMesh feature={feature} hovered={hovered} onOver={onOver} onOut={onOut} />;
+    return <NeighborMesh feature={feature} hovered={hovered} onOver={onOver} onOut={onOut} grade={grade} />;
   }
 
   if (feature.kind === "garage" || feature.kind === "shed") {
-    return <OutbuildingMesh feature={feature} hovered={hovered} onOver={onOver} onOut={onOut} />;
+    return <OutbuildingMesh feature={feature} hovered={hovered} onOver={onOver} onOut={onOut} grade={grade} />;
   }
 
   if (!slabGeo) return null;
-  const offset = feature.kind === "yard" ? -4 : feature.kind === "road" ? -3 : feature.kind === "driveway" ? -2 : -1;
+  const offset =
+    feature.kind === "terrain"
+      ? -5
+      : feature.kind === "yard"
+        ? -4
+        : feature.kind === "road"
+          ? -3
+          : feature.kind === "driveway"
+            ? -2
+            : -1;
   return (
     <mesh geometry={slabGeo} position={[0, slabY, 0]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
       {groundMat(SITE_COLOR[feature.kind], hovered, {
-        transparent: feature.kind === "pool",
-        opacity: feature.kind === "pool" ? 0.88 : 1,
+        transparent: feature.kind === "pool" || feature.kind === "terrain",
+        opacity:
+          feature.kind === "pool"
+            ? 0.88
+            : feature.kind === "terrain"
+              ? feature.id === "terrain-radius"
+                ? 0.42
+                : 0.78
+              : 1,
         offset,
-        // Only the outside lot/yard pad stays quiet on hover.
-        noHover: feature.kind === "yard",
+        // Yard + soft terrain stay quiet; building pads can tip for context.
+        noHover: feature.kind === "yard" || feature.id === "terrain-radius" || feature.id === "terrain-apron",
       })}
     </mesh>
   );
@@ -1124,7 +1218,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   // Frame the camera on the house, whatever its size.
   const { camPos, target, extent, minDist, maxDist, camNear, camFar, largeSite, rotateSpeed } = useMemo(() => {
     // Don't let distant hydrants/roads pull the camera to a city-block zoom — beacons then look like pins.
-    const frameKinds = new Set(["yard", "garage", "shed", "neighbor", "driveway", "patio", "pool", "fence", "trees"]);
+    const frameKinds = new Set(["yard", "garage", "shed", "neighbor", "driveway", "patio", "pool", "fence", "trees", "terrain"]);
     const pts = [
       ...model.floors.flatMap((f) => f.walls.flatMap((w) => [w.a, w.b])),
       ...(model.compound?.features
@@ -1278,13 +1372,16 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
 
         {(() => {
           const feats = model.compound?.features ?? [];
+          const lotGrade = model.compound?.grade ?? null;
           // Outside lot/yard pad + base disc stay off — keep streets, pads, and structures.
           const noYard = feats.filter((f) => f.kind !== "yard");
+          // Draw terrain first so pads sit under structures.
+          const ordered = [...noYard].sort((a, b) => Number(a.kind !== "terrain") - Number(b.kind !== "terrain"));
           const filtered = peeringBasement
-            ? noYard.filter((f) => f.kind === "garage" || f.kind === "shed" || f.kind === "neighbor" || f.kind === "hydrant" || f.kind === "signal" || f.kind === "fence" || f.kind === "trees")
+            ? ordered.filter((f) => f.kind === "garage" || f.kind === "shed" || f.kind === "neighbor" || f.kind === "hydrant" || f.kind === "signal" || f.kind === "fence" || f.kind === "trees" || f.kind === "steps" || f.kind === "terrain")
             : largeSite
-              ? noYard.filter((f) => f.kind !== "patio" && f.kind !== "pool")
-              : noYard;
+              ? ordered.filter((f) => f.kind !== "patio" && f.kind !== "pool")
+              : ordered;
           return filtered.map((feature) => {
             // Beacon POIs replace the small meshes for the closest few when the toggle is on.
             if (hydrantBeaconOn && beaconHydrantIds.has(feature.id)) return null;
@@ -1295,6 +1392,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
                 hovered={tip?.id === feature.id}
                 onOver={showTip}
                 onOut={hideTip}
+                grade={lotGrade}
               />
             );
           });
@@ -1307,6 +1405,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
               feature={feature}
               beacon
               beaconRank={rank}
+              grade={model.compound?.grade ?? null}
               hovered={tip?.id === feature.id}
               onOver={(e, id, title) =>
                 showTip(

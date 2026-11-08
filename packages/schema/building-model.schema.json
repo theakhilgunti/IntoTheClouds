@@ -600,7 +600,9 @@
                   "road",
                   "signal",
                   "hydrant",
-                  "neighbor"
+                  "neighbor",
+                  "steps",
+                  "terrain"
                 ]
               },
               "label": {
@@ -628,8 +630,8 @@
               },
               "height": {
                 "default": 0,
-                "type": "number",
-                "minimum": 0
+                "description": "Extrude depth, neighbor eave, or step tread top Y (entry stairs may be below slab)",
+                "type": "number"
               },
               "source": {
                 "type": "string",
@@ -653,6 +655,31 @@
         "basis": {
           "description": "Set when the lot, street, and driveway pass has run",
           "type": "string"
+        },
+        "grade": {
+          "description": "Mild street-to-backyard slope for outdoor meshes",
+          "type": "object",
+          "properties": {
+            "downhill": {
+              "type": "array",
+              "prefixItems": [{ "type": "number" }, { "type": "number" }],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "slope": {
+              "type": "number",
+              "minimum": 0
+            },
+            "origin": {
+              "type": "array",
+              "prefixItems": [{ "type": "number" }, { "type": "number" }],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": ["downhill", "slope", "origin"]
         }
       },
       "required": [

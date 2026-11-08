@@ -59,6 +59,10 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 03:00 | Cursor | UI-51 | Radius terrain disc + school/office/church layouts from OSM building=* (compound-v16). |
+| 02:55 | Cursor | UI-50 | Graded terrain pads under house + neighbors and connecting apron (compound-v15). |
+| 02:50 | Cursor | UI-49 | Neighbor shells within ~60–100 m radius of the house (compound-v14). |
+| 02:40 | Cursor | UI-48 | Lot tilt (~3.5% street downhill) + exterior entry stairs (compound-v13). |
 | 02:30 | Cursor | UI-47 | Neighbors: ring-gap detect + neighbor fences/trees/pools/backyard fill (compound-v12). |
 | 02:25 | Cursor | UI-46 | Backyard fences/trees: OSM trees + inferred rear fence/trees (compound-v11). |
 | 02:23 | Cursor | UI-45 | Hide outside lot/yard pad and base ground disc only. |
