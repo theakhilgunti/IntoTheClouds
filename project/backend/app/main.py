@@ -11,6 +11,7 @@ import numpy as np
 from .fusion.math_engine import ParticleFilterLocalizer
 from .fusion.rf_map import RFMap
 from .fusion.tomography import VoxelGrid
+from .fusion.geo import GPS_OK_ACC_M, clean_sensors, latlon_to_local
 from .fusion.heading import compass_to_map_heading, offset_from_plus_x, valid_angle
 from fastapi.responses import FileResponse
 import os
@@ -80,6 +81,32 @@ session_started_at: float = time.time()
 # BE-10: phone compass + step feed (GET /walker, ws /ws/pdr). `offset` = compass bearing of map +y.
 pdr_state = {"offset": 0.0, "map_heading": 0.0, "last": 0.0, "aligned": False}
 PDR_FRESH_S = 3.0
+
+# BE-12: raw iPhone sensors (GPS, 3D orientation, gyro, accel). GPS is metres-level and unreliable
+# indoors: `gps_usable` is false when accuracy is worse than GPS_OK_ACC_M. Not fused into position yet.
+phone_state = {"latest": {}, "t": 0.0, "gps_origin": None, "gps_local": None}
+phone_log: list = []
+PHONE_LOG_MAX = 20000
+
+
+def record_phone_sensors(raw) -> None:
+    s = clean_sensors(raw)
+    if not s:
+        return
+    now = time.time()
+    g = s.get("gps")
+    if g:
+        if phone_state["gps_origin"] is None and g.get("acc", 1e9) <= GPS_OK_ACC_M:
+            phone_state["gps_origin"] = {"lat": g["lat"], "lon": g["lon"]}
+        o = phone_state["gps_origin"]
+        if o:
+            x, y = latlon_to_local(g["lat"], g["lon"], o["lat"], o["lon"], pdr_state["offset"])
+            phone_state["gps_local"] = {"x": round(x, 2), "y": round(y, 2)}
+    phone_state["latest"].update(s)
+    phone_state["t"] = now
+    phone_log.append({"t": round(now, 3), "map_heading": round(pdr_state["map_heading"], 1), **s})
+    if len(phone_log) > PHONE_LOG_MAX:
+        del phone_log[: PHONE_LOG_MAX // 10]
 
 
 def pdr_fresh() -> bool:
@@ -175,6 +202,7 @@ async def pdr_endpoint(websocket: WebSocket):
                 continue
             if not isinstance(msg, dict):
                 continue
+            record_phone_sensors(msg.get("sensors"))
             compass = msg.get("compass_deg")
             if msg.get("type") == "align" and valid_angle(compass):
                 pdr_state["offset"] = offset_from_plus_x(float(compass))
@@ -206,6 +234,21 @@ async def pdr_endpoint(websocket: WebSocket):
         logger.info("Phone PDR client disconnected")
 
 
+@app.get("/api/phone")
+async def get_phone_sensors():
+    """Latest iPhone sensor packet, GPS in local map metres (relative to the first good fix), and its age."""
+    g = phone_state["latest"].get("gps", {})
+    return {"latest": phone_state["latest"], "age_s": round(time.time() - phone_state["t"], 2) if phone_state["t"] else None,
+            "gps_usable": bool(g) and g.get("acc", 1e9) <= GPS_OK_ACC_M, "gps_origin": phone_state["gps_origin"],
+            "gps_local": phone_state["gps_local"], "samples": len(phone_log)}
+
+
+@app.get("/api/phone/log")
+async def get_phone_log(last: int = 1000):
+    """Recorded sensor samples (newest `last`, max 20000) for offline analysis."""
+    return phone_log[-max(1, min(last, PHONE_LOG_MAX)):]
+
+
 @app.get("/api/mesh")
 async def get_obstacle_mesh(extrude: bool = True, wall_height_m: float = 2.5):
     """Rough RF obstacle-hint mesh (BE-03): triangles around voxels where most
@@ -224,6 +267,7 @@ async def reset_session():
         session_started_at,
         time.time(),
     )
+    phone_state.update(gps_origin=None, gps_local=None)  # new session: re-anchor GPS (log is kept)
     localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=(-2.0, -2.0, 12.0, 12.0))
     breadcrumbs.clear()
     hazards.clear()

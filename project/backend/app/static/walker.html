@@ -18,10 +18,13 @@
 <div class="card"><div class="muted">3. Stand on your start spot (map metres) and:</div>
  x <input id="sx" type="number" step="0.1" value="0"> y <input id="sy" type="number" step="0.1" value="0">
  <button id="start">Set start position</button></div>
+<div class="card"><div class="muted">Phone sensors (sent ~10 Hz)</div>
+ <div>GPS <span id="gp">waiting</span></div><div>Tilt <span id="tl">--</span></div><div>Turn rate <span id="rr">--</span></div>
+ <div class="muted">GPS is metres-level, and unreliable indoors or in smoke. The accuracy shown is what the phone itself claims.</div></div>
 <div class="card">Step length (m) <input id="sl" type="number" step="0.05" value="0.7"></div>
 <script>
 const $=id=>document.getElementById(id);
-let ws,compass=null,steps=0,smooth=null,lastStep=0,hp=0,gAvg=9.8;
+let sens={},ws,compass=null,steps=0,smooth=null,lastStep=0,hp=0,gAvg=9.8;
 function connect(){
   ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws/pdr");
   ws.onopen=()=>{$("st").textContent="connected";$("st").className="ok"};
@@ -34,9 +37,15 @@ function onOrient(e){
   let h = typeof e.webkitCompassHeading==="number" ? e.webkitCompassHeading : (e.absolute && e.alpha!=null ? (360-e.alpha)%360 : null);
   if(h===null) return;
   smooth=circ(smooth,h,0.25); compass=smooth; $("hd").textContent=compass.toFixed(0)+"°";
+  sens.orient={alpha:e.alpha,beta:e.beta,gamma:e.gamma,compass:compass};
+  $("tl").textContent="pitch "+(e.beta||0).toFixed(0)+"° roll "+(e.gamma||0).toFixed(0)+"°";
 }
 function onMotion(e){
+  const rr=e.rotationRate; if(rr){ sens.gyro={alpha:rr.alpha,beta:rr.beta,gamma:rr.gamma};
+    $("rr").textContent=Math.hypot(rr.alpha||0,rr.beta||0,rr.gamma||0).toFixed(0)+"°/s"; }
+  if(e.acceleration) sens.accel={x:e.acceleration.x,y:e.acceleration.y,z:e.acceleration.z};
   const a=e.accelerationIncludingGravity; if(!a) return;
+  sens.accel_g={x:a.x,y:a.y,z:a.z};
   const m=Math.hypot(a.x||0,a.y||0,a.z||0);
   gAvg+=0.02*(m-gAvg); hp=m-gAvg;               // high-pass: removes gravity
   const now=performance.now();
@@ -50,7 +59,12 @@ $("go").onclick=async()=>{
       await DeviceOrientationEvent.requestPermission();
     }
     addEventListener("deviceorientation",onOrient,true); addEventListener("devicemotion",onMotion,true);
-    connect(); setInterval(()=>{ if(compass!==null) send({compass_deg:compass}); },100);
+    connect(); setInterval(()=>{ if(compass!==null) send({compass_deg:compass,sensors:sens}); },100);
+    if(navigator.geolocation) navigator.geolocation.watchPosition(p=>{
+      const c=p.coords; sens.gps={lat:c.latitude,lon:c.longitude,acc:c.accuracy,alt:c.altitude,alt_acc:c.altitudeAccuracy,speed:c.speed,course:c.heading};
+      $("gp").textContent=c.latitude.toFixed(6)+", "+c.longitude.toFixed(6)+" ±"+c.accuracy.toFixed(0)+" m";
+    },err=>{ $("gp").textContent="no fix ("+err.message+")"; },{enableHighAccuracy:true,maximumAge:0,timeout:20000});
+    else $("gp").textContent="not available";
     $("go").textContent="Sensors running";
   }catch(err){ $("go").textContent="Failed: "+err.message+" (needs HTTPS)"; }
 };

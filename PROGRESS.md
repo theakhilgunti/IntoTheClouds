@@ -98,3 +98,6 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 04:42 | Claude Code | LC-03 | Finished task |
 | 04:58 | Claude Code | LC-04 | Finished task |
 | 06:40 | Claude Code | LC-04 | Mac walker Wi-Fi: laptop_client/mac_wifi_radar.py + mac_wifi_scan.swift (CoreWLAN, real dBm) serving radar /api/telemetry format for spot_survey --wifi radar and radar_bridge; 3 tests (16 pass). Needs Location permission; untested against ITC- hotspots; not committed |
+| 05:27 | Claude Code | LC-05 | Finished task |
+| 05:32 | Claude Code | BE-12 | Finished task |
+| 07:30 | Claude Code | BE-12 | iPhone telemetry: /walker now streams GPS (+accuracy), 3D orientation, gyro rate, accel via /ws/pdr; backend records them (fusion/geo.py), GET /api/phone and /api/phone/log, GPS->local metres gated on accuracy <= 15 m; 5 new tests (38 pass); not fused into position; untested on a real iPhone |
