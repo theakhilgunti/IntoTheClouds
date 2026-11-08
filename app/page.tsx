@@ -7,7 +7,9 @@ export default function Home() {
   return (
     <main className="bp-sheet flex min-h-dvh flex-col items-center px-5 pb-8">
       <header className="flex w-full max-w-5xl items-center justify-between py-5">
-        <span className="font-display text-2xl uppercase tracking-[0.14em]">CloudScan</span>
+        <span className="font-display text-2xl uppercase tracking-[0.14em]">
+          Cloud<span className="text-bp-red">Scan</span>
+        </span>
         <Link
           href="/model/demo"
           className="font-data text-xs underline decoration-bp-ink underline-offset-4 hover:text-bp-red hover:decoration-bp-red"

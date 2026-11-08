@@ -12,7 +12,8 @@ export type CompoundKind =
   | "trees"
   | "road"
   | "signal"
-  | "hydrant";
+  | "hydrant"
+  | "neighbor";
 
 export type SiteFeature = {
   id: string;
@@ -39,6 +40,22 @@ const OUTBUILDING: Record<string, "garage" | "shed"> = {
   farm_auxiliary: "shed",
 };
 
+/** Peer dwellings / attached units — drawn as ghost shells, not focus interiors. */
+const HOUSE_LIKE = new Set([
+  "yes",
+  "house",
+  "residential",
+  "apartments",
+  "detached",
+  "terrace",
+  "semidetached_house",
+  "bungalow",
+  "static_caravan",
+  "dormitory",
+  "maisonette",
+  "allotment_house",
+]);
+
 const HEIGHT: Record<CompoundKind, number> = {
   yard: 0.04,
   garage: 2.6,
@@ -51,6 +68,7 @@ const HEIGHT: Record<CompoundKind, number> = {
   road: 0.06,
   signal: 3.2,
   hydrant: 0.85,
+  neighbor: 6.5,
 };
 
 const LABEL: Record<CompoundKind, string> = {
@@ -65,7 +83,48 @@ const LABEL: Record<CompoundKind, string> = {
   road: "Street",
   signal: "Traffic light",
   hydrant: "Fire hydrant",
+  neighbor: "Neighbor",
 };
+
+function isHouseLike(tag: string, area: number): boolean {
+  if (OUTBUILDING[tag]) return false;
+  if (!HOUSE_LIKE.has(tag)) return false;
+  // Generic building=yes is common on sheds — require a house-sized pad.
+  const minArea = tag === "yes" ? 55 : 40;
+  return area >= minArea && area <= 4000;
+}
+
+/** Reach for ghost neighbor shells — wider than garages so attached / next-door units show. */
+export function neighborReach(mainRing: Point[]): number {
+  const ext = foundationExtent(mainRing);
+  const accessory = accessoryReach(mainRing);
+  return Math.min(95, Math.max(accessory * 1.35, ext * 1.65 + 14));
+}
+
+export type NeighborHeightInput = {
+  /** OSM building:levels when mapped. */
+  levels?: number | null;
+  /** OSM height in meters when mapped (often includes roof). */
+  heightM?: number | null;
+  /** Eave height of the focus house (meters) — default match for attached peers. */
+  mainEave: number;
+};
+
+/**
+ * Ghost-shell height for a neighbor: prefer OSM levels/height, else match the scanned house eave.
+ * Avoids the old √area guess that made wide 1-story pads look like towers.
+ */
+export function neighborShellHeight(input: NeighborHeightInput): number {
+  const clamp = (h: number) => Math.min(14, Math.max(3.5, h));
+  const levels = input.levels != null && Number.isFinite(input.levels) ? Math.round(input.levels) : null;
+  if (levels != null && levels >= 1 && levels <= 8) return clamp(levels * 2.75);
+  const hm = input.heightM != null && Number.isFinite(input.heightM) ? input.heightM : null;
+  if (hm != null && hm >= 2.5) {
+    // Mapped height often includes the roof; shell stops near the eaves.
+    return clamp(hm * 0.88);
+  }
+  return clamp(input.mainEave > 2 ? input.mainEave : 5.5);
+}
 
 function dist(a: Point, b: Point) {
   return Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -138,11 +197,34 @@ function ribbon(a: Point, b: Point, width: number, maxLen = 320): Point[] | null
   ];
 }
 
-/** How far from the main building the compound search should reach, in meters. */
+/** Characteristic foundation size from the model origin (meters). */
+export function foundationExtent(mainRing: Point[]): number {
+  if (mainRing.length < 3) return 10;
+  return Math.max(...mainRing.map(([x, y]) => Math.hypot(x, y)), 6);
+}
+
+/**
+ * How far from the main building yard / street / aerial search should reach (meters).
+ * Scales with foundation size so a cottage and a campus don't share one city-block radius.
+ */
 export function compoundReach(mainRing: Point[]): number {
-  if (mainRing.length < 3) return 55;
-  const extent = Math.max(...mainRing.map(([x, y]) => Math.hypot(x, y)), 8);
-  return Math.min(220, Math.max(55, extent * 3.6));
+  const ext = foundationExtent(mainRing);
+  return Math.min(160, Math.max(40, ext * 2.8 + 18));
+}
+
+/**
+ * How far a garage/shed may sit from the foundation edge (meters).
+ * Tighter than compoundReach so off-lot and far campus buildings are not drawn as "garages".
+ */
+export function accessoryReach(mainRing: Point[]): number {
+  const ext = foundationExtent(mainRing);
+  return Math.min(70, Math.max(16, ext * 1.25 + 10));
+}
+
+/** True when point is inside the foundation or within `r` meters of its outline. */
+function nearFoundation(p: Point, main: Point[] | null, r: number): boolean {
+  if (!main || main.length < 3) return Math.hypot(p[0], p[1]) < r;
+  return pointInRing(p, main) || distToRing(p, main) < r;
 }
 
 function ringExtent(ring: Point[]): number {
@@ -182,20 +264,26 @@ export function siteHull(rings: Point[][], pad = 4): Point[] | null {
 export function assembleCompound(site: {
   mainId: number | null;
   mainRing: Point[];
-  structures: { id: number; tag: string; ring: Point[]; area: number }[];
+  structures: { id: number; tag: string; ring: Point[]; area: number; levels?: number | null; heightM?: number | null }[];
   fences: Point[][];
   pools: Point[][];
   parking?: Point[][];
   parcel: Point[] | null;
   aerial: { kind: CompoundKind; label?: string; polygon: Point[] }[];
+  /** Focus-house eave height (m) so neighbors without OSM height match the scanned shell. */
+  mainEaveHeight?: number;
 }): { features: SiteFeature[] } {
   const features: SiteFeature[] = [];
   const main = site.mainRing.length >= 3 ? site.mainRing : null;
   const mainC: Point = main ? ringCentroid(main) : [0, 0];
   const reach = compoundReach(site.mainRing);
-  const maxOut = Math.max(140, Math.min(800, reach * reach * 0.08));
+  const accessoryR = accessoryReach(site.mainRing);
+  const neighborR = neighborReach(site.mainRing);
+  const lotSoft = Math.min(6, Math.max(2.5, foundationExtent(site.mainRing) * 0.12));
+  const maxOut = Math.max(120, Math.min(500, accessoryR * accessoryR * 0.12));
+  const maxNeighborArea = Math.max(800, Math.min(4000, foundationExtent(site.mainRing) * foundationExtent(site.mainRing) * 4));
 
-  // Prefer the tax lot; otherwise hull the house + tagged outbuildings/parking so large sites still get a yard.
+  // Prefer the tax lot; otherwise hull the house + nearby tagged outbuildings/parking.
   const hasParcel = !!(site.parcel && site.parcel.length >= 3);
   let yard = hasParcel ? site.parcel : null;
   let yardSource: "parcel" | "map" = "parcel";
@@ -208,16 +296,16 @@ export function assembleCompound(site: {
           !!OUTBUILDING[s.tag] &&
           s.area >= 8 &&
           s.area <= maxOut &&
-          dist(ringCentroid(s.ring), mainC) < reach,
+          nearFoundation(ringCentroid(s.ring), main, accessoryR),
       )
       .map((s) => s.ring);
-    yard = siteHull([main, ...nearRings, ...(site.parking ?? []), ...site.pools], Math.max(4, reach * 0.08));
+    yard = siteHull([main, ...nearRings, ...(site.parking ?? []), ...site.pools], Math.max(3, Math.min(8, accessoryR * 0.12)));
     yardSource = "map";
   }
 
   const onSite = (p: Point) => {
-    if (yard) return pointInRing(p, yard) || distToRing(p, yard) < Math.max(4, reach * 0.06);
-    return dist(p, mainC) < reach;
+    if (yard) return pointInRing(p, yard) || distToRing(p, yard) < lotSoft;
+    return nearFoundation(p, main, accessoryR);
   };
 
   if (yard) {
@@ -236,9 +324,15 @@ export function assembleCompound(site: {
     if (s.ring.length < 3 || s.area < 8 || s.area > maxOut) continue;
     const c = ringCentroid(s.ring);
     if (!onSite(c)) continue;
+    // Even on a huge campus parcel, only keep accessories near this foundation.
+    if (!nearFoundation(c, main, accessoryR)) continue;
+    // House-like peers are handled as ghost neighbors, not fake garages.
+    if (isHouseLike(s.tag, s.area)) continue;
     let kind = OUTBUILDING[s.tag];
-    // On a mapped tax lot, keep other accessory buildings; without a lot, only tagged outbuildings.
-    if (!kind && hasParcel) kind = s.area >= 40 ? "garage" : "shed";
+    // On a mapped tax lot, untagged buildings next to the house can be accessory pads.
+    if (!kind && hasParcel && nearFoundation(c, main, Math.min(accessoryR, Math.max(18, accessoryR * 0.65)))) {
+      kind = s.area >= 40 ? "garage" : "shed";
+    }
     if (!kind) continue;
     const label =
       kind === "garage" && (s.tag === "garage" || s.tag === "garages" || s.tag === "carport")
@@ -252,6 +346,35 @@ export function assembleCompound(site: {
       label,
       polygon: s.ring,
       height: HEIGHT[kind],
+      source: "map",
+    });
+  }
+
+  // Attached / next-door dwellings: ghost shells so they read as obstacles, not the focus house.
+  // May sit just off the tax lot (row houses, duplexes) — use neighbor reach, not onSite.
+  const neighborHits = site.structures
+    .filter((s) => {
+      if (s.id === site.mainId || s.ring.length < 3) return false;
+      if (!isHouseLike(s.tag, s.area) || s.area > maxNeighborArea) return false;
+      const c = ringCentroid(s.ring);
+      return nearFoundation(c, main, neighborR);
+    })
+    .map((s) => ({ s, d: main ? distToRing(ringCentroid(s.ring), main) : dist(ringCentroid(s.ring), mainC) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 8);
+  const mainEave = site.mainEaveHeight && site.mainEaveHeight > 2 ? site.mainEaveHeight : 5.5;
+  for (const { s } of neighborHits) {
+    const h = neighborShellHeight({
+      levels: s.levels,
+      heightM: s.heightM,
+      mainEave,
+    });
+    features.push({
+      id: `neighbor-${s.id}`,
+      kind: "neighbor",
+      label: LABEL.neighbor,
+      polygon: s.ring,
+      height: h,
       source: "map",
     });
   }
@@ -301,6 +424,7 @@ export function assembleCompound(site: {
     const c = ringCentroid(a.polygon);
     if (main && pointInRing(c, main)) continue;
     if (!onSite(c)) continue;
+    if ((a.kind === "garage" || a.kind === "shed") && !nearFoundation(c, main, accessoryR)) continue;
     if ((a.kind === "garage" || a.kind === "shed") && features.some((f) => (f.kind === "garage" || f.kind === "shed") && dist(ringCentroid(f.polygon), c) < 7)) {
       continue;
     }

@@ -2,10 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   accessFeatures,
+  accessoryReach,
   assembleCompound,
   boxToPolygon,
   compoundReach,
   crossVerifySiteFeatures,
+  foundationExtent,
+  neighborReach,
+  neighborShellHeight,
   pointInRing,
   roomBays,
   siteHull,
@@ -117,6 +121,8 @@ describe("compound assembly", () => {
   it("builds a site hull when there is no tax lot, and keeps a rear garage", () => {
     const bigHouse: [number, number][] = [[-20, -15], [20, -15], [20, 15], [-20, 15]];
     assert.ok(compoundReach(bigHouse) > 60);
+    assert.ok(accessoryReach(bigHouse) < compoundReach(bigHouse));
+    assert.ok(foundationExtent(bigHouse) > 20);
     const garage: [number, number][] = [[8, 40], [16, 40], [16, 50], [8, 50]];
     const { features } = assembleCompound({
       mainId: 1,
@@ -134,6 +140,83 @@ describe("compound assembly", () => {
     assert.ok(features.some((f) => f.kind === "yard"));
     assert.ok(features.some((f) => f.kind === "garage"));
     assert.ok(features.some((f) => f.kind === "driveway" && f.label === "Parking"));
+  });
+
+  it("draws attached next-door houses as ghost neighbor shells, not garages", () => {
+    const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const attached: [number, number][] = [[5, -4], [15, -4], [15, 4], [5, 4]];
+    const far: [number, number][] = [[60, -4], [70, -4], [70, 4], [60, 4]];
+    assert.ok(neighborReach(house) >= accessoryReach(house));
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: house,
+      structures: [
+        { id: 1, tag: "house", ring: house, area: 80 },
+        { id: 2, tag: "house", ring: attached, area: 80, levels: 2 },
+        { id: 3, tag: "residential", ring: far, area: 90 },
+      ],
+      fences: [],
+      pools: [],
+      parcel: null,
+      aerial: [],
+      mainEaveHeight: 5.4,
+    });
+    const neighbors = features.filter((f) => f.kind === "neighbor");
+    assert.equal(neighbors.length, 1);
+    assert.ok(neighbors[0].polygon.some(([x]) => x > 5));
+    assert.ok(Math.abs(neighbors[0].height - 5.5) < 0.2, `2-level neighbor should be ~5.5 m, got ${neighbors[0].height}`);
+    assert.equal(features.filter((f) => f.kind === "garage" && f.polygon.some(([x]) => x > 5 && x < 20)).length, 0);
+  });
+
+  it("sizes neighbor shells from OSM levels/height or the focus house eave", () => {
+    assert.equal(neighborShellHeight({ levels: 3, mainEave: 5.4 }), 8.25);
+    assert.ok(Math.abs(neighborShellHeight({ heightM: 10, mainEave: 5.4 }) - 8.8) < 0.05);
+    assert.equal(neighborShellHeight({ mainEave: 5.4 }), 5.4);
+    const wide: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const ranch: [number, number][] = [[5, -4], [25, -4], [25, 4], [5, 4]];
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: wide,
+      structures: [
+        { id: 1, tag: "house", ring: wide, area: 80 },
+        { id: 2, tag: "house", ring: ranch, area: 400 },
+      ],
+      fences: [],
+      pools: [],
+      parcel: null,
+      aerial: [],
+      mainEaveHeight: 2.8,
+    });
+    const n = features.find((f) => f.kind === "neighbor");
+    assert.ok(n);
+    assert.ok(n!.height <= 4, `wide ranch without levels should match 1-story eave, got ${n!.height}`);
+  });
+
+  it("scales accessory reach with foundation size and drops far campus buildings", () => {
+    const cottage: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const campus: [number, number][] = [[-40, -30], [40, -30], [40, 30], [-40, 30]];
+    assert.ok(accessoryReach(cottage) < accessoryReach(campus));
+    const hugeLot: [number, number][] = [[-80, -80], [80, -80], [80, 80], [-80, 80]];
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: cottage,
+      structures: [
+        { id: 1, tag: "house", ring: cottage, area: 80 },
+        { id: 2, tag: "yes", ring: [[6, 8], [12, 8], [12, 14], [6, 14]], area: 36 },
+        { id: 3, tag: "yes", ring: [[50, 40], [62, 40], [62, 55], [50, 55]], area: 180 },
+        { id: 4, tag: "garage", ring: [[55, -10], [62, -10], [62, -4], [55, -4]], area: 40 },
+      ],
+      fences: [],
+      pools: [],
+      parcel: hugeLot,
+      aerial: [],
+    });
+    const outs = features.filter((f) => f.kind === "garage" || f.kind === "shed");
+    assert.ok(outs.length >= 1, "near accessory on the lot should stay");
+    assert.ok(
+      !outs.some((f) => f.polygon.some(([x]) => x > 40)),
+      "far campus buildings outside accessory reach must not render as garages",
+    );
   });
 
   it("pads a convex hull around the house and garage", () => {

@@ -75,22 +75,6 @@ function SolidEdges({ color, threshold = 12 }: { color: string; threshold?: numb
   );
 }
 
-const ROOM_WORDS: Record<Room["type"], string> = {
-  living: "Living room",
-  kitchen: "Kitchen",
-  dining: "Dining room",
-  bedroom: "Bedroom",
-  bathroom: "Bathroom",
-  hallway: "Hall",
-  stair: "Stairs",
-  garage: "Garage",
-  utility: "Utility",
-  closet: "Closet",
-  office: "Office",
-  basement: "Basement",
-  other: "Room",
-};
-
 const SITE_COLOR: Record<CompoundFeature["kind"], string> = {
   yard: "#14439c",
   driveway: "#3a68c4",
@@ -103,6 +87,7 @@ const SITE_COLOR: Record<CompoundFeature["kind"], string> = {
   road: "#0a2a68",
   signal: "#facc15",
   hydrant: "#dc2626",
+  neighbor: "#8eb0e8",
 };
 
 const SITE_NOTE: Record<CompoundFeature["source"], string> = {
@@ -275,23 +260,15 @@ function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; flo
 
 function RoomSlab({
   room,
-  floorName,
   xray,
   showLabel,
-  hovered,
   onPick,
-  onOver,
-  onOut,
   y = 0.08,
 }: {
   room: Room;
-  floorName: string;
   xray: boolean;
   showLabel: boolean;
-  hovered: boolean;
   onPick: (e: ThreeEvent<MouseEvent>) => void;
-  onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
-  onOut: (id: string) => void;
   y?: number;
 }) {
   const geom = useMemo(() => {
@@ -312,19 +289,11 @@ function RoomSlab({
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, y, 0]}
         onClick={onPick}
-        onPointerOver={(e) => {
-          e.stopPropagation();
-          onOver(e, room.id, room.name, `${floorName} · ${ROOM_WORDS[room.type]}`);
-        }}
-        onPointerOut={(e) => {
-          e.stopPropagation();
-          onOut(room.id);
-        }}
       >
         <meshStandardMaterial
           color={xray && !isStair ? "#0b2e72" : ROOM_COLORS[room.type]}
-          emissive={hovered ? "#ffffff" : isStair ? "#ff8a6b" : "#000000"}
-          emissiveIntensity={hovered ? 0.35 : isStair ? (xray ? 0.8 : 0.3) : 0}
+          emissive={isStair ? "#ff8a6b" : "#000000"}
+          emissiveIntensity={isStair ? (xray ? 0.8 : 0.3) : 0}
           side={THREE.FrontSide}
           depthWrite
           polygonOffset
@@ -332,7 +301,7 @@ function RoomSlab({
           polygonOffsetUnits={-2}
         />
       </mesh>
-      {(showLabel || hovered) && (
+      {showLabel && (
         <group position={[center[0], 0.7, center[1]]}>
           <LabelSprite text={room.name} color="#0b2e72" fit />
         </group>
@@ -350,17 +319,11 @@ function SimpleFloorDeck({
   footprint,
   xray,
   onPick,
-  onOver,
-  onOut,
-  tipId,
 }: {
   floor: Floor;
   footprint: Point[];
   xray: boolean;
   onPick: (e: ThreeEvent<MouseEvent>, room: Room | null) => void;
-  onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
-  onOut: (id: string) => void;
-  tipId: string | null;
 }) {
   const ring = footprint.length >= 3 ? footprint : floor.rooms[0]?.polygon ?? [];
   const geom = useMemo(() => {
@@ -379,17 +342,6 @@ function SimpleFloorDeck({
         const p: Point = [e.point.x, -e.point.z];
         const room = floor.rooms.find((r) => pointInRing(p, r.polygon)) ?? null;
         onPick(e, room);
-      }}
-      onPointerOver={(e) => {
-        e.stopPropagation();
-        const p: Point = [e.point.x, -e.point.z];
-        const room = floor.rooms.find((r) => pointInRing(p, r.polygon));
-        if (room) onOver(e, room.id, room.name, `${floor.name} · ${ROOM_WORDS[room.type]}`);
-        else onOver(e, `deck-${floor.level}`, floor.name, "Floor deck");
-      }}
-      onPointerOut={(e) => {
-        e.stopPropagation();
-        onOut(tipId ?? `deck-${floor.level}`);
       }}
     >
       <meshStandardMaterial
@@ -414,12 +366,13 @@ const LAYER_Y: Record<string, number> = {
   fence: 0.0,
 };
 
-function groundMat(color: string, hovered: boolean, opts?: { transparent?: boolean; opacity?: number; offset?: number }) {
+function groundMat(color: string, hovered: boolean, opts?: { transparent?: boolean; opacity?: number; offset?: number; noHover?: boolean }) {
+  const lit = hovered && !opts?.noHover;
   return (
     <meshStandardMaterial
       color={color}
-      emissive={hovered ? "#ffffff" : "#000000"}
-      emissiveIntensity={hovered ? 0.25 : 0}
+      emissive={lit ? "#ffffff" : "#000000"}
+      emissiveIntensity={lit ? 0.25 : 0}
       roughness={0.95}
       transparent={opts?.transparent}
       opacity={opts?.opacity ?? 1}
@@ -429,6 +382,47 @@ function groundMat(color: string, hovered: boolean, opts?: { transparent?: boole
       polygonOffsetFactor={opts?.offset ?? -1}
       polygonOffsetUnits={opts?.offset ?? -1}
     />
+  );
+}
+
+/** Attached / next-door house: faded extruded shell — obstacle context, not the focus model. */
+function NeighborMesh({
+  feature,
+  hovered,
+  onOver,
+  onOut,
+}: {
+  feature: CompoundFeature;
+  hovered: boolean;
+  onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
+  onOut: (id: string) => void;
+}) {
+  const wallH = Math.max(3.5, Math.min(14, feature.height || 5.5));
+  const geo = useMemo(() => {
+    if (feature.polygon.length < 3) return null;
+    const shape = new THREE.Shape(feature.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
+    const g = new THREE.ExtrudeGeometry(shape, { depth: wallH, bevelEnabled: false, steps: 1 });
+    g.rotateX(-Math.PI / 2);
+    return g;
+  }, [feature.polygon, wallH]);
+  if (!geo) return null;
+  const hover = (e: ThreeEvent<PointerEvent>) => {
+    e.stopPropagation();
+    onOver(e, feature.id, feature.label, "Nearby building — sized to match map levels or this house");
+  };
+  return (
+    <mesh geometry={geo} position={[0, 0, 0]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
+      <meshStandardMaterial
+        color={hovered ? "#c5d6f4" : SITE_COLOR.neighbor}
+        transparent
+        opacity={hovered ? 0.42 : 0.22}
+        depthWrite={false}
+        roughness={0.95}
+        metalness={0}
+        side={THREE.DoubleSide}
+      />
+      <SolidEdges color="#eaf1ff" threshold={18} />
+    </mesh>
   );
 }
 
@@ -626,7 +620,15 @@ function SiteFeatureMesh({
               : LAYER_Y.fence;
 
   const slabGeo = useMemo(() => {
-    if (feature.kind === "trees" || feature.kind === "garage" || feature.kind === "shed" || feature.kind === "hydrant" || feature.kind === "signal") return null;
+    if (
+      feature.kind === "trees" ||
+      feature.kind === "garage" ||
+      feature.kind === "shed" ||
+      feature.kind === "hydrant" ||
+      feature.kind === "signal" ||
+      feature.kind === "neighbor"
+    )
+      return null;
     const simplified =
       feature.polygon.length > 24
         ? feature.polygon.filter((_, i) => i % Math.ceil(feature.polygon.length / 16) === 0)
@@ -727,6 +729,10 @@ function SiteFeatureMesh({
     );
   }
 
+  if (feature.kind === "neighbor") {
+    return <NeighborMesh feature={feature} hovered={hovered} onOver={onOver} onOut={onOut} />;
+  }
+
   if (feature.kind === "garage" || feature.kind === "shed") {
     return <OutbuildingMesh feature={feature} hovered={hovered} onOver={onOver} onOut={onOut} />;
   }
@@ -739,6 +745,8 @@ function SiteFeatureMesh({
         transparent: feature.kind === "pool",
         opacity: feature.kind === "pool" ? 0.88 : 1,
         offset,
+        // Lot / street pads stay quiet; garages, hydrants, etc. still light up.
+        noHover: feature.kind === "yard" || feature.kind === "road" || feature.kind === "driveway" || feature.kind === "patio" || feature.kind === "pool",
       })}
     </mesh>
   );
@@ -1218,7 +1226,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         {(() => {
           const feats = model.compound?.features ?? [];
           const filtered = peeringBasement
-            ? feats.filter((f) => f.kind === "garage" || f.kind === "shed" || f.kind === "hydrant" || f.kind === "signal" || f.kind === "fence" || f.kind === "trees")
+            ? feats.filter((f) => f.kind === "garage" || f.kind === "shed" || f.kind === "neighbor" || f.kind === "hydrant" || f.kind === "signal" || f.kind === "fence" || f.kind === "trees")
             : largeSite
               ? (() => {
                   // One yard + roads/access + structures — drop overlapping patio/pool clutter.
@@ -1278,7 +1286,6 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
                   floor={floor}
                   footprint={model.footprint}
                   xray={xray}
-                  tipId={tip?.id ?? null}
                   onPick={(e, room) => {
                     if (!tool) return;
                     e.stopPropagation();
@@ -1294,8 +1301,6 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
                       },
                     ]);
                   }}
-                  onOver={showTip}
-                  onOut={hideTip}
                 />
                 {/* Keep stair pads visible on the merged deck — they were lost in the perf flatten. */}
                 {floor.rooms
@@ -1304,14 +1309,10 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
                     <RoomSlab
                       key={room.id}
                       room={room}
-                      floorName={floor.name}
                       xray={xray}
                       showLabel
-                      hovered={tip?.id === room.id}
                       y={0.14}
                       onPick={dropMarker(floor)}
-                      onOver={showTip}
-                      onOut={hideTip}
                     />
                   ))}
               </>
@@ -1320,13 +1321,9 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
                 <RoomSlab
                   key={room.id}
                   room={room}
-                  floorName={floor.name}
                   xray={xray}
                   showLabel={shown.length === 1 || exploded || room.type === "stair"}
-                  hovered={tip?.id === room.id}
                   onPick={dropMarker(floor)}
-                  onOver={showTip}
-                  onOut={hideTip}
                 />
               ))
             )}

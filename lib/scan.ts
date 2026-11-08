@@ -154,7 +154,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v5" || saved.model.roof?.basis !== "roof-v2");
+      (saved.model.compound?.basis !== "compound-v8" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -490,15 +490,32 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     ...geminiAerial.map(({ kind, label, polygon }) => ({ kind, label, polygon })),
     ...jpegSiteCues.map((c) => ({ kind: c.kind, label: c.label, polygon: c.polygon })),
   ];
+  const aboveGrade = built.model.floors.filter((f) => f.level >= 0);
+  const topFloor = aboveGrade.length
+    ? aboveGrade.reduce((a, b) => (a.level >= b.level ? a : b))
+    : null;
+  const mainEaveHeight = topFloor ? topFloor.elevation + topFloor.height : Math.max(2.7, stories * 2.75);
   const compound = assembleCompound({
     mainId: b?.id ?? null,
     mainRing: built.model.footprint,
-    structures: (osm?.structures ?? []).map((s) => ({ id: s.id, tag: s.tags.building ?? "", ring: shift(s.ring), area: s.area })),
+    structures: (osm?.structures ?? []).map((s) => {
+      const levelsRaw = parseFloat(s.tags["building:levels"] ?? "");
+      const heightRaw = parseFloat(String(s.tags.height ?? "").replace(/m$/i, "").trim());
+      return {
+        id: s.id,
+        tag: s.tags.building ?? "",
+        ring: shift(s.ring),
+        area: s.area,
+        levels: Number.isFinite(levelsRaw) && levelsRaw >= 1 ? levelsRaw : null,
+        heightM: Number.isFinite(heightRaw) && heightRaw >= 2 ? heightRaw : null,
+      };
+    }),
     fences: (osm?.fences ?? []).map(shift),
     pools: (osm?.pools ?? []).map(shift),
     parking: (osm?.parking ?? []).map(shift),
     parcel: lot ? shift(lot.ring.map((p) => toLocal(origin, p))) : null,
     aerial: aerialForAssemble,
+    mainEaveHeight,
   });
   const verifiedSite = crossVerifySiteFeatures({
     features: compound.features,
@@ -508,7 +525,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const kept = access.some((f) => f.kind === "driveway")
     ? verifiedSite.filter((f) => !(f.kind === "driveway" && f.source === "aerial"))
     : verifiedSite;
-  built.model.compound = { features: [...kept, ...access], basis: "compound-v5" };
+  built.model.compound = { features: [...kept, ...access], basis: "compound-v8" };
   const hydrantN = access.filter((f) => f.kind === "hydrant").length;
   if (hydrantN) {
     attributes.push({

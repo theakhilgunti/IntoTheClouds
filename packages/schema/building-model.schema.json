@@ -599,7 +599,8 @@
                   "trees",
                   "road",
                   "signal",
-                  "hydrant"
+                  "hydrant",
+                  "neighbor"
                 ]
               },
               "label": {

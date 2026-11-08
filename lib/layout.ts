@@ -414,7 +414,7 @@ export function buildHouse(input: BuildInput): BuildOutput {
     ridgeAlong,
     plan: input.roofPlan ?? undefined,
     // Bump when flat/concave roof inference or mesh changes so cached scans rebuild.
-    basis: "roof-v2",
+    basis: "roof-v3",
   };
 
   const bearing = ((Math.atan2(f[0], f[1]) * 180) / Math.PI + 360) % 360;

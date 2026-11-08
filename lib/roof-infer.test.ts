@@ -82,23 +82,37 @@ test("OSM flat overrides footprint", () => {
   assert.equal(plan.source, "map");
 });
 
-test("flat L roofs split into volumes and do not fill the courtyard", () => {
-  const plan = inferRoofPlan({ footprint: ell, osmTags: { "roof:shape": "flat" } });
-  assert.ok(plan.wings.length >= 2, "flat L should be multi-wing");
-  assert.ok(plan.wings.every((w) => w.shape === "flat"));
-  const pos = buildRoofPositions(ell, {
-    shape: "flat",
-    ridgeAlong: "depth",
-    height: 0.5,
-    wings: plan.wings,
-  });
-  assert.ok(pos.length > 20);
-  // Courtyard of the L (around [8,8]) should not sit under a triangle centroid fan.
-  // Spot-check: no vertex lands deep in the missing corner.
-  for (let i = 0; i < pos.length; i += 3) {
-    const x = pos[i];
-    const y = -pos[i + 2];
-    assert.ok(!(x > 5 && y > 5), `flat roof leaked into courtyard at ${x},${y}`);
+test("flat L / U roofs stay on the outline and do not fill the courtyard", () => {
+  const u: [number, number][] = [
+    [0, 0],
+    [20, 0],
+    [20, 8],
+    [12, 8],
+    [12, 4],
+    [8, 4],
+    [8, 8],
+    [0, 8],
+  ];
+  for (const fp of [ell, u]) {
+    const plan = inferRoofPlan({ footprint: fp, osmTags: { "roof:shape": "flat" } });
+    assert.equal(plan.kind, "flat");
+    assert.equal(plan.wings.length, 1);
+    assert.equal(plan.wings[0].shape, "flat");
+    const pos = buildRoofPositions(fp, {
+      shape: "flat",
+      ridgeAlong: "depth",
+      height: 0.5,
+      wings: plan.wings,
+    });
+    assert.ok(pos.length >= 9);
+    // Triangle centroids must stay inside the footprint (no courtyard lid).
+    for (let i = 0; i < pos.length; i += 9) {
+      const x = (pos[i] + pos[i + 3] + pos[i + 6]) / 3;
+      const y = -(pos[i + 2] + pos[i + 5] + pos[i + 8]) / 3;
+      // L courtyard ~[8,8]; U notch ~[10,6]
+      if (fp === ell) assert.ok(!(x > 5.5 && y > 5.5), `L flat leaked at ${x},${y}`);
+      if (fp === u) assert.ok(!(x > 8.2 && x < 11.8 && y > 4.2 && y < 7.8), `U flat leaked at ${x},${y}`);
+    }
   }
 });
 

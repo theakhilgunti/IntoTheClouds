@@ -212,17 +212,17 @@ function triangulateRing(ringIn: Pt[]): [Pt, Pt, Pt][] {
 function meshDeck(eaves: Pt[], h: number, out: number[]) {
   const ring = ccw(eaves);
   if (ring.length < 3) return;
-  // Convex: cheap fan. Concave: ear-clip so triangles never cover courtyards / L notches.
-  if (!isConcave(ring)) {
-    const cx = ring.reduce((s, p) => s + p[0], 0) / ring.length;
-    const cy = ring.reduce((s, p) => s + p[1], 0) / ring.length;
-    const o: Pt = [cx, cy];
-    for (let i = 0; i < ring.length; i++) {
-      pushTri(out, ring[i], h, ring[(i + 1) % ring.length], h, o, h);
-    }
-    return;
-  }
-  for (const [a, b, c] of triangulateRing(ring)) {
+  // Always ear-clip (or a convex fan) so flat decks stay inside the eaves — never a
+  // centroid fan on near-concave rings, which quietly fills courtyards.
+  const faces = isConcave(ring)
+    ? triangulateRing(ring)
+    : (() => {
+        const cx = ring.reduce((s, p) => s + p[0], 0) / ring.length;
+        const cy = ring.reduce((s, p) => s + p[1], 0) / ring.length;
+        const o: Pt = [cx, cy];
+        return ring.map((p, i) => [p, ring[(i + 1) % ring.length], o] as [Pt, Pt, Pt]);
+      })();
+  for (const [a, b, c] of faces) {
     pushTri(out, a, h, b, h, c, h);
   }
 }
@@ -401,9 +401,8 @@ function defaultRidge(poly: Pt[], along: "width" | "depth" | "auto"): [Pt, Pt] {
 
 function meshFlatPiece(poly: Pt[], height: number, out: number[]) {
   const walls = simplifyRing(poly);
-  // Concave pads: no outward expand (miter can balloon past walls); tiny drip edge only if convex.
-  const eaves = isConcave(walls) ? walls : expandOut(walls, 0.12);
-  meshDeck(eaves, Math.max(0.14, height * 0.35), out);
+  // Never expand flat decks — miter/drip edge leaks into courtyards on L/U footprints.
+  meshDeck(walls, Math.max(0.14, height * 0.35), out);
 }
 
 function meshWing(wing: RoofWingMesh, out: number[]) {

@@ -61,7 +61,7 @@ export default function ModelScreen({ id }: { id: string }) {
       const empty = model.interior?.status === "unknown" && model.floors.every((f) => f.rooms.length === 0);
       const stale =
         (model.source === "address" || model.source === "photo") &&
-        (model.compound?.basis !== "compound-v5" || model.roof?.basis !== "roof-v2");
+        (model.compound?.basis !== "compound-v8" || model.roof?.basis !== "roof-v3");
       if ((!empty && !stale) || !scan.query.address) return;
       const form = new FormData();
       form.append("address", scan.query.address);
@@ -204,7 +204,7 @@ export default function ModelScreen({ id }: { id: string }) {
         <div className="pointer-events-auto max-w-sm border border-bp-ink/60 bg-bp-deep px-3.5 py-2.5 text-bp-ink">
           <div className="flex items-baseline justify-between gap-4">
             <Link href="/" className="font-display text-base uppercase tracking-[0.14em] text-bp-ink">
-              CloudScan
+              Cloud<span className="text-bp-red">Scan</span>
             </Link>
             <span className="flex gap-3 font-data text-xs text-bp-line">
               {state.kind === "scan" && !panel && (

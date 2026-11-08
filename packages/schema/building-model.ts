@@ -148,6 +148,7 @@ export const CompoundKind = z.enum([
   "road",
   "signal",
   "hydrant",
+  "neighbor",
 ]);
 
 /** A lot, outbuilding, or surface around the house. Approximate: map lot, mapped shed, or an aerial box. */
