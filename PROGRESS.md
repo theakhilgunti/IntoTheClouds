@@ -104,3 +104,6 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 23:29 | Cursor | UI-17 | Finished task |
 | 23:32 | Cursor | UI-18 | Finished task |
 | 23:38 | Cursor | UI-19 | OSM nearest fire hydrants in compound + red 3D hydrant markers. |
+| 23:46 | Cursor | UI-20 | Irregular roofs: decompose into main trunk + rectangular wings, matched pitch, no apex cones. |
+| 23:49 | Cursor | UI-21 | Roof rewrite: sealed OBB gable/hip prisms; no twisted T-join ridges or AABB snaps. |
+| 23:55 | Cursor | UI-22 | Basement clears ground cover; stable outlines; gable edge-to-ridge mesh. |

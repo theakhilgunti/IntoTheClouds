@@ -292,6 +292,145 @@ function raySegHit(o: Pt, d: Pt, a: Pt, b: Pt): Pt | null {
   return [o[0] + d[0] * t, o[1] + d[1] * t];
 }
 
+/** Snap a volume to its min-area rectangle (clean eaves, no diagonal stretch). */
+export function snapToObbRect(poly: Pt[]): Pt[] {
+  const r = minAreaRect(poly);
+  const hu = r.wU / 2,
+    hv = r.wV / 2;
+  const corners: Pt[] = [
+    [r.center[0] - r.u[0] * hu - r.v[0] * hv, r.center[1] - r.u[1] * hu - r.v[1] * hv],
+    [r.center[0] + r.u[0] * hu - r.v[0] * hv, r.center[1] + r.u[1] * hu - r.v[1] * hv],
+    [r.center[0] + r.u[0] * hu + r.v[0] * hv, r.center[1] + r.u[1] * hu + r.v[1] * hv],
+    [r.center[0] - r.u[0] * hu + r.v[0] * hv, r.center[1] - r.u[1] * hu + r.v[1] * hv],
+  ];
+  return ccw(corners);
+}
+
+function nearlyRect(poly: Pt[]): boolean {
+  if (isConcave(poly)) return false;
+  const r = minAreaRect(poly);
+  const cover = polygonArea(poly) / Math.max(0.1, r.wU * r.wV);
+  return cover > 0.82 && poly.length <= 6;
+}
+
+/**
+ * Largest filled axis-aligned block in a binary occupancy grid (histogram method).
+ */
+function largestGridRect(fill: boolean[][]): { r0: number; r1: number; c0: number; c1: number; area: number } | null {
+  const rows = fill.length;
+  const cols = fill[0]?.length ?? 0;
+  if (!rows || !cols) return null;
+  const height = new Array(cols).fill(0);
+  let best: { r0: number; r1: number; c0: number; c1: number; area: number } | null = null;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) height[c] = fill[r][c] ? height[c] + 1 : 0;
+    const stack: number[] = [];
+    const pushRect = (left: number, right: number, h: number, bottom: number) => {
+      if (h <= 0 || right <= left) return;
+      const area = h * (right - left);
+      if (!best || area > best.area) {
+        best = { r0: bottom - h + 1, r1: bottom + 1, c0: left, c1: right, area };
+      }
+    };
+    for (let c = 0; c <= cols; c++) {
+      const h = c < cols ? height[c] : 0;
+      while (stack.length && height[stack[stack.length - 1]] > h) {
+        const ti = stack.pop()!;
+        const left = stack.length ? stack[stack.length - 1] + 1 : 0;
+        pushRect(left, c, height[ti], r);
+      }
+      stack.push(c);
+    }
+  }
+  return best;
+}
+
+/**
+ * Break an irregular footprint into rectangle volumes via OBB occupancy.
+ * Main trunk = largest rectangle; remaining filled cells become wings.
+ */
+export function extractRectVolumes(poly: Pt[], maxParts = 4): Pt[][] {
+  const ring = ccw(poly);
+  const obb = minAreaRect(ring);
+  const n = 28;
+  const fill: boolean[][] = Array.from({ length: n }, () => Array(n).fill(false));
+  let filled = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const u = obb.minU + ((i + 0.5) / n) * obb.wU;
+      const v = obb.minV + ((j + 0.5) / n) * obb.wV;
+      const p: Pt = [u * obb.u[0] + v * obb.v[0], u * obb.u[1] + v * obb.v[1]];
+      if (pointInRing(p, ring)) {
+        fill[i][j] = true;
+        filled++;
+      }
+    }
+  }
+  if (filled < 4) return [snapToObbRect(ring)];
+
+  const parts: Pt[][] = [];
+  const cellA = (obb.wU / n) * (obb.wV / n);
+  const minCells = Math.max(4, Math.floor(filled * 0.08));
+
+  for (let iter = 0; iter < maxParts; iter++) {
+    const block = largestGridRect(fill);
+    if (!block || block.area < minCells) break;
+    const u0 = obb.minU + (block.r0 / n) * obb.wU;
+    const u1 = obb.minU + (block.r1 / n) * obb.wU;
+    const v0 = obb.minV + (block.c0 / n) * obb.wV;
+    const v1 = obb.minV + (block.c1 / n) * obb.wV;
+    const hu = (u1 - u0) / 2,
+      hv = (v1 - v0) / 2;
+    const cu = (u0 + u1) / 2,
+      cv = (v0 + v1) / 2;
+    const center: Pt = [cu * obb.u[0] + cv * obb.v[0], cu * obb.u[1] + cv * obb.v[1]];
+    const corners: Pt[] = [
+      [center[0] - obb.u[0] * hu - obb.v[0] * hv, center[1] - obb.u[1] * hu - obb.v[1] * hv],
+      [center[0] + obb.u[0] * hu - obb.v[0] * hv, center[1] + obb.u[1] * hu - obb.v[1] * hv],
+      [center[0] + obb.u[0] * hu + obb.v[0] * hv, center[1] + obb.u[1] * hu + obb.v[1] * hv],
+      [center[0] - obb.u[0] * hu + obb.v[0] * hv, center[1] - obb.u[1] * hu + obb.v[1] * hv],
+    ];
+    parts.push(ccw(corners));
+    for (let i = block.r0; i < block.r1; i++) {
+      for (let j = block.c0; j < block.c1; j++) fill[i][j] = false;
+    }
+  }
+  return parts.length ? parts : [snapToObbRect(ring)];
+}
+
+/**
+ * Irregular footprints → simple rectangle volumes (main trunk + wings).
+ * Never stretch one roof over concave / diagonal weirdness.
+ */
+export function decomposeRoofVolumes(poly: Pt[]): Pt[][] {
+  const ring = ccw(poly);
+  if (!isConcave(ring)) {
+    return [nearlyRect(ring) ? snapToObbRect(ring) : ring];
+  }
+
+  // Inside-corner L / T: split at the strongest reflex, recurse once for U-shapes.
+  let parts = splitLWings(ring);
+  if (parts.length >= 2) {
+    const expanded: Pt[][] = [];
+    for (const p of parts) {
+      if (isConcave(p) && classifyFootprint(p).kind === "L") {
+        const sub = splitLWings(p);
+        if (sub.length >= 2) expanded.push(...sub);
+        else expanded.push(p);
+      } else {
+        expanded.push(p);
+      }
+    }
+    const cleaned = expanded
+      .filter((p) => polygonArea(p) > 4)
+      .map((p) => (nearlyRect(p) || !isConcave(p) ? snapToObbRect(p) : p));
+    if (cleaned.length >= 2) return cleaned.slice(0, 4);
+  }
+
+  // Weird diagonals / complex concave: maximal rectangles in OBB space.
+  return extractRectVolumes(ring, 4);
+}
+
 function wingFromPoly(poly: Pt[], shape: "gable" | "hip" | "flat", alongLong: boolean): RoofWingPlan {
   const rect = minAreaRect(poly);
   const span = Math.min(rect.wU, rect.wV);
@@ -306,47 +445,51 @@ function longSpan(poly: Pt[]): number {
   return Math.max(r.wU, r.wV);
 }
 
-function nearestOnSegSimple(p: Pt, a: Pt, b: Pt): Pt {
-  const dx = b[0] - a[0],
-    dy = b[1] - a[1];
-  const l2 = dx * dx + dy * dy || 1;
-  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2));
-  return [a[0] + t * dx, a[1] + t * dy];
+function shortSpan(poly: Pt[]): number {
+  const r = minAreaRect(poly);
+  return Math.min(r.wU, r.wV);
 }
 
 /**
- * L roofs: primary (longer) gable runs full length and sits taller; secondary ridge
- * ends on the primary ridge so the short wing joins cleanly into the main body.
+ * Main trunk first (tallest ridge), then wings at the same pitch with lower ridges.
+ * Each wing keeps a FULL ridge over its own rectangle — overlapping prisms at the
+ * L/T join look clean; clipping ridges mid-wing was twisting the mesh.
  */
-export function joinIntersectingLWings(parts: Pt[][]): RoofWingPlan[] {
-  const ranked = [...parts].sort((a, b) => longSpan(b) - longSpan(a) || polygonArea(b) - polygonArea(a));
-  const primaryPoly = ranked[0];
-  const secondaryPoly = ranked[1];
-  const extras = ranked.slice(2);
+export function joinMainAndWings(parts: Pt[][]): RoofWingPlan[] {
+  const ranked = [...parts].sort((a, b) => polygonArea(b) - polygonArea(a) || longSpan(b) - longSpan(a));
+  if (!ranked.length) return [];
 
-  const primary = wingFromPoly(primaryPoly, "gable", true);
-  const secondary = wingFromPoly(secondaryPoly, "gable", true);
-  primary.height = Math.max(primary.height, secondary.height * 1.12, 1.8);
-  secondary.height = Math.min(secondary.height, primary.height * 0.9);
-  secondary.shape = "gable";
+  // Keep the real wing outline when it's already a clean convex volume; only
+  // snap messy leftovers so the roof follows the walls instead of a fat OBB.
+  const asVolume = (p: Pt[]) => (nearlyRect(p) || (!isConcave(p) && p.length <= 6) ? ccw(p) : snapToObbRect(p));
+  const mainPoly = asVolume(ranked[0]);
+  const mainSpan = shortSpan(mainPoly);
+  const mainHeight = Math.max(1.6, rise("gable", mainSpan));
+  const pitch = mainHeight / Math.max(0.5, mainSpan / 2); // rise / run
+
+  const primary = wingFromPoly(mainPoly, "gable", true);
   primary.shape = "gable";
+  primary.height = mainHeight;
 
-  if (primary.ridge && secondary.ridge) {
-    const pc = minAreaRect(primaryPoly).center;
-    const [s0, s1] = secondary.ridge;
-    // Outer end of the short wing stays; inner end snaps onto the tall ridge.
-    const outer = Math.hypot(s0[0] - pc[0], s0[1] - pc[1]) >= Math.hypot(s1[0] - pc[0], s1[1] - pc[1]) ? s0 : s1;
-    const join = nearestOnSegSimple(outer === s0 ? s1 : s0, primary.ridge[0], primary.ridge[1]);
-    secondary.ridge = [outer, join];
-    // Nudge secondary height to the primary peak at the join so valleys meet cleanly.
-    secondary.height = primary.height * 0.92;
+  const out: RoofWingPlan[] = [primary];
+
+  for (const raw of ranked.slice(1)) {
+    const poly = asVolume(raw);
+    const span = shortSpan(poly);
+    const aspect = longSpan(poly) / Math.max(0.5, span);
+    // Narrower wings → lower ridge at the same pitch (water still drains outward).
+    const height = Math.min(mainHeight * 0.92, Math.max(0.9, pitch * (span / 2)));
+    const wing = wingFromPoly(poly, aspect < 1.15 ? "hip" : "gable", true);
+    wing.height = height;
+    wing.shape = aspect < 1.15 ? "hip" : "gable";
+    out.push(wing);
   }
+  return out;
+}
 
-  const more = extras.map((p) => {
-    const arm = classifyFootprint(p);
-    return wingFromPoly(p, arm.kind === "square" || arm.aspect < 1.28 ? "hip" : "gable", true);
-  });
-  return [primary, secondary, ...more];
+/** @deprecated alias — L/T/U all go through joinMainAndWings */
+export function joinIntersectingLWings(parts: Pt[][]): RoofWingPlan[] {
+  return joinMainAndWings(parts);
 }
 
 function bearingDiff(a: number, b: number): number {
@@ -436,26 +579,32 @@ export function inferRoofPlan(opts: {
     return { kind: "flat", wings: [w], source, shape, ridgeAlong };
   }
 
-  if (foot.kind === "L") {
-    const parts = splitLWings(poly);
+  // Irregular / L / U / complex: never stretch one roof — main trunk + wings.
+  // Concave elongated bars (small jogs) keep one gable; only L/complex get split.
+  if (foot.kind === "L" || foot.kind === "complex") {
+    const parts = decomposeRoofVolumes(poly);
     if (parts.length >= 2) {
-      const wings = joinIntersectingLWings(parts);
-      return { kind: "wings", wings, source: source === "footprint" ? "footprint" : source, shape: "gable", ridgeAlong };
+      const wings = joinMainAndWings(parts);
+      return {
+        kind: "wings",
+        wings,
+        source: source === "footprint" ? "footprint" : source,
+        shape: "gable",
+        ridgeAlong,
+      };
     }
-    // Failed split → treat whole L as an offset hip (games-style skeleton roof).
-    const w = wingFromPoly(poly, "hip", true);
+  }
+
+  // True square hip only when asked for hip, or a compact convex pad.
+  if (meshShape === "hip" || foot.kind === "square") {
+    const w = wingFromPoly(nearlyRect(poly) ? snapToObbRect(poly) : poly, "hip", true);
     return { kind: "hip", wings: [w], source, shape: "hip", ridgeAlong };
   }
 
-  if (meshShape === "hip" || foot.kind === "square" || foot.kind === "complex") {
-    const w = wingFromPoly(poly, "hip", true);
-    return { kind: "hip", wings: [w], source, shape: shape === "hip" || foot.kind === "complex" ? "hip" : shape, ridgeAlong };
-  }
-
-  // Elongated / stepped: one gable wing, ridge along the long axis (or aerial override).
-  const w = wingFromPoly(poly, "gable", alongLong);
-  // Expose ridgeAlong relative to width/depth for layout: if long axis aligns with model x more than y, it's "width".
-  const rect = minAreaRect(poly);
+  // Elongated / stepped: one clean gable (snap to OBB when nearly rectangular).
+  const body = nearlyRect(poly) ? snapToObbRect(poly) : poly;
+  const w = wingFromPoly(body, "gable", alongLong);
+  const rect = minAreaRect(body);
   const long = rect.wU >= rect.wV ? rect.u : rect.v;
   const alongWidth = Math.abs(long[0]) >= Math.abs(long[1]);
   if (!opts.gemini?.ridge_along || opts.gemini.ridge_along === "unknown") {
