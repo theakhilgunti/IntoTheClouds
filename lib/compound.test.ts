@@ -15,11 +15,14 @@ import {
   fenceRibbonsFromPolygon,
   foundationExtent,
   gradeHeight,
+  MAX_NEIGHBOR_SHELLS,
+  MAX_ROAD_RIBBONS,
   neighborhoodTerrainFeatures,
   neighborReach,
   neighborShellHeight,
   pointInRing,
   ringSeparation,
+  roadReach,
   roomBays,
   sampleDemHeight,
   siteHull,
@@ -83,6 +86,23 @@ describe("street and driveway", () => {
     assert.equal(hydrants[0].label, "Nearest hydrant");
     const c0 = hydrants[0].polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((n) => n / 4);
     assert.ok(Math.hypot(c0[0] - 8, c0[1] + 12) < 0.5 || Math.hypot(c0[0] + 6, c0[1] + 16) < 0.5);
+  });
+
+  it("keeps farther connecting streets but caps road ribbon count", () => {
+    const roads = [];
+    for (let i = 0; i < 40; i++) {
+      const y = -20 - i * 4;
+      roads.push({ name: `Grid ${i}`, pts: [[-200, y], [200, y]] as [number, number][] });
+    }
+    const features = accessFeatures({
+      footprint: [[-4, -6], [4, -6], [4, 6], [-4, 6]],
+      streetDir: [0, -1],
+      roads,
+      garage: null,
+    });
+    const drawn = features.filter((f) => f.kind === "road");
+    assert.ok(drawn.length <= MAX_ROAD_RIBBONS, `expected ≤${MAX_ROAD_RIBBONS} roads, got ${drawn.length}`);
+    assert.ok(drawn.length >= 8, `expanded road reach should keep several near ribbons, got ${drawn.length}`);
   });
 });
 
@@ -157,10 +177,12 @@ describe("compound assembly", () => {
   it("draws attached next-door houses as ghost neighbor shells, not garages", () => {
     const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
     const attached: [number, number][] = [[5, -4], [15, -4], [15, 4], [5, 4]];
-    // Beyond the ~60–100 m neighbor radius.
-    const far: [number, number][] = [[130, -4], [140, -4], [140, 4], [130, 4]];
-    assert.ok(neighborReach(house) >= 60);
+    // Beyond the ~90–180 m neighbor radius.
+    const far: [number, number][] = [[200, -4], [210, -4], [210, 4], [200, 4]];
+    assert.ok(neighborReach(house) >= 90);
+    assert.ok(neighborReach(house) <= 180);
     assert.ok(neighborReach(house) >= accessoryReach(house));
+    assert.ok(roadReach(house) >= 120);
     const { features } = assembleCompound({
       mainId: 1,
       mainRing: house,
@@ -218,7 +240,7 @@ describe("compound assembly", () => {
     const across: [number, number][] = [[-5, -35], [5, -35], [5, -28], [-5, -28]];
     const side: [number, number][] = [[25, -4], [35, -4], [35, 4], [25, 4]];
     const r = neighborReach(house);
-    assert.ok(r >= 60);
+    assert.ok(r >= 90);
     const { features } = assembleCompound({
       mainId: 1,
       mainRing: house,
@@ -237,6 +259,35 @@ describe("compound assembly", () => {
     });
     const neighbors = features.filter((f) => f.kind === "neighbor");
     assert.ok(neighbors.length >= 3, `expected across/side/yes within ${r} m, got ${neighbors.length}`);
+  });
+
+  it("caps neighbor shells to MAX_NEIGHBOR_SHELLS (nearest first)", () => {
+    const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const structures = [{ id: 1, tag: "house", ring: house, area: 80 }];
+    // Pack many house-like pads well inside neighborReach so the max-count clamp fires.
+    for (let i = 0; i < MAX_NEIGHBOR_SHELLS + 8; i++) {
+      const x = 11 + i * 3.2;
+      structures.push({
+        id: i + 2,
+        tag: "house",
+        ring: [[x, -3], [x + 2.8, -3], [x + 2.8, 3], [x, 3]],
+        area: 50,
+      });
+    }
+    const { features } = assembleCompound({
+      mainId: 1,
+      mainRing: house,
+      structures,
+      fences: [],
+      pools: [],
+      parcel: null,
+      aerial: [],
+      streetDir: [0, -1],
+    });
+    const neighbors = features.filter((f) => f.kind === "neighbor");
+    assert.equal(neighbors.length, MAX_NEIGHBOR_SHELLS);
+    const firstX = Math.min(...neighbors[0].polygon.map((p) => p[0]));
+    assert.ok(firstX < 15, "nearest neighbor should be kept first");
   });
 
   it("sizes neighbor shells from OSM levels/height or the focus house eave", () => {

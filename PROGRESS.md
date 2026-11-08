@@ -59,6 +59,9 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 04:40 | Cursor | UI-62 | Wider neighbor (~90–180 m) and road (~120–240 m) reach with max caps; OSM fetch 350 m (compound-v24). |
+| 04:35 | Cursor | UI-61 | Streets render above driveways/parking (layer Y + polygonOffset + renderOrder). |
+| 04:25 | Cursor | UI-60 | Per-level programs: hotel/hospital/dorm/apt ground ≠ upper floors; school upper classrooms only (compound-v23). |
 | 04:15 | Cursor | UI-59 | Assumed dorm/apt/hotel/hospital/warehouse layouts; OSM indoor overlay + typology soft-check (compound-v22). |
 | 04:00 | Cursor | UI-58 | Raise public floor cap to 6; bidirectional stair links between levels (compound-v21). |
 | 03:55 | Cursor | UI-57 | Street View front door t + window count nudge bays / exit doors (compound-v20). |
@@ -153,3 +156,6 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 03:44 | Cursor | UI-57 | Finished task |
 | 03:51 | Cursor | UI-58 | Finished task |
 | 04:15 | Cursor | UI-59 | Finished task |
+| 04:25 | Cursor | UI-60 | Finished task |
+| 04:35 | Cursor | UI-61 | Finished task |
+| 04:40 | Cursor | UI-62 | Finished task |

@@ -23,6 +23,7 @@ import {
   planWordForUse,
   type BuildingUse,
 } from "./layout-use";
+import { planCorridorUnits } from "./layout-corridor";
 
 export type { BuildingUse };
 export { buildingUseFromTag, buildingUseFromTags, maxStoriesForUse, planWordForUse };
@@ -314,12 +315,21 @@ function planSchool(spec: HouseSpec, notes: string[]): PlanFloor[] {
         { id: `${prefix}-bathL`, name: "Restrooms", type: "bathroom", r: { x0, y0: y1 - 3.2, x1: x0 + Math.min(4, W * 0.2), y1 }, zone: "bathL" },
         { id: `${prefix}-bathR`, name: "Restrooms", type: "bathroom", r: { x0: x1 - Math.min(4, W * 0.2), y0: y1 - 3.2, x1, y1 }, zone: "bathR" },
       );
+    } else {
+      // Upper floors: classrooms only (+ restrooms) — no cafeteria/gym/admin repeat.
+      rooms.push({
+        id: `${prefix}-bath`,
+        name: "Restrooms",
+        type: "bathroom",
+        r: { x0: hx0, y0: y1 - 3.2, x1: hx1, y1 },
+        zone: "bath",
+      });
     }
     floors.push({ level: lv, rooms, stair });
   }
   notes.push(
-    `School-style layout: a center hall with classrooms on both sides` +
-      (spec.stories > 1 ? ` across ${spec.stories} floors` : "") +
+    `School-style layout: admin/cafeteria on the ground floor and classroom floors above` +
+      (spec.stories > 1 ? ` (${spec.stories} levels)` : "") +
       `. Rooms are a typical wing plan, not a measured floor plan.`,
   );
   return floors;
@@ -379,183 +389,6 @@ function planChurch(spec: HouseSpec, notes: string[]): PlanFloor[] {
   ];
   notes.push("Church-style layout: entrance, nave, and chancel. Estimated worship plan, not a measured survey.");
   return [{ level: 0, rooms, stair: null }];
-}
-
-type CorridorUnitKind = "dormitory" | "apartments" | "hotel" | "hospital";
-
-/** Double-loaded corridor with repeating units — dorms, apartments, hotels, hospital wings. */
-function planCorridorUnits(spec: HouseSpec, notes: string[], kind: CorridorUnitKind): PlanFloor[] {
-  const W = spec.width, D = spec.depth;
-  const x0 = -W / 2, x1 = W / 2, y0 = -D / 2, y1 = D / 2;
-  const hallW = Math.min(2.6, Math.max(1.5, W * 0.11));
-  const hx0 = -hallW / 2, hx1 = hallW / 2;
-  const hasStairs = spec.stories > 1;
-  const stairLen = Math.min(STAIR_LEN, D * 0.18);
-  const lobbyD = kind === "hotel" || kind === "hospital" ? Math.min(6, Math.max(3.2, D * 0.16)) : Math.min(4, D * 0.12);
-  const stair: Rect | null = hasStairs
-    ? { x0: hx0, y0: y0 + lobbyD, x1: hx1, y1: y0 + lobbyD + stairLen }
-    : null;
-  const unitRows = Math.max(2, Math.min(8, spec.bays ?? Math.round(D / (kind === "apartments" ? 9 : 6.5))));
-  const usableY0 = y0 + (kind === "hotel" || kind === "hospital" ? lobbyD : 0);
-  const edges = Array.from({ length: unitRows + 1 }, (_, i) => usableY0 + ((y1 - usableY0) * i) / unitRows);
-  const floors: PlanFloor[] = [];
-
-  for (let lv = 0; lv < spec.stories; lv++) {
-    const prefix = `${kind[0]}${lv}`;
-    const rooms: PlanRoom[] = [
-      { id: `${prefix}-hall`, name: "Corridor", type: "hallway", r: { x0: hx0, y0, x1: hx1, y1 }, zone: "hall" },
-    ];
-    if (stair) rooms.push({ id: `${prefix}-stair`, name: "Stairs", type: "stair", r: stair, zone: "hall" });
-
-    if (lv === 0 && (kind === "hotel" || kind === "hospital")) {
-      rooms.push({
-        id: `${prefix}-lobby`,
-        name: kind === "hotel" ? "Lobby" : "Main Lobby / Admitting",
-        type: "hallway",
-        r: { x0, y0, x1, y1: y0 + lobbyD },
-        zone: "lobby",
-      });
-      if (kind === "hospital") {
-        rooms.push({
-          id: `${prefix}-nurse`,
-          name: "Nurse Station",
-          type: "office",
-          r: { x0: hx0, y0: y0 + lobbyD, x1: hx1, y1: y0 + lobbyD + Math.min(4, D * 0.12) },
-          zone: "nurse",
-        });
-      }
-    } else if (lv === 0 && kind === "dormitory") {
-      rooms.push(
-        { id: `${prefix}-lounge`, name: "Lounge", type: "living", r: { x0, y0, x1: hx0, y1: y0 + lobbyD }, zone: "lounge" },
-        { id: `${prefix}-bath`, name: "Shared Bath", type: "bathroom", r: { x0: hx1, y0, x1, y1: y0 + lobbyD }, zone: "bath" },
-      );
-    }
-
-    let unitNo = 1;
-    for (let i = 0; i < unitRows; i++) {
-      const yA = Math.max(edges[i], lv === 0 && (kind === "hotel" || kind === "hospital") ? y0 + lobbyD : usableY0);
-      const yB = edges[i + 1];
-      if (yB - yA < 2.0) continue;
-      if (kind === "apartments") {
-        const mid = (yA + yB) / 2;
-        rooms.push(
-          {
-            id: `${prefix}-uL${i}liv`,
-            name: `Unit ${lv + 1}${String(unitNo).padStart(2, "0")} Living`,
-            type: "living",
-            r: { x0, y0: yA, x1: hx0, y1: mid },
-            zone: `uL${i}`,
-          },
-          {
-            id: `${prefix}-uL${i}bed`,
-            name: `Unit ${lv + 1}${String(unitNo).padStart(2, "0")} Bedroom`,
-            type: "bedroom",
-            r: { x0, y0: mid, x1: hx0, y1: yB },
-            zone: `uL${i}`,
-          },
-        );
-        unitNo++;
-        rooms.push(
-          {
-            id: `${prefix}-uR${i}liv`,
-            name: `Unit ${lv + 1}${String(unitNo).padStart(2, "0")} Living`,
-            type: "living",
-            r: { x0: hx1, y0: yA, x1, y1: mid },
-            zone: `uR${i}`,
-          },
-          {
-            id: `${prefix}-uR${i}bed`,
-            name: `Unit ${lv + 1}${String(unitNo).padStart(2, "0")} Bedroom`,
-            type: "bedroom",
-            r: { x0: hx1, y0: mid, x1, y1: yB },
-            zone: `uR${i}`,
-          },
-        );
-        unitNo++;
-      } else if (kind === "hospital") {
-        rooms.push({
-          id: `${prefix}-pL${i}`,
-          name: `Patient ${lv + 1}${String(unitNo).padStart(2, "0")}`,
-          type: "bedroom",
-          r: { x0, y0: yA, x1: hx0, y1: yB },
-          zone: `pL${i}`,
-        });
-        unitNo++;
-        rooms.push({
-          id: `${prefix}-pR${i}`,
-          name: `Patient ${lv + 1}${String(unitNo).padStart(2, "0")}`,
-          type: "bedroom",
-          r: { x0: hx1, y0: yA, x1, y1: yB },
-          zone: `pR${i}`,
-        });
-        unitNo++;
-      } else {
-        const label =
-          kind === "hotel"
-            ? `Guest ${lv + 1}${String(unitNo).padStart(2, "0")}`
-            : `Room ${lv + 1}${String(unitNo).padStart(2, "0")}`;
-        rooms.push({
-          id: `${prefix}-rL${i}`,
-          name: label,
-          type: "bedroom",
-          r: { x0, y0: yA, x1: hx0, y1: yB },
-          zone: `rL${i}`,
-        });
-        unitNo++;
-        const labelR =
-          kind === "hotel"
-            ? `Guest ${lv + 1}${String(unitNo).padStart(2, "0")}`
-            : `Room ${lv + 1}${String(unitNo).padStart(2, "0")}`;
-        rooms.push({
-          id: `${prefix}-rR${i}`,
-          name: labelR,
-          type: "bedroom",
-          r: { x0: hx1, y0: yA, x1, y1: yB },
-          zone: `rR${i}`,
-        });
-        unitNo++;
-      }
-    }
-
-    if (kind === "dormitory" && lv > 0) {
-      rooms.push({
-        id: `${prefix}-bath`,
-        name: "Shared Bath",
-        type: "bathroom",
-        r: { x0: hx0, y0: y1 - 3.0, x1: hx1, y1 },
-        zone: "bath",
-      });
-    } else if (kind === "hotel" && lv > 0) {
-      rooms.push({
-        id: `${prefix}-svc`,
-        name: "Service / Linen",
-        type: "utility",
-        r: { x0: hx0, y0: y1 - 2.8, x1: hx1, y1 },
-        zone: "svc",
-      });
-    } else if (kind === "hospital" && lv > 0) {
-      rooms.push({
-        id: `${prefix}-nurse`,
-        name: "Nurse Station",
-        type: "office",
-        r: { x0: hx0, y0: y0 + 1, x1: hx1, y1: y0 + Math.min(4, D * 0.12) },
-        zone: "nurse",
-      });
-    }
-
-    floors.push({ level: lv, rooms, stair });
-  }
-
-  const label =
-    kind === "dormitory"
-      ? "Dormitory-style layout: double-loaded corridor with bedrooms and shared baths"
-      : kind === "apartments"
-        ? "Apartment-style layout: corridor with living/bedroom unit pads"
-        : kind === "hotel"
-          ? "Hotel-style layout: lobby on the ground floor and guest rooms along a corridor above"
-          : "Hospital-style layout: wing corridor with patient rooms and a nurse station";
-  notes.push(`${label}. Estimated program plan, not a measured survey.`);
-  return floors;
 }
 
 /** Large open floor + office strip — warehouse / light industrial. */

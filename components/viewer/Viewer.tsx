@@ -436,15 +436,27 @@ function SimpleFloorDeck({
   );
 }
 
-/** Stack ground surfaces so large lots do not z-fight. */
+/** Stack ground surfaces so large lots do not z-fight. Streets sit above driveways/parking. */
 const LAYER_Y: Record<string, number> = {
   terrain: -0.04,
   yard: 0.0,
-  road: 0.05,
-  driveway: 0.07,
+  driveway: 0.04,
+  pool: 0.05,
+  road: 0.08,
   patio: 0.09,
-  pool: 0.06,
   fence: 0.0,
+};
+
+/** Draw order within coplanar ground pads (higher = later = on top). */
+const LAYER_ORDER: Record<string, number> = {
+  terrain: 0,
+  yard: 1,
+  driveway: 2,
+  pool: 3,
+  road: 4,
+  patio: 5,
+  fence: 6,
+  steps: 7,
 };
 
 function groundMat(color: string, hovered: boolean, opts?: { transparent?: boolean; opacity?: number; offset?: number; noHover?: boolean }) {
@@ -964,24 +976,35 @@ function SiteFeatureMesh({
   }
 
   if (!slabGeo) return null;
+  // More negative polygonOffset pulls a surface toward the camera. Roads must win over
+  // driveways/parking (parking lots are kind "driveway") so streets never clip underneath.
   const offset =
     feature.kind === "terrain"
       ? -5
       : feature.kind === "yard"
         ? -4
-        : feature.kind === "road"
-          ? -3
-          : feature.kind === "driveway"
-            ? -2
-            : -1;
+        : feature.kind === "driveway"
+          ? -2
+          : feature.kind === "road"
+            ? -6
+            : feature.kind === "pool"
+              ? -3
+              : -1;
   // Main house pad stays at slab level (DEM is relative to y=0). Neighbor pads ride the DEM as flat plates.
   const padY = isBuildingPad
     ? feature.id === "terrain-main"
       ? slabY
       : slabY + gy
     : slabY;
+  const drawOrder = LAYER_ORDER[feature.kind] ?? 1;
   return (
-    <mesh geometry={slabGeo} position={[0, padY, 0]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
+    <mesh
+      geometry={slabGeo}
+      position={[0, padY, 0]}
+      renderOrder={drawOrder}
+      onPointerOver={hover}
+      onPointerOut={() => onOut(feature.id)}
+    >
       {groundMat(SITE_COLOR[feature.kind], hovered, {
         transparent: feature.kind === "pool" || feature.kind === "terrain",
         opacity:

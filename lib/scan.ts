@@ -166,7 +166,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v22" || saved.model.roof?.basis !== "roof-v3");
+      (saved.model.compound?.basis !== "compound-v24" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -806,7 +806,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const entrySteps = entryStairFeatures({ streetDir, grade, exits });
   built.model.compound = {
     features: [...kept, ...access, ...entrySteps],
-    basis: "compound-v22",
+    basis: "compound-v24",
     grade: grade ?? undefined,
   };
   if (grade?.dem) {

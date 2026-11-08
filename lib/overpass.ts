@@ -254,9 +254,9 @@ function houseLabel(b: OsmBuilding): string {
  * is not inside any outline, prefer buildings in that direction.
  */
 export async function lookupBuilding(origin: LatLng, heading?: number | null, hint?: AddressHint): Promise<OsmContext> {
-  // Wide enough for a full house lot / small campus; denser cities still stay under Overpass limits.
+  // Wide enough for expanded neighbor (~180 m) + road (~240 m) reach; denser cities still stay under Overpass limits.
   // Hydrants need extra reach — street corners are often >150 m from the geocode point.
-  const R = 220;
+  const R = 350;
   const HYDRANT_R = 320;
   const q = `[out:json][timeout:25];
 (

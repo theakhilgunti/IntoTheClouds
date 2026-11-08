@@ -82,12 +82,12 @@ const HEIGHT: Record<CompoundKind, number> = {
   yard: 0.04,
   garage: 2.6,
   shed: 2.2,
-  driveway: 0.08,
+  driveway: 0.06,
   patio: 0.14,
   pool: 0.2,
   fence: 1.05,
   trees: 4,
-  road: 0.06,
+  road: 0.1,
   signal: 3.2,
   hydrant: 0.85,
   neighbor: 6.5,
@@ -418,14 +418,28 @@ export function ringSeparation(a: Point[], b: Point[]): number {
   return best;
 }
 
+/** Cap drawn neighbor shells (nearest first) so a dense block does not flood the scene. */
+export const MAX_NEIGHBOR_SHELLS = 20;
+/** Cap drawn street ribbons (nearest first) after expanding road reach. */
+export const MAX_ROAD_RIBBONS = 28;
+
 /**
  * How far a neighbor may sit from the focus foundation (meters).
- * Floored at ~60 m so across-the-street and next-door houses stay in the scene.
+ * Floored at ~90 m so across-the-street and next-block houses stay in the scene.
  */
 export function neighborReach(mainRing: Point[]): number {
   const ext = foundationExtent(mainRing);
   const accessory = accessoryReach(mainRing);
-  return Math.min(100, Math.max(60, accessory * 1.7, ext * 2.6 + 24));
+  return Math.min(180, Math.max(90, accessory * 2.2, ext * 3.5 + 36));
+}
+
+/**
+ * How far mapped road centerlines are kept as street ribbons (meters).
+ * Wider than compoundReach so connecting streets still read in the scene.
+ */
+export function roadReach(mainRing: Point[]): number {
+  const reach = compoundReach(mainRing);
+  return Math.max(120, Math.min(240, reach * 1.55));
 }
 
 /** Distance used for neighbor radius: ring gap, falling back to centroid→foundation. */
@@ -756,7 +770,7 @@ export function assembleCompound(site: {
       d: neighborDistance(main, mainC, s.ring),
     }))
     .sort((a, b) => a.d - b.d)
-    .slice(0, 16);
+    .slice(0, MAX_NEIGHBOR_SHELLS);
   const neighborRings = neighborHits.map((h) => h.s.ring);
   const neighborSoft = Math.min(30, Math.max(14, accessoryR * 0.9));
   const nearNeighborhood = (p: Point) =>
@@ -1251,8 +1265,8 @@ export function accessFeatures(opts: {
 }): SiteFeature[] {
   const here: Point = ringCentroid(opts.footprint);
   const reach = compoundReach(opts.footprint);
-  const keepR = Math.max(70, Math.min(140, reach * 1.15));
-  const roadMax = Math.max(55, reach * 1.25);
+  const keepR = roadReach(opts.footprint);
+  const roadMax = Math.max(70, reach * 1.35);
   const width = Math.min(12, Math.max(7.2, ringExtent(opts.footprint) * 0.15));
   const out: SiteFeature[] = [];
 
@@ -1281,8 +1295,9 @@ export function accessFeatures(opts: {
   });
 
   type Seg = { a: Point; b: Point; name: string | null };
+  type RoadCand = { poly: Point[]; a: Point; b: Point; name: string | null; d: number };
   const segs: Seg[] = [];
-  let roadIdx = 0;
+  const roadCands: RoadCand[] = [];
   for (const road of opts.roads) {
     const clipped = clipRoadNear(road.pts, here, keepR);
     if (clipped.length < 2) continue;
@@ -1304,21 +1319,28 @@ export function accessFeatures(opts: {
         })();
       if (continueRun) continue;
       const poly = ribbon(runStart, b, width);
-      const nearHouse = nearestOn(here, runStart, b).d < keepR * 1.05;
-      if (poly && nearHouse) {
-        out.push({
-          id: `road-${roadIdx++}`,
-          kind: "road",
-          label: road.name || "Street",
-          polygon: poly,
-          height: HEIGHT.road,
-          source: "map",
-        });
-        segs.push({ a: runStart, b, name: road.name });
+      const hit = nearestOn(here, runStart, b);
+      if (poly && hit.d < keepR * 1.05) {
+        roadCands.push({ poly, a: runStart, b, name: road.name, d: hit.d });
       }
       runStart = b;
     }
   }
+  // Nearest ribbons first — cap count so a dense grid does not explode draw calls.
+  roadCands
+    .sort((a, b) => a.d - b.d)
+    .slice(0, MAX_ROAD_RIBBONS)
+    .forEach((r, roadIdx) => {
+      out.push({
+        id: `road-${roadIdx}`,
+        kind: "road",
+        label: r.name || "Street",
+        polygon: r.poly,
+        height: HEIGHT.road,
+        source: "map",
+      });
+      segs.push({ a: r.a, b: r.b, name: r.name });
+    });
 
   // Nearest segment for driveway mouth.
   let best: { a: Point; b: Point; name: string | null; at: Point; d: number } | null = null;
