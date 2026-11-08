@@ -83,3 +83,7 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 22:10 | Cursor | UI-03 | Checked the lot against the map, drew Simonson Avenue and the driveway to the garage, and sized rooms from how many windows fit. |
 | 22:25 | Cursor | UI-04 | Cut the walls, floors, and roof to the yellow mapped outline instead of the bounding rectangle. |
 | 22:31 | Claude-design | DS-01 | Finished task |
+| 00:38 | Claude Code | BE-01b | Finished task |
+| 00:51 | Claude-Anchors | LC-02 | Finished task |
+| 22:00 | Claude-Anchors | LC-02 | Added laptop_client/IPHONE_ANCHORS.md, anchors.example.json and offline test_radar_bridge.py (7 tests pass); match_devices verified for BLE name/stale/rotated keys |
+| 00:59 | Claude Code | FE-01 | Finished task |

@@ -10,6 +10,7 @@ from .models import BeaconAnchor, FirefighterState, HazardPin, TelemetryPayload
 import numpy as np
 from .fusion.math_engine import ParticleFilterLocalizer
 from .fusion.rf_map import RFMap
+from .fusion.tomography import VoxelGrid
 from .explored_session import build_exploration_payload, persist_exploration
 
 logging.basicConfig(level=logging.INFO)
@@ -67,6 +68,9 @@ breadcrumbs: List[Dict[str, float]] = []
 localizer = ParticleFilterLocalizer(num_particles=600, room_bounds=(-2.0, -2.0, 12.0, 12.0))
 # BE-08: per-anchor RSSI heatmap over the same bounds (a signal map, not a floor plan).
 rf_map = RFMap(-2.0, -2.0, 12.0, 12.0, cell_m=0.5)
+# BE-01/02: RF obstacle-hint voxel grid. PATH_LOSS_N matches the particle filter's model.
+PATH_LOSS_N = 2.5
+voxel_grid = VoxelGrid()
 current_state: FirefighterState = localizer.get_state("FF_Pi_Rig_1", 0.0, time.time())
 session_started_at: float = time.time()
 
@@ -133,6 +137,14 @@ async def get_rf_map():
     }
 
 
+@app.get("/api/mesh")
+async def get_obstacle_mesh(extrude: bool = True, wall_height_m: float = 2.5):
+    """Rough RF obstacle-hint mesh (BE-03): triangles around voxels where most
+    anchor->walker rays were weaker than the path-loss model predicts. A hint,
+    NOT a floor plan. `vertices` are [x, y, z] metres, `faces` index into them."""
+    return {**voxel_grid.to_mesh(extrude=extrude, wall_height_m=wall_height_m), **voxel_grid.stats()}
+
+
 @app.post("/api/reset")
 async def reset_session():
     global localizer, breadcrumbs, hazards, current_state, session_started_at
@@ -147,6 +159,7 @@ async def reset_session():
     breadcrumbs.clear()
     hazards.clear()
     rf_map.reset()
+    voxel_grid.reset()
     session_started_at = time.time()
     current_state = localizer.get_state("FF_Pi_Rig_1", 0.0, session_started_at)
     await broadcast_to_dashboards({
@@ -210,6 +223,9 @@ async def telemetry_endpoint(websocket: WebSocket):
                     anchor = anchors.get(str(scan.get("bssid") or "").lower())
                     if anchor is not None and scan.get("rssi_dbm") is not None:
                         rf_map.add(anchor.id, current_state.x, current_state.y, scan["rssi_dbm"])
+                        voxel_grid.add_ray((anchor.x, anchor.y, anchor.z),
+                                           (current_state.x, current_state.y, current_state.z),
+                                           scan["rssi_dbm"], anchor.p0, PATH_LOSS_N)
 
                 # Record breadcrumbs
                 if pdr.get("step_detected", False) or len(breadcrumbs) == 0:
