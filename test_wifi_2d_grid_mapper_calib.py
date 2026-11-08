@@ -439,5 +439,70 @@ class AccelApi(ServerCase):
         self.assertFalse(d["moved"])
 
 
+class WalkRecorderTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        M.REC_DIR = self.tmp
+        M.REC.stop()
+        M.REC.session_id = None
+        with M.STATE.lock:
+            for aid, (x, y) in {1: (0.0, 0.0), 2: (7.32, 0.0), 3: (0.0, 7.32)}.items():
+                M.STATE.anchors[aid]["x"], M.STATE.anchors[aid]["y"] = x, y
+
+    def tearDown(self):
+        M.REC.stop()
+
+    def lines(self):
+        with open(M.REC.path) as f:
+            return [json.loads(l) for l in f]
+
+    def session(self, marks, active=True):
+        return {"active": active, "id": 4242, "rounds": 1, "route": ["A2", "A1", "A3"], "marks": marks}
+
+    def test_start_log_marks_undo_stop(self):
+        a = {"t": 100.0, "type": "arrive", "label": "A2"}
+        d = {"t": 110.0, "type": "depart", "label": "A2"}
+        M.sync_recording(self.session([a]))
+        self.assertTrue(M.REC.active)
+        self.assertTrue(M.REC.path.endswith("walk_4242.jsonl"))
+        M.sync_recording(self.session([a, d]))
+        M.sync_recording(self.session([a, d]))                       # polled again: no duplicate tap
+        ev = self.lines()
+        self.assertEqual([e["k"] for e in ev], ["meta", "mark", "mark"])
+        self.assertEqual((ev[1]["label"], ev[1]["x"], ev[1]["y"]), ("A2", 7.32, 0.0))
+        self.assertEqual(ev[0]["anchors"]["3"]["y"], 7.32)
+        M.sync_recording(self.session([a]))                          # Undo removed the departure
+        self.assertEqual(self.lines()[-1], {**self.lines()[-1], "k": "undo", "removed": 1})
+        M.sync_recording(self.session([a], active=False))            # Stop
+        self.assertFalse(M.REC.active)
+        n = len(self.lines())
+        M.REC.log("scan", a=1, rssi=-50)                             # nothing is written after stop
+        self.assertEqual(len(self.lines()), n)
+
+    def test_sensor_streams_are_recorded_only_while_active(self):
+        anchor = M.STATE.anchors[1]
+        M.apply_anchor_reading(anchor, -60.0, M.time.time())         # not recording: ignored
+        M.sync_recording(self.session([{"t": 100.0, "type": "arrive", "label": "A2"}]))
+        M.apply_anchor_reading(anchor, -61.0, M.time.time())
+        with M.STATE.lock:
+            M.phone_ingest({"compass": 80.0, "alpha": 0, "beta": 5, "gamma": 1}, {"alpha": 1.0, "beta": 0.0, "gamma": 0.0}, M.time.time())
+            M.queue_step(M.time.time())
+        kinds = [e["k"] for e in self.lines()]
+        self.assertEqual(kinds.count("scan"), 1)
+        for k in ("phone", "step"):
+            self.assertIn(k, kinds)
+        scan = next(e for e in self.lines() if e["k"] == "scan")
+        self.assertEqual((scan["a"], scan["rssi"]), (1, -61.0))
+
+    def test_recording_has_no_location_fields(self):
+        M.sync_recording(self.session([{"t": 100.0, "type": "arrive", "label": "A2"}]))
+        with M.STATE.lock:
+            M.phone_ingest({"compass": 1.0, "beta": 2.0}, {"alpha": 0.0}, M.time.time())
+        with open(M.REC.path) as f:
+            text = f.read().lower()
+        for word in ("gps", "latitude", "longitude", '"lat"', '"lon"'):
+            self.assertNotIn(word, text)
+
+
 if __name__ == "__main__":
     unittest.main()

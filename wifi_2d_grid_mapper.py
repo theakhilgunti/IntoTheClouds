@@ -433,6 +433,104 @@ def scan_fingerprint(items) -> tuple:
     return tuple(sorted((b["signal_id"], b["rssi"]) for b in items))
 
 
+REC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
+
+
+class WalkRecorder:
+    """REC-01/MAP-12: while a /walker data-collection session is active, write every sensor and beacon stream to
+    recordings/walk_<id>.jsonl, one JSON object per line: {"k": kind, "t": unix seconds, ...}.
+    Kinds: meta, scan (fresh RSSI per beacon), phone (compass/gyro), acc (accelerometer), step, wstep (phone-page
+    step flag), pos (filter output + raw Wi-Fi fix), mark / undo (your taps = ground truth). No location data."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.fh = None
+        self.session_id = None
+        self.path = None
+        self.t0 = None
+        self.counts = {}
+        self.mark_keys = []          # (t, type, label) of the taps already written
+        self.last_pos_t = 0.0
+
+    @property
+    def active(self) -> bool:
+        return self.fh is not None
+
+    def start(self, session_id, meta: dict) -> str:
+        with self.lock:
+            os.makedirs(REC_DIR, exist_ok=True)
+            self.path = os.path.join(REC_DIR, f"walk_{session_id}.jsonl")
+            self.fh = open(self.path, "w", encoding="utf-8")
+            self.session_id, self.t0, self.counts, self.mark_keys, self.last_pos_t = session_id, time.time(), {}, [], 0.0
+        self.log("meta", **meta)
+        return self.path
+
+    def log(self, kind: str, t=None, **data):
+        with self.lock:
+            if self.fh is None:
+                return
+            rec = {"k": kind, "t": round(time.time() if t is None else float(t), 3)}
+            rec.update(data)
+            self.fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
+            self.fh.flush()
+            self.counts[kind] = self.counts.get(kind, 0) + 1
+
+    def stop(self):
+        with self.lock:
+            if self.fh is not None:
+                self.fh.close()
+                self.fh = None
+
+    def status(self) -> dict:
+        with self.lock:
+            return {"active": self.fh is not None, "session_id": self.session_id, "path": self.path,
+                    "elapsed_s": round(time.time() - self.t0, 1) if self.t0 and self.fh else None,
+                    "counts": dict(self.counts), "taps": len(self.mark_keys)}
+
+
+REC = WalkRecorder()
+
+
+def recording_meta(rs: dict) -> dict:
+    """Settings in force when the walk starts, so the analysis can compare them with what the data says."""
+    cfg = STATE.phone_cfg
+    return {"version": "walk-rec-1", "grid": [STATE.grid_width, STATE.grid_height],
+            "route": rs.get("route"), "rounds": rs.get("rounds"),
+            "anchors": {str(i): {"name": a["signal_name"], "signal_id": a["signal_id"], "x": a["x"], "y": a["y"],
+                                 "A_ref": a["A_ref"], "n_exp": a["n_exp"]} for i, a in STATE.anchors.items()},
+            "phone": {"offset_deg": STATE.phone_offset, "aligned": STATE.phone_aligned, "mode": cfg["mode"],
+                      "stride_m": cfg["stride_m"], "step_source": cfg["step_source"], "step_thresh": cfg["step_thresh"],
+                      "step_gap_s": cfg["step_gap_s"], "step_tau_lp": cfg["step_tau_lp"],
+                      "gyro_bias": cfg["gyro_bias"], "smoothing": cfg["smoothing"]}}
+
+
+def sync_recording(rs: dict):
+    """Follow the backend's collection session: start/stop the recorder and copy the taps (REC-01)."""
+    if rs.get("active") and rs.get("id") is not None:
+        if REC.session_id != rs["id"] or not REC.active:
+            REC.stop()
+            with STATE.lock:
+                meta = recording_meta(rs)
+            REC.start(rs["id"], meta)
+            print(f"[REC] recording to {REC.path}")
+        keys = [(m["t"], m["type"], m["label"]) for m in rs.get("marks") or []]
+        common = 0
+        while common < min(len(keys), len(REC.mark_keys)) and keys[common] == REC.mark_keys[common]:
+            common += 1
+        if len(REC.mark_keys) > common:                      # taps removed with Undo
+            REC.log("undo", removed=len(REC.mark_keys) - common)
+            REC.mark_keys = REC.mark_keys[:common]
+        for t, typ, label in keys[common:]:
+            with STATE.lock:
+                a = STATE.anchors.get(int(label[1:])) if label[:1] == "A" and label[1:].isdigit() else None
+                xy = (a["x"], a["y"]) if a else (None, None)
+            REC.log("mark", t=t, type=typ, label=label, x=xy[0], y=xy[1])
+            REC.mark_keys.append((t, typ, label))
+    elif REC.active:
+        REC.stop()
+        print(f"[REC] saved {REC.path}")
+
+
 def apply_anchor_reading(anchor: dict, rssi: float, now: float):
     """Record one fresh RSSI reading: median of the last fresh scans, then EMA, then distance."""
     anchor["last_rssi"] = rssi
@@ -445,6 +543,7 @@ def apply_anchor_reading(anchor: dict, rssi: float, now: float):
     anchor["ema_rssi"] = med if prev is None else EMA_ALPHA * med + (1.0 - EMA_ALPHA) * prev
     d_m, lo, hi = rssi_to_distance(anchor["ema_rssi"], anchor["A_ref"], anchor["n_exp"])
     anchor["distance_m"], anchor["dist_ci_low"], anchor["dist_ci_high"] = round(d_m, 2), round(lo, 2), round(hi, 2)
+    REC.log("scan", t=now, a=anchor.get("id"), rssi=rssi, ema=round(anchor["ema_rssi"], 2), d=anchor["distance_m"])
 
 
 def expire_stale_anchors(anchors: dict, now: float):
@@ -1008,6 +1107,8 @@ def phone_ingest(orient: dict, gyro: dict, now: float):
     STATE.phone_smooth = comp if prev is None else (prev + k * angle_diff(comp, prev)) % 360.0
     STATE.phone_compass = comp
     STATE.phone_t = now
+    REC.log("phone", t=now, c=round(comp, 2), cs=round(STATE.phone_smooth, 2), g=[round(r, 2) for r in rates],
+            turn=STATE.phone_turning, tilt=STATE.phone_orient.get("beta"))
     if STATE.phone_capture is not None:
         STATE.phone_capture.append((rates, comp))
     if STATE.phone_aligned and STATE.phone_cfg["mode"] != "motion":
@@ -1046,6 +1147,7 @@ def background_phone_thread():
 
 
 def queue_step(t: float):
+    REC.log("step", t=t, src=STATE.phone_cfg["step_source"])
     STATE.pdr_pending.append(t)
     STATE.pdr_step_times.append(t)
     STATE.pdr_steps_total += 1
@@ -1061,6 +1163,7 @@ def ingest_step_log(entries) -> int:
     for t in new:
         STATE.walker_marks.append(t)
         STATE.walker_steps_total += 1
+        REC.log("wstep", t=t)
         if STATE.phone_cfg["step_source"] == "walker":
             queue_step(t)
     if new:
@@ -1084,6 +1187,7 @@ def ingest_phone_log(entries) -> int:
         t = float(e["t"])
         hp, stepped = STATE.step_det.feed(t, mag, cfg["step_thresh"], cfg["step_gap_s"], cfg["step_tau_lp"])
         STATE.accel_mag, STATE.accel_hp, STATE.accel_t = mag, hp, t
+        REC.log("acc", t=t, m=round(mag, 3), hp=round(hp, 3))
         STATE.accel_trace.append((t, hp))
         if STATE.accel_rec is not None and len(STATE.accel_rec) < 6000:
             STATE.accel_rec.append((t, mag))
@@ -1128,6 +1232,11 @@ def background_step_thread():
                 entries = json.load(r)
             with STATE.lock:
                 ingest_phone_log(entries)
+        except Exception:
+            pass
+        try:
+            with urllib.request.urlopen(PHONE_URL + "/api/record", timeout=2, context=ctx) as r:
+                sync_recording(json.load(r))
         except Exception:
             pass
         time.sleep(0.3)
@@ -1323,6 +1432,11 @@ def positioning_engine_thread():
                     update_kalman_filter(meas_x, meas_y, dt, hdop if new_wifi else None)
                 STATE.fix_type = fix_type
                 STATE.hdop = round(hdop, 2)
+                if REC.active and (new_wifi or t_now - REC.last_pos_t >= 0.5):
+                    REC.last_pos_t = t_now
+                    REC.log("pos", t=t_now, x=round(STATE.pos_x, 3), y=round(STATE.pos_y, 3), h=round(STATE.heading_deg, 1),
+                            fix=fix_type, hdop=round(hdop, 2), pdr=pdr_active(),
+                            meas=[round(meas_x, 3), round(meas_y, 3)] if new_wifi else None)
                 
                 # Update Breadcrumb Trail (every ~400ms or 0.3m displacement)
                 trail = STATE.breadcrumb_trail
@@ -2204,6 +2318,15 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- Walk recorder status (REC-01). Started and stopped from the phone's /walker page. -->
+      <div class="sidebar-section" id="recPanel">
+        <div class="section-title"><span>WALK RECORDER</span></div>
+        <div style="font-size:0.78rem;line-height:1.5">
+          <div id="recLive" style="font-family:monospace;font-size:0.72rem;white-space:pre">not recording</div>
+          <div style="opacity:.75;margin-top:4px">Start it from the phone: open /walker, press <b>Start collecting data</b> at A2, walk the L (A2 &rarr; A1 &rarr; A3, a few rounds), press the big button when you leave and arrive at each beacon, pause ~10 s at each. Press Stop at A3. Then run <code>analyze_walk.py</code> on the saved file.</div>
+        </div>
+      </div>
+
       <!-- Phone compass + gyro calibration (MAP-06). Phone = heading only; position = beacons only. -->
       <div class="sidebar-section" id="phonePanel">
         <div class="section-title"><span>PHONE COMPASS &amp; GYRO</span></div>
@@ -3043,6 +3166,17 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
     }
     setInterval(refreshPhone, 500); refreshPhone();
 
+    // ---- Walk recorder status (REC-01)
+    async function refreshRec() {
+      try {
+        const r = await (await fetch('/api/rec_status')).json(), c = r.counts || {};
+        recLive.innerText = r.active
+          ? `● RECORDING  ${r.elapsed_s} s  taps ${r.taps}\nscans ${c.scan || 0}  steps ${c.step || 0}  accel ${c.acc || 0}  phone ${c.phone || 0}  pos ${c.pos || 0}\n${r.path}`
+          : (r.path ? `saved: ${r.path}\n(${Object.entries(c).map(([k, v]) => k + ' ' + v).join(', ')})` : 'not recording');
+      } catch (e) {}
+    }
+    setInterval(refreshRec, 1000); refreshRec();
+
     // ---- Accelerometer panel (MAP-08)
     let accInit = false;
     async function accCal(action, extra) {
@@ -3397,6 +3531,14 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
             return
 
         # 3. Discovered Signals List
+        if url.path == "/api/rec_status":
+            out = REC.status()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(out).encode('utf-8'))
+            return
+
         if url.path == "/api/accel_status":
             with STATE.lock:
                 out = accel_status_dict()

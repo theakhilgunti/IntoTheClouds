@@ -101,3 +101,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 09:05 | Claude Code | MAP-08 | Finished task |
 | 04:33 | Claude Code | MAP-10 | Fixed dashboard: the accelerometer chart canvas inherited the global full-screen canvas CSS and covered the map, blocking zoom/pan and showing as a stray signal trace; scoped that rule to the map canvas and pinned the chart in the sidebar; verified in headless Chrome (wheel + zoom buttons work, 0 JS errors) |
 | 09:33 | Claude Code | MAP-10 | Finished task |
+| 04:56 | Claude Code | MAP-12 | Walk recorder + offline analyzer: mapper follows the /walker collection session (REC-01) and writes recordings/walk_<id>.jsonl (beacon scans, compass/gyro, accel, steps, filter output, your arrive/leave taps as ground truth); dashboard recorder status panel; project/laptop_client/analyze_walk.py fits per-beacon A/n on true distances, stride per leg, heading offset + drift, live vs replay error, recommends settings (--apply sends to the local mapper); recordings/ git-ignored; 39 mapper + 9 analyzer tests |
+| 09:56 | Claude Code | MAP-12 | Finished task |
