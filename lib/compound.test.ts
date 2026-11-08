@@ -25,7 +25,10 @@ import {
   roadReach,
   roomBays,
   sampleDemHeight,
+  SITE_REACH_MAX_M,
+  SITE_REACH_MIN_M,
   siteHull,
+  siteReach,
   terrainGridLinePositions,
   type DemGrid,
 } from "./compound-geom.ts";
@@ -66,9 +69,27 @@ describe("street and driveway", () => {
     assert.ok(features.some((f) => f.kind === "signal"), "crossing should spawn a traffic light");
   });
 
-  it("places the nearest mapped fire hydrants around the house", () => {
+  it("keeps streets when the clipped run exceeds the old 320 m ribbon cap", () => {
+    // siteReach ≥ 200 m → a straight through-street clips to ~400 m and must still draw.
     const features = accessFeatures({
       footprint: [[-4, -6], [4, -6], [4, 6], [-4, 6]],
+      streetDir: [0, -1],
+      roads: [
+        { name: "Long Avenue", pts: [[-400, -14], [400, -14]] },
+        { name: "Side Street", pts: [[20, -400], [20, 400]] },
+      ],
+      garage: null,
+    });
+    const roads = features.filter((f) => f.kind === "road");
+    assert.ok(roads.length >= 1, `expected long avenue ribbon, got ${roads.length}`);
+    assert.ok(features.some((f) => f.kind === "driveway"), "driveway should still attach to the street");
+  });
+
+  it("places the nearest mapped fire hydrants around the house", () => {
+    const house: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
+    const R = siteReach(house);
+    const features = accessFeatures({
+      footprint: house,
       streetDir: [0, -1],
       roads: [{ name: "Simonson Avenue", pts: [[-20, -14], [20, -14]] }],
       garage: null,
@@ -76,16 +97,25 @@ describe("street and driveway", () => {
         [8, -12],
         [40, -10],
         [140, -20],
-        [400, 0],
+        [R + 40, 0],
         [-6, -16],
       ],
     });
     const hydrants = features.filter((f) => f.kind === "hydrant");
-    assert.ok(hydrants.length >= 4, `street hydrants ~140 m should stay, got ${hydrants.length}`);
-    assert.equal(hydrants.length, 4, "400 m hydrant should be dropped");
+    assert.equal(hydrants.length, 4, `hydrants outside siteReach (${R} m) should be dropped`);
     assert.equal(hydrants[0].label, "Nearest hydrant");
     const c0 = hydrants[0].polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((n) => n / 4);
     assert.ok(Math.hypot(c0[0] - 8, c0[1] + 12) < 0.5 || Math.hypot(c0[0] + 6, c0[1] + 16) < 0.5);
+  });
+
+  it("uses one shared outdoor radius for neighbors, roads, and terrain", () => {
+    const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const R = siteReach(house);
+    assert.equal(neighborReach(house), R);
+    assert.equal(roadReach(house), R);
+    assert.equal(compoundReach(house), R);
+    assert.ok(R >= SITE_REACH_MIN_M && R <= SITE_REACH_MAX_M);
+    assert.ok(accessoryReach(house) < R, "garage/shed lot radius stays tighter than the scene");
   });
 
   it("keeps farther connecting streets but caps road ribbon count", () => {
@@ -177,12 +207,12 @@ describe("compound assembly", () => {
   it("draws attached next-door houses as ghost neighbor shells, not garages", () => {
     const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
     const attached: [number, number][] = [[5, -4], [15, -4], [15, 4], [5, 4]];
-    // Beyond the ~90–180 m neighbor radius.
-    const far: [number, number][] = [[200, -4], [210, -4], [210, 4], [200, 4]];
-    assert.ok(neighborReach(house) >= 90);
-    assert.ok(neighborReach(house) <= 180);
+    // Beyond the shared outdoor scene radius.
+    const far: [number, number][] = [[320, -4], [330, -4], [330, 4], [320, 4]];
+    assert.ok(siteReach(house) >= SITE_REACH_MIN_M);
+    assert.ok(siteReach(house) <= SITE_REACH_MAX_M);
     assert.ok(neighborReach(house) >= accessoryReach(house));
-    assert.ok(roadReach(house) >= 120);
+    assert.equal(roadReach(house), siteReach(house));
     const { features } = assembleCompound({
       mainId: 1,
       mainRing: house,
@@ -239,8 +269,8 @@ describe("compound assembly", () => {
     const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
     const across: [number, number][] = [[-5, -35], [5, -35], [5, -28], [-5, -28]];
     const side: [number, number][] = [[25, -4], [35, -4], [35, 4], [25, 4]];
-    const r = neighborReach(house);
-    assert.ok(r >= 90);
+    const r = siteReach(house);
+    assert.ok(r >= SITE_REACH_MIN_M);
     const { features } = assembleCompound({
       mainId: 1,
       mainRing: house,

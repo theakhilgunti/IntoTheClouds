@@ -9,7 +9,7 @@ import { STEP_LABELS, type StepKey } from "@/lib/sources";
 type Mode = "photo" | "address";
 type StepState = { status: "pending" | "active" | "done" | "skipped"; detail?: string };
 const STEPS = Object.keys(STEP_LABELS) as StepKey[];
-const EXAMPLE = "17 Schuyler Ave, Latham, NY 12110";
+const EXAMPLE = "Burdett Avenue Residence Hall, Troy, NY";
 
 /** Shrink a photo to <= maxSide px JPEG (keeps uploads small and fast). */
 async function shrink(file: File, maxSide: number, quality: number): Promise<Blob> {

@@ -23,7 +23,7 @@ import {
   demExtent,
   demHeightfieldBuffers,
   gradeHeight,
-  neighborReach,
+  siteReach,
   terrainGridLinePositions,
 } from "@/lib/compound-geom";
 import { buildNav, routeToMarker, type Route } from "@/lib/route";
@@ -500,8 +500,8 @@ function DemTerrainMesh({
       footprint.length >= 3
         ? footprint
         : ([[-10, -10], [10, -10], [10, 10], [-10, 10]] as Point[]);
-    const radius = Math.max(40, neighborReach(fp));
-    const buf = demHeightfieldBuffers(dem, { yBias: LAYER_Y.terrain, radiusM: radius + dem.cell });
+    const radius = siteReach(fp);
+    const buf = demHeightfieldBuffers(dem, { yBias: LAYER_Y.terrain, radiusM: radius });
     if (!buf) return null;
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(buf.positions, 3));
@@ -1850,8 +1850,8 @@ export default function Viewer({
 
         <TerrainGrid
           grade={model.compound?.grade ?? null}
-          size={Math.min(extent * (largeSite ? 9 : 6), largeSite ? 420 : 200)}
-          divisions={largeSite ? 28 : Math.max(16, Math.round(Math.min(extent * 3, 48)))}
+          size={siteReach(model.footprint) * 2}
+          divisions={Math.max(20, Math.min(40, Math.round(siteReach(model.footprint) / 6)))}
         />
         <OrbitControls
           ref={controlsRef}

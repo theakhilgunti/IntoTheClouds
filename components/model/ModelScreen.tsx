@@ -61,7 +61,7 @@ export default function ModelScreen({ id }: { id: string }) {
       const empty = model.interior?.status === "unknown" && model.floors.every((f) => f.rooms.length === 0);
       const stale =
         (model.source === "address" || model.source === "photo") &&
-        (model.compound?.basis !== "compound-v28" || model.roof?.basis !== "roof-v3");
+        (model.compound?.basis !== "compound-v30" || model.roof?.basis !== "roof-v3");
       if ((!empty && !stale) || !scan.query.address) return;
       const form = new FormData();
       form.append("address", scan.query.address);

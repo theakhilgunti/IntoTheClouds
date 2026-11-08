@@ -254,10 +254,9 @@ function houseLabel(b: OsmBuilding): string {
  * is not inside any outline, prefer buildings in that direction.
  */
 export async function lookupBuilding(origin: LatLng, heading?: number | null, hint?: AddressHint): Promise<OsmContext> {
-  // Wide enough for expanded neighbor (~180 m) + road (~240 m) reach; denser cities still stay under Overpass limits.
-  // Hydrants need extra reach — street corners are often >150 m from the geocode point.
-  const R = 350;
-  const HYDRANT_R = 320;
+  // Match the single outdoor scene radius (siteReach / SITE_REACH_MAX_M = 240 m).
+  const R = 240;
+  const HYDRANT_R = 240;
   const q = `[out:json][timeout:25];
 (
   way["building"](around:${R},${origin.lat},${origin.lng});
@@ -415,7 +414,7 @@ out tags geom;`;
     .map((p) => ({ p, d: dist(here, p) }))
     .filter((h) => h.d < HYDRANT_R)
     .sort((a, b) => a.d - b.d)
-    .slice(0, 40)
+    .slice(0, 60)
     .map((h) => h.p);
 
   const seenTree = new Set<string>();
@@ -429,7 +428,7 @@ out tags geom;`;
       seenTree.add(key);
       return true;
     })
-    .slice(0, 90)
+    .slice(0, 160)
     .map((t) => t.p);
 
   return {

@@ -146,7 +146,7 @@ export function neighborhoodTerrainFeatures(
 ): SiteFeature[] {
   const out: SiteFeature[] = [];
   const origin: Point = main && main.length >= 3 ? ringCentroid(main) : [0, 0];
-  const radius = Math.max(40, radiusM ?? (main ? neighborReach(main) : 60));
+  const radius = Math.max(SITE_REACH_MIN_M, radiusM ?? (main ? siteReach(main) : SITE_REACH_MIN_M));
 
   // Full rendered-radius disc first (drawn under everything else).
   out.push({
@@ -419,27 +419,38 @@ export function ringSeparation(a: Point[], b: Point[]): number {
 }
 
 /** Cap drawn neighbor shells (nearest first) so a dense block does not flood the scene. */
-export const MAX_NEIGHBOR_SHELLS = 20;
+export const MAX_NEIGHBOR_SHELLS = 36;
 /** Cap drawn street ribbons (nearest first) after expanding road reach. */
-export const MAX_ROAD_RIBBONS = 28;
+export const MAX_ROAD_RIBBONS = 42;
+/** Cap mapped + aerial trees kept around the site. */
+export const MAX_TREE_MARKERS = 100;
+/** Cap fire hydrants kept on the scene (nearest first). */
+export const MAX_HYDRANTS = 60;
+/** Cap traffic lights spawned at road crossings. */
+export const MAX_TRAFFIC_SIGNALS = 10;
+
+/** Floor / ceiling for the single outdoor scene radius (meters). */
+export const SITE_REACH_MIN_M = 200;
+export const SITE_REACH_MAX_M = 240;
 
 /**
- * How far a neighbor may sit from the focus foundation (meters).
- * Floored at ~90 m so across-the-street and next-block houses stay in the scene.
+ * One outdoor radius for the warped grid, DEM, terrain disc, neighbors, roads,
+ * hydrants, fences, trees, and OSM fetch. Everything that draws around the house
+ * uses this so the scene edge matches.
  */
-export function neighborReach(mainRing: Point[]): number {
+export function siteReach(mainRing: Point[]): number {
   const ext = foundationExtent(mainRing);
-  const accessory = accessoryReach(mainRing);
-  return Math.min(180, Math.max(90, accessory * 2.2, ext * 3.5 + 36));
+  return Math.min(SITE_REACH_MAX_M, Math.max(SITE_REACH_MIN_M, Math.round(ext * 3.5 + 40)));
 }
 
-/**
- * How far mapped road centerlines are kept as street ribbons (meters).
- * Wider than compoundReach so connecting streets still read in the scene.
- */
+/** Alias of siteReach — neighbors share the outdoor scene radius. */
+export function neighborReach(mainRing: Point[]): number {
+  return siteReach(mainRing);
+}
+
+/** Alias of siteReach — streets share the outdoor scene radius. */
 export function roadReach(mainRing: Point[]): number {
-  const reach = compoundReach(mainRing);
-  return Math.max(120, Math.min(240, reach * 1.55));
+  return siteReach(mainRing);
 }
 
 /** Distance used for neighbor radius: ring gap, falling back to centroid→foundation. */
@@ -586,22 +597,18 @@ export function foundationExtent(mainRing: Point[]): number {
   return Math.max(...mainRing.map(([x, y]) => Math.hypot(x, y)), 6);
 }
 
-/**
- * How far from the main building yard / street / aerial search should reach (meters).
- * Scales with foundation size so a cottage and a campus don't share one city-block radius.
- */
+/** Alias of siteReach — yard / aerial search share the outdoor scene radius. */
 export function compoundReach(mainRing: Point[]): number {
-  const ext = foundationExtent(mainRing);
-  return Math.min(160, Math.max(40, ext * 2.8 + 18));
+  return siteReach(mainRing);
 }
 
 /**
  * How far a garage/shed may sit from the foundation edge (meters).
- * Tighter than compoundReach so off-lot and far campus buildings are not drawn as "garages".
+ * Kept tighter than siteReach so off-lot and far campus buildings are not drawn as "garages".
  */
 export function accessoryReach(mainRing: Point[]): number {
   const ext = foundationExtent(mainRing);
-  return Math.min(70, Math.max(16, ext * 1.25 + 10));
+  return Math.min(55, Math.max(18, ext * 1.2 + 10));
 }
 
 /** True when point is inside the foundation or within `r` meters of its outline. */
@@ -682,12 +689,14 @@ export function assembleCompound(site: {
   const main = site.mainRing.length >= 3 ? site.mainRing : null;
   const mainC: Point = main ? ringCentroid(main) : [0, 0];
   const streetDir = site.streetDir ?? null;
-  const reach = compoundReach(site.mainRing);
+  const siteR = siteReach(site.mainRing);
+  const reach = siteR;
   const accessoryR = accessoryReach(site.mainRing);
-  const neighborR = neighborReach(site.mainRing);
+  const neighborR = siteR;
   const lotSoft = Math.min(6, Math.max(2.5, foundationExtent(site.mainRing) * 0.12));
   const maxOut = Math.max(120, Math.min(500, accessoryR * accessoryR * 0.12));
   const maxNeighborArea = Math.max(800, Math.min(4000, foundationExtent(site.mainRing) * foundationExtent(site.mainRing) * 4));
+  const inScene = (p: Point) => dist(p, mainC) <= siteR;
 
   // Prefer the tax lot; otherwise hull the house + nearby tagged outbuildings/parking.
   const hasParcel = !!(site.parcel && site.parcel.length >= 3);
@@ -772,7 +781,7 @@ export function assembleCompound(site: {
     .sort((a, b) => a.d - b.d)
     .slice(0, MAX_NEIGHBOR_SHELLS);
   const neighborRings = neighborHits.map((h) => h.s.ring);
-  const neighborSoft = Math.min(30, Math.max(14, accessoryR * 0.9));
+  const neighborSoft = Math.min(45, Math.max(18, accessoryR * 0.95));
   const nearNeighborhood = (p: Point) =>
     onSite(p) || neighborRings.some((r) => nearFoundation(p, r, neighborSoft));
 
@@ -815,12 +824,12 @@ export function assembleCompound(site: {
   }
 
   site.pools.forEach((ring, i) => {
-    if (ring.length < 3 || !nearNeighborhood(ringCentroid(ring))) return;
+    if (ring.length < 3 || !inScene(ringCentroid(ring))) return;
     features.push({ id: `pool-${i}`, kind: "pool", label: "Pool", polygon: ring, height: HEIGHT.pool, source: "map" });
   });
 
   (site.parking ?? []).forEach((ring, i) => {
-    if (ring.length < 3 || !nearNeighborhood(ringCentroid(ring))) return;
+    if (ring.length < 3 || !inScene(ringCentroid(ring))) return;
     features.push({
       id: `parking-${i}`,
       kind: "driveway",
@@ -832,14 +841,14 @@ export function assembleCompound(site: {
   });
 
   let fenceCount = 0;
-  const fenceCap = Math.min(160, Math.max(50, Math.round(reach * 1.2)));
+  const fenceCap = Math.min(240, Math.max(80, Math.round(siteR * 1.2)));
   for (const line of site.fences) {
     for (let i = 0; i < line.length - 1 && fenceCount < fenceCap; i++) {
       const a = line[i];
       const b = line[i + 1];
       const mid: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-      if (!nearNeighborhood(mid)) continue;
-      const polygon = ribbon(a, b, 0.14, Math.max(30, reach * 0.5));
+      if (!inScene(mid)) continue;
+      const polygon = ribbon(a, b, 0.14, Math.max(40, siteR * 0.65));
       if (!polygon) continue;
       features.push({
         id: `fence-${fenceCount}`,
@@ -854,10 +863,10 @@ export function assembleCompound(site: {
   }
 
   let treeCount = 0;
-  const treeCap = 55;
+  const treeCap = MAX_TREE_MARKERS;
   for (const p of site.trees ?? []) {
     if (treeCount >= treeCap) break;
-    if (!nearNeighborhood(p)) continue;
+    if (!inScene(p)) continue;
     if (main && (pointInRing(p, main) || distToRing(p, main) < 1.2)) continue;
     if (neighborRings.some((r) => pointInRing(p, r) || distToRing(p, r) < 1.0)) continue;
     features.push({
@@ -876,7 +885,12 @@ export function assembleCompound(site: {
     if (a.kind === "yard") continue;
     const c = ringCentroid(a.polygon);
     if (main && pointInRing(c, main)) continue;
-    if (!nearNeighborhood(c)) continue;
+    // Fences/trees fill the full scene disc; driveways/patios/outbuildings stay lot-local.
+    if (a.kind === "fence" || a.kind === "trees") {
+      if (!inScene(c)) continue;
+    } else if (!nearNeighborhood(c)) {
+      continue;
+    }
     if (a.kind === "fence") {
       const ribbons = fenceRibbonsFromPolygon(a.polygon);
       const segs = ribbons.length ? ribbons : [a.polygon];
@@ -1082,9 +1096,9 @@ export function assembleCompound(site: {
   }
 
   // Graded ground for the full neighbor render radius + pads under each building.
-  features.unshift(...neighborhoodTerrainFeatures(main, neighborRings, neighborR));
+  features.unshift(...neighborhoodTerrainFeatures(main, neighborRings, siteR));
 
-  return { features: features.slice(0, 220) };
+  return { features: features.slice(0, 360) };
 }
 
 /**
@@ -1159,7 +1173,7 @@ export function crossVerifySiteFeatures(opts: {
     });
   }
 
-  return filtered.slice(0, 140);
+  return filtered.slice(0, 220);
 }
 
 /** How many rooms fit along the depth. One bay is about one window on the long side. */
@@ -1264,19 +1278,18 @@ export function accessFeatures(opts: {
   hydrants?: Point[];
 }): SiteFeature[] {
   const here: Point = ringCentroid(opts.footprint);
-  const reach = compoundReach(opts.footprint);
-  const keepR = roadReach(opts.footprint);
-  const roadMax = Math.max(70, reach * 1.35);
+  const siteR = siteReach(opts.footprint);
+  const keepR = siteR;
+  const roadMax = Math.max(70, siteR * 0.95);
   const width = Math.min(12, Math.max(7.2, ringExtent(opts.footprint) * 0.15));
   const out: SiteFeature[] = [];
 
-  // Street hydrants are often 100–250 m from the house — keep a wide net independent of road clip.
-  const hydrantR = 320;
+  // Hydrants share the same outdoor scene radius as streets / grid / neighbors.
   const nearestHydrants = [...(opts.hydrants ?? [])]
     .map((p) => ({ p, d: dist(here, p) }))
-    .filter((h) => h.d < hydrantR)
+    .filter((h) => h.d < siteR)
     .sort((a, b) => a.d - b.d)
-    .slice(0, 40);
+    .slice(0, MAX_HYDRANTS);
   nearestHydrants.forEach((h, i) => {
     const s = 0.45;
     out.push({
@@ -1318,7 +1331,8 @@ export function accessFeatures(opts: {
           return (d0[0] / l0) * (d1[0] / l1) + (d0[1] / l0) * (d1[1] / l1) > 0.97;
         })();
       if (continueRun) continue;
-      const poly = ribbon(runStart, b, width);
+      // Road runs after a wide clip can exceed the default ribbon max (~320 m).
+      const poly = ribbon(runStart, b, width, Math.max(400, keepR * 2.2));
       const hit = nearestOn(here, runStart, b);
       if (poly && hit.d < keepR * 1.05) {
         roadCands.push({ poly, a: runStart, b, name: road.name, d: hit.d });
@@ -1358,7 +1372,7 @@ export function accessFeatures(opts: {
   for (let i = 0; i < segs.length; i++) {
     for (let j = i + 1; j < segs.length; j++) {
       const hit = segIntersect(segs[i].a, segs[i].b, segs[j].a, segs[j].b);
-      if (!hit || dist(hit, here) > keepR * 0.95) continue;
+      if (!hit || dist(hit, here) > keepR * 0.98) continue;
       // Skip near-duplicates.
       if (out.some((f) => f.kind === "signal" && dist(ringCentroid(f.polygon), hit) < 8)) continue;
       const s = 0.55;
@@ -1375,9 +1389,9 @@ export function accessFeatures(opts: {
         height: HEIGHT.signal,
         source: "map",
       });
-      if (signalN >= 4) break;
+      if (signalN >= MAX_TRAFFIC_SIGNALS) break;
     }
-    if (signalN >= 4) break;
+    if (signalN >= MAX_TRAFFIC_SIGNALS) break;
   }
 
   let dir = opts.streetDir;

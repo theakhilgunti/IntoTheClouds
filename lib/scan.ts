@@ -14,11 +14,11 @@ import {
   assembleCompound,
   boxToPolygon,
   buildLotGrade,
-  compoundReach,
   crossVerifySiteFeatures,
   entryStairFeatures,
-  neighborReach,
   pickGarage,
+  SITE_REACH_MIN_M,
+  siteReach,
 } from "./compound-geom";
 import { fetchSiteDem, withDem } from "./elevation";
 import { fetchStreetViewFacade } from "./streetview";
@@ -166,7 +166,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v28" || saved.model.roof?.basis !== "roof-v3");
+      (saved.model.compound?.basis !== "compound-v30" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -215,7 +215,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const extent = footprint ? Math.max(...footprint.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y)))) : 8;
   try {
     // Wide enough to cover the lot around large footprints; Esri needs ≥ ~40 m half-width.
-    const wantHalf = Math.min(180, Math.max(40, extent * 3.5, footprint ? compoundReach(footprint) * 0.85 : 40));
+    const wantHalf = footprint ? siteReach(footprint) : SITE_REACH_MIN_M;
     const shot = await aerialImage(center, wantHalf);
     aerial = shot.image;
     aerialHalf = shot.halfSize;
@@ -543,7 +543,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const streetDir = osm?.roadDir ?? null;
   const houseCenter = b ? polygonCentroid(b.ring) : ([0, 0] as Point);
   const parcelLocal = lot ? lot.ring.map((p) => toLocal(origin, p)) : null;
-  const reach = footprint ? compoundReach(footprint) : 40;
+  const reach = footprint ? siteReach(footprint) : SITE_REACH_MIN_M;
   const garageRing = pickGarage(
     (osm?.structures ?? []).map((s) => ({ id: s.id, tag: s.tags.building ?? "", ring: s.ring, area: s.area })),
     houseCenter,
@@ -786,7 +786,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   // Model (0,0) is the building centroid — sample DEM in that frame.
   const modelGeoOrigin = fromLocal(origin, originShift);
   // Cover the full neighbor radius (+ a little edge padding) with ~18 m samples.
-  const demHalf = Math.max(60, neighborReach(built.model.footprint) + 8);
+  const demHalf = siteReach(built.model.footprint);
   let dem = null as Awaited<ReturnType<typeof fetchSiteDem>>;
   try {
     dem = await fetchSiteDem({ geoOrigin: modelGeoOrigin, halfExtentM: demHalf, cellM: 18 });
@@ -810,7 +810,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const entrySteps = entryStairFeatures({ streetDir, grade, exits });
   built.model.compound = {
     features: [...kept, ...access, ...entrySteps],
-    basis: "compound-v28",
+    basis: "compound-v30",
     grade: grade ?? undefined,
   };
   if (grade?.dem) {

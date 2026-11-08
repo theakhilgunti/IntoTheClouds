@@ -59,6 +59,10 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 05:45 | Cursor | UI-70 | Home example address → Burdett Avenue Residence Hall, Troy, NY. |
+| 05:40 | Cursor | UI-69 | One siteReach (~200–240 m) for grid, DEM, neighbors, roads, hydrants, fences, trees (compound-v30). |
+| 05:32 | Cursor | UI-68 | Fix missing streets: road ribbons allow length up to ~keepR×2.2 after wider road reach. |
+| 05:25 | Cursor | UI-67 | Wider site load: OSM ~550 m, neighbors ~140–280 m, roads ~180–360 m, hydrants ~500 m; higher caps for shells/roads/trees/signals (compound-v29). |
 | 05:15 | Cursor | UI-66 | Realistic openings: no bedroom↔bedroom / bathroom↔living illicit doors; living/kitchen/dining get wide open arches (compound-v28). |
 | 05:05 | Cursor | UI-65 | Illicit openings through every shared interior wall (+ near-miss shell walls) so rooms stay enterable (compound-v27). |
 | 05:00 | Cursor | UI-64 | Stronger openings: unique room zones, snap near edges, multi-probe walls, synthesize doors into sealed rooms (compound-v26). |
