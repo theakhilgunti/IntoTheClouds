@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { BeaconAnchor, Breadcrumb, FirefighterState, HazardPin, RFMapResponse } from '../types';
 import { ALL_ANCHORS, collectCells, dbmToRgb } from '../lib/rfMap';
+import { ObstacleMeshResponse, buildObstacleGeometry } from '../lib/obstacleMesh';
 
 interface ThreeCanvasProps {
   anchors: BeaconAnchor[];
@@ -11,6 +12,7 @@ interface ThreeCanvasProps {
   rfMap?: RFMapResponse | null;
   rfShow?: boolean;
   rfSelected?: string;
+  obstacleMesh?: ObstacleMeshResponse | null;
 }
 
 export const ThreeCanvas: React.FC<ThreeCanvasProps> = ({
@@ -21,6 +23,7 @@ export const ThreeCanvas: React.FC<ThreeCanvasProps> = ({
   rfMap = null,
   rfShow = true,
   rfSelected = ALL_ANCHORS,
+  obstacleMesh = null,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -29,6 +32,7 @@ export const ThreeCanvas: React.FC<ThreeCanvasProps> = ({
   const anchorsGroupRef = useRef<THREE.Group | null>(null);
   const hazardsGroupRef = useRef<THREE.Group | null>(null);
   const rfGroupRef = useRef<THREE.Group | null>(null);
+  const obstacleGroupRef = useRef<THREE.Group | null>(null);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -102,6 +106,9 @@ export const ThreeCanvas: React.FC<ThreeCanvasProps> = ({
     const rfGroup = new THREE.Group();
     scene.add(rfGroup);
     rfGroupRef.current = rfGroup;
+    const obstacleGroup = new THREE.Group();
+    scene.add(obstacleGroup);
+    obstacleGroupRef.current = obstacleGroup;
 
     const hazardsGroup = new THREE.Group();
     scene.add(hazardsGroup);
@@ -229,6 +236,32 @@ export const ThreeCanvas: React.FC<ThreeCanvasProps> = ({
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     group.add(mesh);
   }, [rfMap, rfShow, rfSelected]);
+
+  // RF obstacle hints (GET /api/mesh): translucent blocks plus a wireframe outline
+  useEffect(() => {
+    const group = obstacleGroupRef.current;
+    if (!group) return;
+    group.children.slice().forEach(child => {
+      const m = child as THREE.Mesh;
+      group.remove(m);
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    });
+    const geo = buildObstacleGeometry(obstacleMesh);
+    if (!geo) return;
+    group.add(
+      new THREE.Mesh(
+        geo,
+        new THREE.MeshBasicMaterial({ color: 0xff6a00, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false })
+      )
+    );
+    group.add(
+      new THREE.LineSegments(
+        new THREE.EdgesGeometry(geo),
+        new THREE.LineBasicMaterial({ color: 0xffa040 })
+      )
+    );
+  }, [obstacleMesh]);
 
   // Update Firefighter avatar position and rotation
   useEffect(() => {
