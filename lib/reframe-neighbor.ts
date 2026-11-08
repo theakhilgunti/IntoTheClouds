@@ -137,7 +137,7 @@ export function reframeModelToNeighbor(model: BuildingModel, wayId: number): Bui
   const grade = shiftGrade(compound.grade, dx, dy, zBias);
   built.compound = {
     features: shiftedFeatures,
-    basis: compound.basis ?? "compound-v45",
+    basis: compound.basis ?? "compound-v55",
     grade: grade
       ? { ...grade, origin: ringCentroid(newFootprint) }
       : undefined,

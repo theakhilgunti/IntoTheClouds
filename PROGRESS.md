@@ -54,6 +54,26 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 05:25 | Cursor | UI-119 | Demo house: electrical panels + gas meter meshes and service-line run. |
+| 05:20 | Cursor | UI-118 | Neighbor/obstacle disc scales with plot size (tighter small lots, fewer shells), compound-v55. |
+| 05:15 | Cursor | UI-117 | Jagged near-square pads (28 Bache) → one hip instead of torn multi-wing roofs; roof-v4. |
+| 05:10 | Cursor | UI-116 | Scale outdoor radius ~80% (160–340 m) for DEM/roads/neighbors/grid, compound-v54. |
+| 05:05 | Cursor | UI-115 | Large/ledge neighbor shells rigid-sit (damped DEM warp) — stops Burdett-scale float + wall shear. |
+| 05:00 | Cursor | UI-114 | Soft roadDeckHeight + along-rail height blur so DEM cell edges stop spiking streets. |
+| 04:55 | Cursor | UI-113 | Hill roads: DEM-draped strips via roadDeckHeight (cell ceiling) + 24 m chunks, compound-v53. |
+| 04:45 | Cursor | UI-112 | Neighbor shells vertex-warp to DEM again so hillside houses slant with the ground. |
+| 04:40 | Cursor | UI-111 | Restore last-push DEM (raw 18 m cells) + road reach/ribbons; drop pad flatten / strip draping, compound-v52. |
+| 04:55 | Cursor | UI-110 | Roads use full siteReach + higher ribbon caps; DEM despike-only (terrain-v3), compound-v51. |
+| 04:50 | Cursor | UI-109 | Halve outdoor radii (100–210 m); small houses get less reach than campuses, compound-v50. |
+| 04:45 | Cursor | UI-108 | Neighbor caps: campus keeps 16; smaller houses scale down (10/12/14), compound-v49. |
+| 04:40 | Cursor | UI-107 | Restore party-wall check: no side windows on mid-terrace shared edges (keep front/back). |
+| 04:35 | Cursor | UI-106 | DEM fidelity: finer ~11 m cells + adaptive edge-aware terrain-v2 (keeps complex relief). |
+| 04:30 | Cursor | UI-105 | Smooth DEM: despike + blur + slope limit so hills aren't jagged cliffs. |
+| 04:25 | Cursor | UI-104 | Map grid rides same DEM+pad surface as site elevation mesh (denser warp). |
+| 04:20 | Cursor | UI-103 | Harder DEM pads under footprints; angular neighbor pick + house-centered framing, compound-v48. |
+| 04:15 | Cursor | UI-102 | Roads: keep curve vertices; DEM strip + cell-ceiling (20 m chunks), compound-v47. |
+| 04:05 | Cursor | UI-101 | Home + floor-plan uploads accept HEIC/HEIF (browser convert via heic2any). |
+| 04:00 | Cursor | UI-100 | Terrain: flatten DEM under pads + rigid neighbor sit; invert neighborShellCap (more for small, ≤16 for large), compound-v46. |
 | 09:55 | Cursor | UI-90 | Outdoor street/grid/DEM radius from capped neighbor cloud (compound-v45). |
 | 09:45 | Cursor | UI-89 | Home scan progress: Cancel aborts in-flight house lookup. |
 | 09:35 | Cursor | UI-88 | Wrong-house neighbor switch reframes compound/DEM locally (no full rescan). |
@@ -197,3 +217,28 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 07:54 | Cursor | UI-88 | Finished task |
 | 07:56 | Cursor | UI-89 | Finished task |
 | 08:00 | Cursor | UI-90 | Finished task |
+| 08:55 | Cursor | UI-100 | Finished task |
+| 08:57 | Cursor | UI-101 | Finished task |
+| 09:01 | Cursor | UI-102 | Finished task |
+| 09:01 | Cursor | UI-102 | Finished task |
+| 09:06 | Cursor | UI-103 | Finished task |
+| 09:10 | Cursor | UI-104 | Finished task |
+| 09:12 | Cursor | UI-105 | Finished task |
+| 09:16 | Cursor | UI-106 | Finished task |
+| 09:19 | Cursor | UI-107 | Finished task |
+| 09:26 | Cursor | UI-108 | Finished task |
+| 09:28 | Cursor | UI-109 | Finished task |
+| 09:28 | Cursor | UI-109 | Finished task |
+| 09:33 | Cursor | UI-110 | Finished task |
+| 09:33 | Cursor | UI-110 | Finished task |
+| 09:40 | Cursor | UI-111 | Finished task |
+| 09:43 | Cursor | UI-112 | Finished task |
+| 09:51 | Cursor | UI-113 | Finished task |
+| 09:53 | Cursor | UI-114 | Finished task |
+| 09:56 | Cursor | UI-115 | Finished task |
+| 09:58 | Cursor | UI-116 | Finished task |
+| 10:01 | Cursor | UI-117 | Finished task |
+| 10:02 | Cursor | UI-117 | Finished task |
+| 10:12 | Cursor | UI-118 | Finished task |
+| 10:13 | Cursor | UI-118 | Finished task |
+| 10:19 | Cursor | UI-119 | Finished task |

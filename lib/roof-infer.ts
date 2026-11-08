@@ -399,6 +399,27 @@ export function extractRectVolumes(poly: Pt[], maxParts = 4): Pt[][] {
 }
 
 /**
+ * True when L/U decomposition produced clean rectangular volumes worth meshing as wings.
+ * Rejects jagged suburban pads that leave concave leftovers / over-packed OBB stacks
+ * (those tear into glitchy overlapping gables — e.g. 28 Bache Ave).
+ */
+export function roofPartsAreClean(
+  poly: Pt[],
+  parts: Pt[][],
+  foot: { aspect: number; kind: string },
+): boolean {
+  if (parts.length < 2 || parts.length > 4) return false;
+  // Every volume must already be a simple convex pad — a 8+ gon leftover means the split failed.
+  if (parts.some((p) => isConcave(p) || p.length > 6)) return false;
+  const cover =
+    parts.reduce((s, p) => s + polygonArea(p), 0) / Math.max(1, polygonArea(poly));
+  if (cover < 0.8 || cover > 1.45) return false;
+  // Near-square "fake L" with 3+ boxes → overlapping mess on bump-out footprints.
+  if (parts.length >= 3 && foot.aspect < 1.25) return false;
+  return true;
+}
+
+/**
  * Irregular footprints → simple rectangle volumes (main trunk + wings).
  * Never stretch one roof over concave / diagonal weirdness.
  */
@@ -582,10 +603,10 @@ export function inferRoofPlan(opts: {
   }
 
   // Irregular / L / U / complex: never stretch one roof — main trunk + wings.
-  // Concave elongated bars (small jogs) keep one gable; only L/complex get split.
+  // Concave elongated bars (small jogs) keep one gable; only clean L/U splits get multi-wing.
   if (foot.kind === "L" || foot.kind === "complex") {
     const parts = decomposeRoofVolumes(poly);
-    if (parts.length >= 2) {
+    if (parts.length >= 2 && roofPartsAreClean(poly, parts, foot)) {
       const wings = joinMainAndWings(parts);
       return {
         kind: "wings",
@@ -594,6 +615,13 @@ export function inferRoofPlan(opts: {
         shape: "gable",
         ridgeAlong,
       };
+    }
+    // Jagged suburban pads (e.g. 28 Bache Ave): fake "L" → overlapping OBB prisms that tear.
+    // One hip on the OBB reads clean; OSM rarely tags roof:shape on these.
+    if (foot.aspect < 1.45 || foot.kind === "complex") {
+      const body = snapToObbRect(poly);
+      const w = wingFromPoly(body, "hip", true);
+      return { kind: "hip", wings: [w], source, shape: "hip", ridgeAlong };
     }
   }
 

@@ -211,6 +211,53 @@ export function sampleDemHeight(p: Point, dem: DemGrid): number | null {
 }
 
 /**
+ * Highest of the four DEM cell corners around `p`.
+ * Heightfield triangles can sit above bilinear mid-cell samples — roads must clear that ceiling.
+ */
+export function sampleDemCeiling(p: Point, dem: DemGrid): number | null {
+  if (dem.cols < 2 || dem.rows < 2 || dem.z.length < dem.cols * dem.rows) return null;
+  const u = (p[0] - dem.x0) / dem.cell;
+  const v = (p[1] - dem.y0) / dem.cell;
+  const c0 = Math.max(0, Math.min(dem.cols - 2, Math.floor(u)));
+  const r0 = Math.max(0, Math.min(dem.rows - 2, Math.floor(v)));
+  const i = (c: number, r: number) => dem.z[r * dem.cols + c];
+  const corners = [i(c0, r0), i(c0 + 1, r0), i(c0, r0 + 1), i(c0 + 1, r0 + 1)];
+  if (!corners.every((n) => Number.isFinite(n))) return null;
+  return Math.max(...corners);
+}
+
+/**
+ * Street deck height on terraneous ground.
+ * Soft clearance above bilinear DEM — snapping to full cell-corner max spiked roads at cell edges.
+ */
+export function roadDeckHeight(p: Point, grade: LotGrade | null | undefined): number {
+  if (grade?.dem) {
+    const bil = sampleDemHeight(p, grade.dem);
+    if (bil == null || !Number.isFinite(bil)) return gradeHeight(p, grade);
+    const ceil = sampleDemCeiling(p, grade.dem);
+    const gap = ceil != null && Number.isFinite(ceil) ? Math.max(0, ceil - bil) : 0;
+    // Lift a little for z-fight, ease only partway toward the triangle peak (no hard corner snap).
+    return bil + Math.min(0.28, Math.max(0.1, gap * 0.28));
+  }
+  return gradeHeight(p, grade);
+}
+
+/** 1D blur for road-rail height samples — knocks down single-sample DEM spikes. */
+export function smoothHeightSeries(zs: number[], passes = 2): number[] {
+  if (zs.length < 3) return zs.slice();
+  let cur = zs.slice();
+  const nPass = Math.max(0, Math.min(4, Math.round(passes)));
+  for (let p = 0; p < nPass; p++) {
+    const next = cur.slice();
+    for (let i = 1; i < cur.length - 1; i++) {
+      next[i] = (cur[i - 1]! + cur[i]! * 2 + cur[i + 1]!) / 4;
+    }
+    cur = next;
+  }
+  return cur;
+}
+
+/**
  * Vertical offset (m) at a model-frame point.
  * Prefers DEM samples when present; otherwise the mild street plane (streetward lower).
  */
@@ -442,9 +489,9 @@ export const MAX_NEIGHBOR_SHELLS = 42;
 /** Cap unique street runs (nearest first) after expanding road reach. */
 export const MAX_ROAD_RIBBONS = 36;
 /** Max drawn road mesh pieces after chunking long runs for DEM-friendly slabs. */
-export const MAX_ROAD_FEATURES = 96;
-/** Split long street centerlines into this many meters per ribbon quad. */
-export const ROAD_CHUNK_M = 48;
+export const MAX_ROAD_FEATURES = 140;
+/** Split long street centerlines into this many meters per ribbon quad (short = follows hills). */
+export const ROAD_CHUNK_M = 24;
 /** Cap mapped + aerial trees kept around the site. */
 export const MAX_TREE_MARKERS = 80;
 /** Cap fire hydrants kept on the scene (nearest first). */
@@ -457,43 +504,62 @@ export const MAX_ROAD_SIGNS = 60;
 export const ROAD_SIGN_ALONG_M = 16;
 
 /**
- * Outdoor scene radius floor/ceiling (meters).
- * Neighbors, streets, and the map grid share neighborReach; siteReach is the OSM/aerial
- * fetch ceiling (slightly wider so data is available at the edge of that disc).
+ * Outdoor fetch ceiling (meters). Neighbor/obstacle *render* disc is tighter and
+ * plot-sized via neighborReach — siteReach stays a bit wider so OSM still has edge data.
  */
-export const SITE_REACH_MIN_M = 200;
-export const SITE_REACH_MAX_M = 420;
+export const SITE_REACH_MIN_M = 160;
+export const SITE_REACH_MAX_M = 340;
 
 /**
  * OSM / aerial fetch ceiling — slightly wider than the drawn outdoor disc.
  */
 export function siteReach(mainRing: Point[]): number {
   const ext = foundationExtent(mainRing);
-  // ~10 m house → ~200 m; ~40 m wing → ~250 m; ~70 m complex → ~420 m (cap).
-  const raw = Math.round(ext * 4.6 + 70);
+  // ~10 m house → ~160 m; ~40 m wing → ~200 m; ~70 m complex → ~340 m (cap).
+  const raw = Math.round(ext * 3.7 + 56);
   return Math.min(SITE_REACH_MAX_M, Math.max(SITE_REACH_MIN_M, raw));
 }
 
 /**
- * Search ceiling for neighbor shells (OSM candidates). Streets/grid use
- * neighborCloudReach after the nearest-N cap is applied.
+ * Characteristic plot radius (m) from parcel centroid, else the foundation extent.
+ * Small residential lots → small neighbor/obstacle discs.
  */
-export function neighborReach(mainRing: Point[]): number {
-  return Math.max(170, Math.round(siteReach(mainRing) * 0.94));
+export function plotExtent(mainRing: Point[], parcel?: Point[] | null): number {
+  if (parcel && parcel.length >= 3) {
+    const c = ringCentroid(parcel);
+    const r = Math.max(...parcel.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1])));
+    if (Number.isFinite(r) && r >= 6) return r;
+  }
+  return foundationExtent(mainRing);
+}
+
+/**
+ * Render search ceiling for neighbor shells + outdoor obstacles (trees/fences/hydrants disc).
+ * Scales with plot/foundation size — small lots stay tight; campuses open up.
+ */
+export function neighborReach(mainRing: Point[], parcel?: Point[] | null): number {
+  const plot = plotExtent(mainRing, parcel);
+  const ext = foundationExtent(mainRing);
+  // ~12 m lot → ~55 m; ~25 m lot → ~90 m; large campus plot → toward siteReach ceiling.
+  const fromPlot = Math.round(plot * 2.35 + 26);
+  const fromHouse = Math.round(ext * 2.6 + 36);
+  const raw = Math.max(fromPlot, fromHouse);
+  const ceil = Math.round(siteReach(mainRing) * 0.82);
+  return Math.min(ceil, Math.max(55, raw));
 }
 
 /** Streets / hydrants / signs — prefer neighborCloudReach when shells are known. */
-export function roadReach(mainRing: Point[]): number {
-  return neighborReach(mainRing);
+export function roadReach(mainRing: Point[], parcel?: Point[] | null): number {
+  return neighborReach(mainRing, parcel);
 }
 
-/** How many nearest neighbor shells to keep for this footprint. */
+/** How many nearest neighbor shells to keep for this footprint / plot. */
 export function neighborShellCap(mainRing: Point[]): number {
   const ext = foundationExtent(mainRing);
-  if (ext < 16) return 22;
-  if (ext < 28) return 28;
-  if (ext < 45) return 34;
-  return MAX_NEIGHBOR_SHELLS;
+  if (ext < 16) return 12;
+  if (ext < 28) return 16;
+  if (ext < 45) return 22;
+  return Math.min(MAX_NEIGHBOR_SHELLS, 32);
 }
 
 /** How many nearest street runs to keep — mirrors neighborShellCap. */
@@ -506,15 +572,15 @@ export function roadRibbonCap(mainRing: Point[]): number {
  * clamped to the neighbor search ceiling. Used when no shells are loaded yet
  * and as a floor so sparse sites don't shrink streets too far.
  */
-export function estimateNeighborCloudReach(mainRing: Point[]): number {
-  const search = neighborReach(mainRing);
+export function estimateNeighborCloudReach(mainRing: Point[], parcel?: Point[] | null): number {
+  const search = neighborReach(mainRing, parcel);
   const cap = neighborShellCap(mainRing);
-  const ext = foundationExtent(mainRing);
+  const plot = plotExtent(mainRing, parcel);
   // Typical center-to-center pitch for house-sized pads around this footprint.
-  const lotPitch = Math.max(18, Math.min(34, ext * 0.85 + 14));
+  const lotPitch = Math.max(14, Math.min(30, plot * 0.7 + 10));
   // Pack `cap` peers in a disc: r ≈ pitch × √(n/π), plus a little street margin.
-  const packed = Math.round(lotPitch * Math.sqrt(cap / Math.PI) * 1.2 + 14);
-  return Math.min(search, Math.max(90, packed));
+  const packed = Math.round(lotPitch * Math.sqrt(cap / Math.PI) * 1.15 + 10);
+  return Math.min(search, Math.max(48, packed));
 }
 
 /**
@@ -522,29 +588,83 @@ export function estimateNeighborCloudReach(mainRing: Point[]): number {
  * Takes the farthest shell vertex from the focus, pads for curb/street, and
  * floors with the cap-based estimate so 0–2 neighbors don't collapse the scene.
  */
-export function neighborCloudReach(mainRing: Point[], neighborRings: Point[][]): number {
-  const search = neighborReach(mainRing);
-  const estimated = estimateNeighborCloudReach(mainRing);
+export function neighborCloudReach(
+  mainRing: Point[],
+  neighborRings: Point[][],
+  parcel?: Point[] | null,
+): number {
+  const search = neighborReach(mainRing, parcel);
+  const estimated = estimateNeighborCloudReach(mainRing, parcel);
   if (!neighborRings.length) return estimated;
   const mainC: Point = mainRing.length >= 3 ? ringCentroid(mainRing) : [0, 0];
   let maxR = 0;
   for (const ring of neighborRings) {
     for (const p of ring) maxR = Math.max(maxR, dist(p, mainC));
   }
-  const observed = Math.round(maxR + 16);
-  return Math.min(search, Math.max(estimated, observed, 90));
+  const observed = Math.round(maxR + 12);
+  return Math.min(search, Math.max(estimated, observed, 48));
 }
 
 /** Derive outdoor disc from compound neighbor features (viewer / DEM clip). */
-export function outdoorReachFromNeighbors(footprint: Point[], features: { kind: string; polygon: Point[] }[]): number {
+export function outdoorReachFromNeighbors(
+  footprint: Point[],
+  features: { kind: string; polygon: Point[] }[],
+  parcel?: Point[] | null,
+): number {
   const rings = features.filter((f) => f.kind === "neighbor").map((f) => f.polygon);
-  return neighborCloudReach(footprint, rings);
+  return neighborCloudReach(footprint, rings, parcel);
 }
 
 /** Distance used for neighbor radius: ring gap, falling back to centroid→foundation. */
 export function neighborDistance(main: Point[] | null, mainC: Point, ring: Point[]): number {
   if (main && main.length >= 3 && ring.length >= 3) return ringSeparation(main, ring);
   return dist(ringCentroid(ring), mainC);
+}
+
+/**
+ * Pick nearest neighbors with angular spread so the cloud surrounds the focus house
+ * instead of filling the cap with a lopsided cluster on one side (campuses / row houses).
+ */
+export function pickNeighborHits<T extends { d: number; s: { id: number; ring: Point[] } }>(
+  hits: T[],
+  cap: number,
+  mainC: Point,
+): T[] {
+  if (hits.length <= cap) return hits;
+  const sectors = Math.min(8, Math.max(4, Math.ceil(cap / 2)));
+  const buckets: T[][] = Array.from({ length: sectors }, () => []);
+  for (const h of hits) {
+    const c = ringCentroid(h.s.ring);
+    const ang = Math.atan2(c[1] - mainC[1], c[0] - mainC[0]);
+    const i = Math.floor(((ang + Math.PI) / (2 * Math.PI)) * sectors) % sectors;
+    buckets[i]!.push(h);
+  }
+  for (const b of buckets) b.sort((a, b) => a.d - b.d);
+  const picked: T[] = [];
+  const used = new Set<number>();
+  // Round-robin: nearest from each sector first, then keep filling by distance.
+  let guard = 0;
+  while (picked.length < cap && guard++ < hits.length + sectors) {
+    let added = false;
+    for (const b of buckets) {
+      if (picked.length >= cap) break;
+      const next = b.find((h) => !used.has(h.s.id));
+      if (!next) continue;
+      picked.push(next);
+      used.add(next.s.id);
+      added = true;
+    }
+    if (!added) break;
+  }
+  if (picked.length < cap) {
+    for (const h of [...hits].sort((a, b) => a.d - b.d)) {
+      if (picked.length >= cap) break;
+      if (used.has(h.s.id)) continue;
+      picked.push(h);
+      used.add(h.s.id);
+    }
+  }
+  return picked.sort((a, b) => a.d - b.d);
 }
 
 export type NeighborHeightInput = {
@@ -574,6 +694,52 @@ export function neighborShellHeight(input: NeighborHeightInput): number {
 
 function dist(a: Point, b: Point) {
   return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+
+/**
+ * True when an exterior wall segment is a party wall against a neighbor shell.
+ * Requires a nearby *parallel* neighbor edge (shared side), so front/back facades
+ * that only meet a neighbor at a corner keep their windows.
+ */
+export function wallAbutsNeighbor(
+  a: Point,
+  b: Point,
+  neighborRings: Point[][],
+  maxGapM = 1.15,
+): boolean {
+  const len = dist(a, b);
+  if (len < 0.5 || !neighborRings.length) return false;
+  const ux = (b[0] - a[0]) / len;
+  const uy = (b[1] - a[1]) / len;
+  const nx = -uy;
+  const ny = ux;
+  const mid: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+
+  for (const ring of neighborRings) {
+    if (ring.length < 3) continue;
+    const nc = ringCentroid(ring);
+    const toward = (nx * (nc[0] - mid[0]) + ny * (nc[1] - mid[1]) >= 0 ? 1 : -1) as 1 | -1;
+    // Sample just outside the wall, toward the neighbor — ignores corner-only contact.
+    const out: Point = [mid[0] + nx * toward * 0.45, mid[1] + ny * toward * 0.45];
+    if (distToRing(out, ring) > maxGapM && !pointInRing(out, ring)) continue;
+
+    for (let i = 0; i < ring.length; i++) {
+      const c = ring[i]!;
+      const d = ring[(i + 1) % ring.length]!;
+      const el = dist(c, d);
+      if (el < 0.5) continue;
+      const ex = (d[0] - c[0]) / el;
+      const ey = (d[1] - c[1]) / el;
+      // Party walls run along a shared edge — roughly parallel, not perpendicular (front/back).
+      if (Math.abs(ux * ex + uy * ey) < 0.92) continue;
+      // `ex,ey` is a unit direction — project meters along the edge, then clamp to [0, el].
+      const along = (mid[0] - c[0]) * ex + (mid[1] - c[1]) * ey;
+      const t = Math.max(0, Math.min(el, along));
+      const closest: Point = [c[0] + t * ex, c[1] + t * ey];
+      if (dist(mid, closest) <= maxGapM) return true;
+    }
+  }
+  return false;
 }
 
 export function ringCentroid(ring: Point[]): Point {
@@ -694,11 +860,11 @@ export function compoundReach(mainRing: Point[]): number {
  * How far a garage/shed may sit from the foundation edge (meters).
  * Stays below neighborReach so campus pads are not all "your garage".
  */
-export function accessoryReach(mainRing: Point[]): number {
+export function accessoryReach(mainRing: Point[], parcel?: Point[] | null): number {
   const ext = foundationExtent(mainRing);
-  const nbr = neighborReach(mainRing);
-  // ~45–110 m typical; stays below neighbor reach so campus pads aren't all "your garage".
-  return Math.min(nbr * 0.7, Math.max(45, ext * 1.85 + 22));
+  const nbr = neighborReach(mainRing, parcel);
+  // Garage/shed stay inside the plot-scaled neighbor disc.
+  return Math.min(nbr * 0.65, Math.max(28, ext * 1.45 + 14));
 }
 
 /** True when point is inside the foundation or within `r` meters of its outline. */
@@ -788,14 +954,15 @@ export function assembleCompound(site: {
   const main = site.mainRing.length >= 3 ? site.mainRing : null;
   const mainC: Point = main ? ringCentroid(main) : [0, 0];
   const streetDir = site.streetDir ?? null;
-  const neighborR = neighborReach(site.mainRing);
-  const accessoryR = accessoryReach(site.mainRing);
+  const parcel = site.parcel && site.parcel.length >= 3 ? site.parcel : null;
+  const neighborR = neighborReach(site.mainRing, parcel);
+  const accessoryR = accessoryReach(site.mainRing, parcel);
   const neighborCap = neighborShellCap(site.mainRing);
   const lotSoft = Math.min(6, Math.max(2.5, foundationExtent(site.mainRing) * 0.12));
   const maxOut = Math.max(120, Math.min(500, accessoryR * accessoryR * 0.12));
   const maxNeighborArea = Math.max(1200, Math.min(14000, foundationExtent(site.mainRing) * foundationExtent(site.mainRing) * 6));
   // Temporary disc until neighborHits land — then outdoorReach replaces this.
-  let outdoorReach = estimateNeighborCloudReach(site.mainRing);
+  let outdoorReach = estimateNeighborCloudReach(site.mainRing, parcel);
   let siteR = outdoorReach;
   let reach = outdoorReach;
   let inScene = (p: Point) => dist(p, mainC) <= outdoorReach;
@@ -868,23 +1035,26 @@ export function assembleCompound(site: {
   }
 
   // Dwellings within neighborReach of the focus foundation — attached, next-door, across the street.
-  const neighborHits = site.structures
-    .filter((s) => {
-      if (s.id === site.mainId || s.ring.length < 3) return false;
-      if (s.area > maxNeighborArea) return false;
-      const d = neighborDistance(main, mainC, s.ring);
-      if (d > neighborR) return false;
-      return isNeighborCandidate(s.tag, s.area, d);
-    })
-    .map((s) => ({
-      s,
-      d: neighborDistance(main, mainC, s.ring),
-    }))
-    .sort((a, b) => a.d - b.d)
-    .slice(0, neighborCap);
+  // Angular pick keeps the cloud centered on the house (not a one-sided campus cluster).
+  const neighborHits = pickNeighborHits(
+    site.structures
+      .filter((s) => {
+        if (s.id === site.mainId || s.ring.length < 3) return false;
+        if (s.area > maxNeighborArea) return false;
+        const d = neighborDistance(main, mainC, s.ring);
+        if (d > neighborR) return false;
+        return isNeighborCandidate(s.tag, s.area, d);
+      })
+      .map((s) => ({
+        s,
+        d: neighborDistance(main, mainC, s.ring),
+      })),
+    neighborCap,
+    mainC,
+  );
   const neighborRings = neighborHits.map((h) => h.s.ring);
   // Streets / fences / terrain / DEM share the disc implied by capped neighbor shells.
-  outdoorReach = neighborCloudReach(site.mainRing, neighborRings);
+  outdoorReach = neighborCloudReach(site.mainRing, neighborRings, parcel);
   siteR = outdoorReach;
   reach = outdoorReach;
   inScene = (p: Point) => dist(p, mainC) <= outdoorReach;

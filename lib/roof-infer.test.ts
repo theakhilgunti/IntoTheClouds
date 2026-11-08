@@ -185,3 +185,28 @@ test("decompose never returns a single twisted volume for an L", () => {
     assert.equal(p.length, 4, "each volume should be a rectangle");
   }
 });
+
+// 28 Bache Ave, Staten Island — concave 12-gon with bump-outs (OSM way 247747745).
+const bache: [number, number][] = [
+  [2.68, -5.41], [0.29, -2.89], [-1.23, -4.33], [-2.86, -2.6], [-4.44, -4.1], [-7.5, -0.86],
+  [-4.56, 1.94], [-6.1, 3.58], [0.84, 10.19], [5.86, 4.89], [5.36, 4.41], [8.98, 0.59],
+];
+
+test("jagged near-square pads like 28 Bache get one hip, not overlapping wing prisms", () => {
+  assert.equal(classifyFootprint(bache).kind, "L");
+  const parts = decomposeRoofVolumes(bache);
+  assert.ok(parts.length >= 2, "decompose still tries a split");
+  // Split is junk (leftover / over-pack) — infer must not mesh it as wings.
+  const plan = inferRoofPlan({ footprint: bache });
+  assert.equal(plan.kind, "hip");
+  assert.equal(plan.wings.length, 1);
+  assert.equal(plan.wings[0].shape, "hip");
+  const pos = buildRoofPositions(bache, {
+    shape: "hip",
+    ridgeAlong: plan.ridgeAlong,
+    height: plan.wings[0].height,
+    wings: plan.wings,
+  });
+  assert.ok(pos.length >= 24);
+  assert.ok(pos.every((n) => Number.isFinite(n)));
+});

@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useSheetNav } from "@/components/ui/SheetTransition";
 import { saveScan, recentScans, type SavedScan, type ScanQuery } from "@/lib/clientStore";
+import { isHeicFile, isImageUpload, toJpegFile } from "@/lib/heic";
 import { streamScan } from "@/lib/scanClient";
 import { STEP_LABELS, type StepKey } from "@/lib/sources";
 
@@ -20,9 +21,10 @@ type Suggestion = {
 const STEPS = Object.keys(STEP_LABELS) as StepKey[];
 const EXAMPLE = "Burdett Avenue Residence Hall, Troy, NY";
 
-/** Shrink a photo to <= maxSide px JPEG (keeps uploads small and fast). */
+/** Shrink a photo to <= maxSide px JPEG (keeps uploads small and fast). HEIC is decoded first. */
 async function shrink(file: File, maxSide: number, quality: number): Promise<Blob> {
-  const bmp = await createImageBitmap(file);
+  const raster = await toJpegFile(file);
+  const bmp = await createImageBitmap(raster);
   const s = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
   const c = document.createElement("canvas");
   c.width = Math.round(bmp.width * s);
@@ -141,12 +143,19 @@ export default function LocateForm() {
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
 
-  function pickFile(f: File | undefined) {
-    if (!f || !f.type.startsWith("image/")) return;
+  async function pickFile(f: File | undefined) {
+    if (!f || !isImageUpload(f)) return;
     if (preview) URL.revokeObjectURL(preview);
-    setFile(f);
-    setPreview(URL.createObjectURL(f));
+    setFile(f); // keep original so exifr can still read HEIC GPS
     setError(null);
+    try {
+      const forPreview = isHeicFile(f) ? await toJpegFile(f) : f;
+      setPreview(URL.createObjectURL(forPreview));
+    } catch {
+      setFile(null);
+      setPreview(null);
+      setError("Couldn't read that HEIC photo. Try exporting it as JPG, or take a new photo.");
+    }
   }
 
   function clearFile() {
@@ -207,7 +216,7 @@ export default function LocateForm() {
           form.append("photo", await shrink(file, 1280, 0.82), "house.jpg");
           thumb = await toDataUrl(await shrink(file, 360, 0.7));
         } catch {
-          throw new Error("This photo format can't be read here. Try a JPG or PNG, or take the photo with your camera.");
+          throw new Error("This photo format can't be read here. Try a JPG, PNG, or HEIC, or take the photo with your camera.");
         }
         if (ac.signal.aborted) throw new DOMException("Aborted", "AbortError");
         if (addr) {
@@ -421,10 +430,10 @@ export default function LocateForm() {
               <input
                 ref={fileRef}
                 type="file"
-                accept="image/*"
+                accept="image/*,.heic,.heif,image/heic,image/heif"
                 capture="environment"
                 className="sr-only"
-                onChange={(e) => pickFile(e.target.files?.[0])}
+                onChange={(e) => void pickFile(e.target.files?.[0])}
               />
             </label>
           )}

@@ -24,25 +24,115 @@ import {
   demHeightfieldBuffers,
   gradeHeight,
   outdoorReachFromNeighbors,
+  roadDeckHeight,
+  smoothHeightSeries,
   terrainGridLinePositions,
+  wallAbutsNeighbor,
 } from "@/lib/compound-geom";
 import { buildNav, routeToMarker, type Route } from "@/lib/route";
 // Model frame: x = east, y = north. Three.js frame: x = east, y = up, z = south.
 const toXZ = ([x, y]: Point): [number, number] => [x, -y];
 
-/** After Shape/Extrude + rotateX(-π/2), vertices sit on XZ (z = −modelY). Lift by lot grade / DEM. */
-function applyGradeToGeometry(geo: THREE.BufferGeometry, grade: LotGrade | null | undefined, extraY = 0) {
+/**
+ * After Shape/Extrude + rotateX(-π/2), vertices sit on XZ (z = −modelY). Lift by lot grade / DEM.
+ * Optional `damp` (0–1) scales relief around `pivot` so large dorms on ledges don't shear into glitchy walls.
+ */
+function applyGradeToGeometry(
+  geo: THREE.BufferGeometry,
+  grade: LotGrade | null | undefined,
+  extraY = 0,
+  opts?: { damp?: number; pivot?: Point },
+) {
   if (!grade) return geo;
   if (!grade.dem && grade.slope <= 0) return geo;
+  const damp = Math.max(0, Math.min(1, opts?.damp ?? 1));
+  const pivot = opts?.pivot;
+  const y0 = pivot ? gradeHeight(pivot, grade) : 0;
   const pos = geo.attributes.position;
   for (let i = 0; i < pos.count; i++) {
     const mx = pos.getX(i);
     const my = -pos.getZ(i);
-    pos.setY(i, pos.getY(i) + gradeHeight([mx, my], grade) + extraY);
+    const g = gradeHeight([mx, my], grade);
+    const lift = damp >= 0.999 ? g : y0 + (g - y0) * damp;
+    pos.setY(i, pos.getY(i) + lift + extraY);
   }
   pos.needsUpdate = true;
   geo.computeVertexNormals();
   return geo;
+}
+
+/** Footprint span from its own centroid + DEM relief — used to choose rigid vs hillside warp. */
+function footprintGradeFit(poly: Point[], grade: LotGrade | null | undefined) {
+  const n = poly.length || 1;
+  const c: Point = [
+    poly.reduce((s, p) => s + p[0], 0) / n,
+    poly.reduce((s, p) => s + p[1], 0) / n,
+  ];
+  const span = Math.max(6, ...poly.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1])));
+  const zs: number[] = [];
+  const sample = (p: Point) => zs.push(gradeHeight(p, grade));
+  for (const p of poly) sample(p);
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i]!;
+    const b = poly[(i + 1) % poly.length]!;
+    sample([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+  }
+  sample(c);
+  zs.sort((a, b) => a - b);
+  const sitY = zs[Math.floor(zs.length / 2)] ?? 0;
+  const relief = (zs[zs.length - 1] ?? 0) - (zs[0] ?? 0);
+  // Big / complex / cliffy footprints: keep walls vertical. Small gentle hills: allow slant.
+  const damp =
+    span > 30 || poly.length > 12 || relief > 2.4 ? 0 : relief > 1.2 ? 0.35 : 0.8;
+  return { c, span, sitY, relief, damp };
+}
+
+/**
+ * Street ribbon → triangle strip draped on DEM (left/right rails).
+ * Soft deck height + along-rail blur so DEM cell noise doesn't spike the asphalt.
+ */
+function roadStripGeometry(
+  poly: Point[],
+  grade: LotGrade | null | undefined,
+  yBias: number,
+  stepM = 6,
+): THREE.BufferGeometry | null {
+  if (poly.length !== 4) return null;
+  const [aL, bL, bR, aR] = poly;
+  const len = Math.hypot(bL[0] - aL[0], bL[1] - aL[1]);
+  if (len < 0.4) return null;
+  const step = Math.max(3, Math.min(10, stepM));
+  const n = Math.max(1, Math.ceil(len / step));
+  const left: Point[] = [];
+  const right: Point[] = [];
+  const yL: number[] = [];
+  const yR: number[] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const L: Point = [aL[0] + (bL[0] - aL[0]) * t, aL[1] + (bL[1] - aL[1]) * t];
+    const R: Point = [aR[0] + (bR[0] - aR[0]) * t, aR[1] + (bR[1] - aR[1]) * t];
+    left.push(L);
+    right.push(R);
+    yL.push(roadDeckHeight(L, grade));
+    yR.push(roadDeckHeight(R, grade));
+  }
+  const sL = smoothHeightSeries(yL, 2);
+  const sR = smoothHeightSeries(yR, 2);
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (let i = 0; i <= n; i++) {
+    positions.push(left[i]![0], sL[i]! + yBias, -left[i]![1], right[i]![0], sR[i]! + yBias, -right[i]![1]);
+  }
+  for (let i = 0; i < n; i++) {
+    const i0 = i * 2;
+    // CCW from above (y-up) so FrontSide stays visible.
+    indices.push(i0, i0 + 2, i0 + 1, i0 + 1, i0 + 2, i0 + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
 }
 
 function LabelSprite({
@@ -244,7 +334,21 @@ function roomBeside(wall: Wall, floor: Floor, mid: Point): Room | null {
   return null;
 }
 
-function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; floor: Floor; xray: boolean; passPointer: boolean; assumed: boolean }) {
+function WallMesh({
+  wall,
+  floor,
+  xray,
+  passPointer,
+  assumed,
+  neighborRings,
+}: {
+  wall: Wall;
+  floor: Floor;
+  xray: boolean;
+  passPointer: boolean;
+  assumed: boolean;
+  neighborRings: Point[][];
+}) {
   const [ax, ay] = wall.a;
   const [bx, by] = wall.b;
   const len = Math.hypot(bx - ax, by - ay);
@@ -265,7 +369,11 @@ function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; flo
         const [x, z] = toXZ([ax + ux * mid, ay + uy * mid]);
         const segLen = e - s;
         const segMid: Point = [ax + ux * mid, ay + uy * mid];
-        const beside = showWindows ? roomBeside(wall, floor, segMid) : null;
+        // Mid-terrace party walls share a parallel side edge — no windows into the neighbor.
+        const segParty =
+          showWindows &&
+          wallAbutsNeighbor([ax + ux * s, ay + uy * s], [ax + ux * e, ay + uy * e], neighborRings);
+        const beside = showWindows && !segParty ? roomBeside(wall, floor, segMid) : null;
         const budget = beside ? WINDOW_FOR[beside.type] : null;
         const nWin = budget ? Math.max(0, Math.min(budget.max, Math.floor((segLen - 0.5) / budget.every))) : 0;
         const winH = budget?.h ?? 1.1;
@@ -299,6 +407,16 @@ function WallMesh({ wall, floor, xray, passPointer, assumed }: { wall: Wall; flo
       })}
       {doors
         .filter((d) => d.exit)
+        .filter((d) => {
+          const along = d.t * len;
+          const p: Point = [ax + ux * along, ay + uy * along];
+          const span = Math.min(0.6, len * 0.2);
+          return !wallAbutsNeighbor(
+            [p[0] - ux * span, p[1] - uy * span],
+            [p[0] + ux * span, p[1] + uy * span],
+            neighborRings,
+          );
+        })
         .map((d) => {
           const along = d.t * len;
           const [x, z] = toXZ([ax + ux * along, ay + uy * along]);
@@ -480,7 +598,11 @@ const LAYER_ORDER: Record<string, number> = {
   steps: 7,
 };
 
-function groundMat(color: string, hovered: boolean, opts?: { transparent?: boolean; opacity?: number; offset?: number; noHover?: boolean }) {
+function groundMat(
+  color: string,
+  hovered: boolean,
+  opts?: { transparent?: boolean; opacity?: number; offset?: number; noHover?: boolean; doubleSide?: boolean },
+) {
   const lit = hovered && !opts?.noHover;
   return (
     <meshStandardMaterial
@@ -490,7 +612,7 @@ function groundMat(color: string, hovered: boolean, opts?: { transparent?: boole
       roughness={0.95}
       transparent={opts?.transparent}
       opacity={opts?.opacity ?? 1}
-      side={THREE.FrontSide}
+      side={opts?.doubleSide ? THREE.DoubleSide : THREE.FrontSide}
       depthWrite={!(opts?.transparent && (opts.opacity ?? 1) < 1)}
       polygonOffset
       polygonOffsetFactor={opts?.offset ?? -1}
@@ -593,14 +715,17 @@ function NeighborMesh({
   grade?: LotGrade | null;
 }) {
   const wallH = Math.max(3.5, Math.min(14, feature.height || 5.5));
+  // Full per-vertex DEM warp shears big footprints (Burdett-scale) over ledges into floating corners
+  // and crumpled walls. Damp or rigid-sit from median grade; small houses still pitch gently.
+  const fit = useMemo(() => footprintGradeFit(feature.polygon, grade), [feature.polygon, grade]);
   const geo = useMemo(() => {
     if (feature.polygon.length < 3) return null;
     const shape = new THREE.Shape(feature.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
     const g = new THREE.ExtrudeGeometry(shape, { depth: wallH, bevelEnabled: false, steps: 1 });
     g.rotateX(-Math.PI / 2);
-    applyGradeToGeometry(g, grade);
+    if (fit.damp > 0) applyGradeToGeometry(g, grade, 0, { damp: fit.damp, pivot: fit.c });
     return g;
-  }, [feature.polygon, wallH, grade]);
+  }, [feature.polygon, wallH, grade, fit]);
   if (!geo) return null;
   const hasAddr = feature.label && feature.label !== "Neighbor" && feature.label !== "Nearby house";
   const hover = (e: ThreeEvent<PointerEvent>) => {
@@ -612,8 +737,9 @@ function NeighborMesh({
       hasAddr ? "Neighbor address from OpenStreetMap" : "Nearby building — address not mapped",
     );
   };
+  const sitY = fit.damp <= 0 ? fit.sitY : 0;
   return (
-    <mesh geometry={geo} position={[0, 0, 0]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
+    <mesh geometry={geo} position={[0, sitY, 0]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
       <meshStandardMaterial
         color={hovered ? "#c5d6f4" : SITE_COLOR.neighbor}
         transparent
@@ -644,11 +770,7 @@ function OutbuildingMesh({
 }) {
   const wallH = Math.max(2.2, feature.height || 2.6);
   const roofH = Math.min(2.2, Math.max(1.1, wallH * 0.35));
-  const baseY = useMemo(() => {
-    const n = feature.polygon.length || 1;
-    const c = feature.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]] as Point, [0, 0] as Point);
-    return gradeHeight([c[0] / n, c[1] / n], grade);
-  }, [feature.polygon, grade]);
+  // Per-edge grade so garage/shed walls step with the hill instead of floating on one sit height.
   const walls = useMemo(() => {
     const ring = feature.polygon;
     const out: { key: string; pos: [number, number, number]; rot: number; len: number }[] = [];
@@ -657,11 +779,18 @@ function OutbuildingMesh({
       const b = ring[(i + 1) % ring.length];
       const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
       if (len < 0.15) continue;
-      const [x, z] = toXZ([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
-      out.push({ key: `${i}`, pos: [x, baseY + wallH / 2, z], rot: Math.atan2(b[1] - a[1], b[0] - a[0]), len });
+      const mid: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      const [x, z] = toXZ(mid);
+      const y = gradeHeight(mid, grade) + wallH / 2;
+      out.push({ key: `${i}`, pos: [x, y, z], rot: Math.atan2(b[1] - a[1], b[0] - a[0]), len });
     }
     return out;
-  }, [feature.polygon, wallH, baseY]);
+  }, [feature.polygon, wallH, grade]);
+  const baseY = useMemo(() => {
+    const n = feature.polygon.length || 1;
+    const c = feature.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]] as Point, [0, 0] as Point);
+    return gradeHeight([c[0] / n, c[1] / n], grade);
+  }, [feature.polygon, grade]);
   const roofGeo = useMemo(() => {
     const poly = feature.polygon as Pt[];
     if (poly.length < 3) return null;
@@ -839,8 +968,13 @@ function SiteFeatureMesh({
 
   const stepRiser = 0.16;
   const isBuildingPad = feature.kind === "terrain" && feature.id !== "terrain-radius";
-  // Roads/driveways are coarse quads — vertex-warp against DEM twists them underground. Lift rigid.
+  // Street ribbons + simple driveway quads drape on DEM; complex parking stays a rigid plate.
   const isRoadSurface = feature.kind === "road" || feature.kind === "driveway";
+  const roadFollowsGrade =
+    !!grade &&
+    (!!grade.dem || grade.slope > 0) &&
+    (feature.kind === "road" || (feature.kind === "driveway" && feature.polygon.length <= 6));
+  const stripStep = grade?.dem ? Math.max(4, Math.min(8, grade.dem.cell * 0.4)) : 8;
   const slabGeo = useMemo(() => {
     if (
       feature.kind === "trees" ||
@@ -859,6 +993,10 @@ function SiteFeatureMesh({
       g.rotateX(-Math.PI / 2);
       return g;
     }
+    if (roadFollowsGrade) {
+      const strip = roadStripGeometry(feature.polygon, grade, slabY, stripStep);
+      if (strip) return strip;
+    }
     const simplified =
       feature.polygon.length > 24
         ? feature.polygon.filter((_, i) => i % Math.ceil(feature.polygon.length / 16) === 0)
@@ -874,12 +1012,22 @@ function SiteFeatureMesh({
     }
     const g = new THREE.ShapeGeometry(shape);
     g.rotateX(-Math.PI / 2);
-    // Building pads + street/drive slabs: keep flat and lift as a rigid plate. Vertex-warping a
-    // coarse outline / long ribbon against a DEM produces twisted "cheese" that vanishes into terrain.
+    // Building pads + complex parking: flat plate. Street strips already baked DEM heights.
     if (isBuildingPad || isRoadSurface) return g;
     applyGradeToGeometry(g, grade);
     return g;
-  }, [feature.kind, feature.polygon, feature.height, grade, stepRiser, isBuildingPad, isRoadSurface]);
+  }, [
+    feature.kind,
+    feature.polygon,
+    feature.height,
+    grade,
+    stepRiser,
+    isBuildingPad,
+    isRoadSurface,
+    roadFollowsGrade,
+    slabY,
+    stripStep,
+  ]);
 
   const hover = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
@@ -1043,14 +1191,16 @@ function SiteFeatureMesh({
             : feature.kind === "pool"
               ? -3
               : -1;
-  // Main house pad stays at slab level (DEM is relative to y=0). Neighbor pads + streets ride DEM as flat plates.
+  // Main house pad stays at slab level (DEM is relative to y=0). DEM street strips bake height into verts.
   const padY = isBuildingPad
     ? feature.id === "terrain-main"
       ? slabY
       : slabY + gy
-    : isRoadSurface
-      ? slabY + gy
-      : slabY;
+    : roadFollowsGrade
+      ? 0
+      : isRoadSurface
+        ? slabY + roadDeckHeight(centerModel, grade)
+        : slabY;
   const drawOrder = LAYER_ORDER[feature.kind] ?? 1;
   return (
     <mesh
@@ -1073,6 +1223,7 @@ function SiteFeatureMesh({
                   : 0.7
               : 1,
         offset,
+        doubleSide: roadFollowsGrade,
         noHover: feature.kind === "yard" || feature.id === "terrain-radius" || feature.id === "terrain-apron" || feature.id === "terrain-main",
       })}
     </mesh>
@@ -1161,9 +1312,70 @@ function RoofMesh({ roof, footprint, baseY, xray }: { roof: Roof; footprint: Poi
   );
 }
 
+/** Wall-mounted breaker cabinet — used for electrical-panel shutoffs. */
+function ElectricalPanelMesh({ label }: { label: string }) {
+  return (
+    <group>
+      <mesh position={[0, 0.85, 0]}>
+        <boxGeometry args={[0.55, 0.95, 0.18]} />
+        <meshStandardMaterial color="#374151" roughness={0.55} metalness={0.35} />
+      </mesh>
+      <mesh position={[0, 0.85, 0.1]}>
+        <boxGeometry args={[0.42, 0.72, 0.04]} />
+        <meshStandardMaterial color="#111827" roughness={0.7} />
+      </mesh>
+      {/* Door latch */}
+      <mesh position={[0.2, 0.85, 0.14]}>
+        <boxGeometry args={[0.06, 0.12, 0.04]} />
+        <meshStandardMaterial color="#9ca3af" metalness={0.6} roughness={0.35} />
+      </mesh>
+      <group position={[0, 1.55, 0]}>
+        <LabelSprite text={label} color="#f97316" scale={[1.35, 0.32, 1]} />
+      </group>
+    </group>
+  );
+}
+
+/** Street-side gas meter + valve. */
+function GasMeterMesh({ label }: { label: string }) {
+  return (
+    <group>
+      <mesh position={[0, 0.35, 0]}>
+        <cylinderGeometry args={[0.18, 0.2, 0.45, 12]} />
+        <meshStandardMaterial color="#d1d5db" metalness={0.45} roughness={0.4} />
+      </mesh>
+      <mesh position={[0, 0.7, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.08, 0.08, 0.22, 10]} />
+        <meshStandardMaterial color="#6b7280" metalness={0.5} roughness={0.35} />
+      </mesh>
+      <mesh position={[0.18, 0.7, 0]}>
+        <boxGeometry args={[0.08, 0.14, 0.08]} />
+        <meshStandardMaterial color="#f97316" roughness={0.45} />
+      </mesh>
+      <group position={[0, 1.2, 0]}>
+        <LabelSprite text={label} color="#f97316" scale={[1.4, 0.32, 1]} />
+      </group>
+    </group>
+  );
+}
+
+/** Short yellow gas pipe stub under a GAS hazard pin. */
+function GasLineStub() {
+  return (
+    <mesh position={[0, 0.12, 0]} rotation={[0, 0, Math.PI / 2]}>
+      <cylinderGeometry args={[0.045, 0.045, 0.55, 8]} />
+      <meshStandardMaterial color="#a3e635" emissive="#65a30d" emissiveIntensity={0.35} roughness={0.5} />
+    </mesh>
+  );
+}
+
 function MarkerPin({ marker, onDelete }: { marker: Marker; onDelete: (id: string) => void }) {
   const style = MARKER_STYLE[marker.type];
   const [x, z] = toXZ(marker.pos);
+  const note = marker.note.toLowerCase();
+  const isElecPanel = marker.type === "shutoff" && /electric|panel|breaker|subpanel/.test(note);
+  const isGasMeter = marker.type === "shutoff" && /gas/.test(note);
+  const label = isElecPanel ? "PANEL" : isGasMeter ? "GAS METER" : style.label;
   return (
     <group
       position={[x, 0, z]}
@@ -1179,14 +1391,85 @@ function MarkerPin({ marker, onDelete }: { marker: Marker; onDelete: (id: string
         document.body.style.cursor = "";
       }}
     >
-      <mesh position={[0, 0.6, 0]}>
-        <coneGeometry args={[0.35, 1.2, 16]} />
-        <meshStandardMaterial color={style.color} emissive={style.color} emissiveIntensity={0.8} />
-      </mesh>
-      <group position={[0, 1.55, 0]}>
-        <LabelSprite text={style.label} color={style.color} scale={[1.2, 0.32, 1]} />
-      </group>
+      {isElecPanel ? (
+        <ElectricalPanelMesh label={label} />
+      ) : isGasMeter ? (
+        <GasMeterMesh label={label} />
+      ) : (
+        <>
+          {marker.type === "gas" && <GasLineStub />}
+          <mesh position={[0, 0.6, 0]}>
+            <coneGeometry args={[0.35, 1.2, 16]} />
+            <meshStandardMaterial color={style.color} emissive={style.color} emissiveIntensity={0.8} />
+          </mesh>
+          <group position={[0, 1.55, 0]}>
+            <LabelSprite text={label} color={style.color} scale={[1.2, 0.32, 1]} />
+          </group>
+        </>
+      )}
     </group>
+  );
+}
+
+/** Connect ordered gas-line markers into a continuous service run (demo / pinned paths). */
+function GasServiceLines({
+  markers,
+  floors,
+  floorY,
+  hidden,
+}: {
+  markers: Marker[];
+  floors: Floor[];
+  floorY: (f: Floor) => number;
+  hidden: Set<number>;
+}) {
+  const segs = useMemo(() => {
+    // Prefer explicit *-gas-line-* ordering (demo house); else note-matched gas pins.
+    const ordered = markers
+      .filter((m) => m.type === "gas" && m.id.includes("gas-line"))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const nodes = markers
+      .filter(
+        (m) =>
+          m.type === "gas" &&
+          (/gas (service )?line|furnace|meter/.test(m.note.toLowerCase()) || m.id.includes("gas-line")),
+      )
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const run = ordered.length >= 2 ? ordered : nodes;
+    const out: { key: string; a: THREE.Vector3; b: THREE.Vector3 }[] = [];
+    for (let i = 0; i < run.length - 1; i++) {
+      const m0 = run[i]!;
+      const m1 = run[i + 1]!;
+      const f0 = floors.find((f) => f.level === m0.floor);
+      const f1 = floors.find((f) => f.level === m1.floor);
+      if (!f0 || !f1 || hidden.has(m0.floor) || hidden.has(m1.floor)) continue;
+      const [x0, z0] = toXZ(m0.pos);
+      const [x1, z1] = toXZ(m1.pos);
+      out.push({
+        key: `${m0.id}-${m1.id}`,
+        a: new THREE.Vector3(x0, floorY(f0) + 0.18, z0),
+        b: new THREE.Vector3(x1, floorY(f1) + 0.18, z1),
+      });
+    }
+    return out;
+  }, [markers, floors, floorY, hidden]);
+
+  return (
+    <>
+      {segs.map((s) => {
+        const dir = new THREE.Vector3().subVectors(s.b, s.a);
+        const len = dir.length();
+        if (len < 0.05) return null;
+        const mid = new THREE.Vector3().addVectors(s.a, s.b).multiplyScalar(0.5);
+        const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+        return (
+          <mesh key={s.key} position={mid.toArray() as [number, number, number]} quaternion={quat}>
+            <cylinderGeometry args={[0.04, 0.04, len, 8]} />
+            <meshStandardMaterial color="#a3e635" emissive="#65a30d" emissiveIntensity={0.45} roughness={0.45} />
+          </mesh>
+        );
+      })}
+    </>
   );
 }
 
@@ -1355,6 +1638,9 @@ export default function Viewer({
   const [marksOpen, setMarksOpen] = useState(false);
   const [help, setHelp] = useState<string | null>(null);
   const [markers, setMarkers] = useState<Marker[]>(model.markers);
+  useEffect(() => {
+    setMarkers(model.markers);
+  }, [model.id, model.markers]);
   const assumed = model.interior?.status !== "verified";
   const wrap = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<OrbitControlsImpl>(null);
@@ -1364,6 +1650,7 @@ export default function Viewer({
   const polarFromTilt = (t: number) => MAX_POLAR - Math.min(1, Math.max(0, t)) * (MAX_POLAR - MIN_POLAR);
   const tiltFromPolar = (p: number) => (MAX_POLAR - p) / (MAX_POLAR - MIN_POLAR);
   const frontYaw = useMemo(() => streetFrontYaw(model), [model]);
+  const lotGrade = model.compound?.grade ?? null;
   const [orbitYaw, setOrbitYaw] = useState(0);
   const [tiltAmt, setTiltAmt] = useState(0.42);
   const applyingOrbit = useRef(false);
@@ -1433,13 +1720,17 @@ export default function Viewer({
     });
   }, [model.compound?.features]);
   const beaconHydrantIds = useMemo(() => new Set(beaconHydrants.map((f) => f.id)), [beaconHydrants]);
+  const neighborRings = useMemo(
+    () => (model.compound?.features ?? []).filter((f) => f.kind === "neighbor").map((f) => f.polygon),
+    [model.compound?.features],
+  );
   // Basement open with ground floor gone → clear the yard/ground disc that sat on top of it.
   const peeringBasement = shown.some((f) => f.level < 0) && !shown.some((f) => f.level >= 0);
 
   // Frame the camera on the house, whatever its size.
   const { camPos, target, extent, minDist, maxDist, camNear, camFar, largeSite, rotateSpeed } = useMemo(() => {
-    // Don't let distant hydrants/roads pull the camera to a city-block zoom — beacons then look like pins.
-    const frameKinds = new Set(["yard", "garage", "shed", "neighbor", "driveway", "patio", "pool", "fence", "trees", "terrain"]);
+    // Don't let distant hydrants/roads/terrain disc pull the camera off the focus house.
+    const frameKinds = new Set(["yard", "garage", "shed", "neighbor", "driveway", "patio", "pool", "fence", "trees"]);
     const pts = [
       ...model.floors.flatMap((f) => f.walls.flatMap((w) => [w.a, w.b])),
       ...(model.compound?.features
@@ -1447,11 +1738,14 @@ export default function Viewer({
         .flatMap((f) => f.polygon) ?? []),
       ...model.footprint,
     ];
-    const ext = Math.max(6, ...pts.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y))));
+    // Cap framing radius so a one-sided neighbor cluster doesn't yank the view off-center.
+    const houseExt = Math.max(6, ...model.footprint.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y))), 8);
+    const rawExt = Math.max(6, ...pts.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y))));
+    const ext = Math.min(rawExt, Math.max(houseExt * 4.5, 48));
     const roomCount = model.floors.reduce((n, f) => n + f.rooms.length, 0);
     const large = ext > 35 || roomCount > 10;
     const height = top.elevation + top.height + (model.roof?.height ?? 0);
-    const demR = demExtent(model.compound?.grade);
+    const demR = demExtent(lotGrade);
     const relief = demR ? Math.max(Math.abs(demR.min), Math.abs(demR.max), demR.max - demR.min) : 0;
     // Portrait screens see less width, so back the camera off further.
     const portrait = typeof window !== "undefined" && window.innerHeight > window.innerWidth;
@@ -1479,7 +1773,7 @@ export default function Viewer({
       // Slower rotate on big sites so drag doesn't feel twitchy.
       rotateSpeed: large ? Math.max(1.4, Math.min(2.6, 70 / ext)) : 3.4,
     };
-  }, [model, top]);
+  }, [model, top, lotGrade]);
 
   useEffect(() => {
     const c = controlsRef.current;
@@ -1732,7 +2026,6 @@ export default function Viewer({
 
         {(() => {
           const feats = model.compound?.features ?? [];
-          const lotGrade = model.compound?.grade ?? null;
           const hasDem = !!lotGrade?.dem;
           // Outside lot/yard pad + base disc stay off — keep streets, pads, and structures.
           // No solid house pad (grid/DEM convey grade). With DEM, also skip coarse radius + neighbor pads.
@@ -1801,7 +2094,7 @@ export default function Viewer({
               feature={feature}
               beacon
               beaconRank={rank}
-              grade={model.compound?.grade ?? null}
+              grade={lotGrade}
               hovered={tip?.id === feature.id}
               onOver={(e, id, title) =>
                 showTip(
@@ -1876,7 +2169,15 @@ export default function Viewer({
               ))
             )}
             {floor.walls.map((wall) => (
-              <WallMesh key={wall.id} wall={wall} floor={floor} xray={xray} passPointer={!tool} assumed={assumed} />
+              <WallMesh
+                key={wall.id}
+                wall={wall}
+                floor={floor}
+                xray={xray}
+                passPointer={!tool}
+                assumed={assumed}
+                neighborRings={neighborRings}
+              />
             ))}
             {markers
               .filter((m) => m.floor === floor.level)
@@ -1917,16 +2218,18 @@ export default function Viewer({
           <RoofMesh roof={model.roof!} footprint={model.footprint} baseY={floorY(top) + top.height} xray={xray} />
         )}
 
+        <GasServiceLines markers={markers} floors={model.floors} floorY={floorY} hidden={hidden} />
+
         <TerrainGrid
-          grade={model.compound?.grade ?? null}
+          grade={lotGrade}
           size={
             outdoorReachFromNeighbors(model.footprint, model.compound?.features ?? []) * 2
           }
           divisions={Math.max(
             20,
             Math.min(
-              40,
-              Math.round(outdoorReachFromNeighbors(model.footprint, model.compound?.features ?? []) / 6),
+              48,
+              Math.round(outdoorReachFromNeighbors(model.footprint, model.compound?.features ?? []) / 5),
             ),
           )}
         />

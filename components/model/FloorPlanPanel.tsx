@@ -1,13 +1,15 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { toJpegFile } from "@/lib/heic";
 import type { BuildingModel, Point } from "@/packages/schema/building-model";
 
 const LEVEL_NAMES: Record<number, string> = { [-1]: "Basement", 0: "1st Floor", 1: "2nd Floor", 2: "3rd Floor" };
 
-/** Shrink a plan photo so it fits the server's request limit and uploads fast. */
+/** Shrink a plan photo so it fits the server's request limit and uploads fast. HEIC is decoded first. */
 async function shrink(file: File): Promise<Blob> {
-  const bmp = await createImageBitmap(file);
+  const raster = await toJpegFile(file);
+  const bmp = await createImageBitmap(raster);
   const scale = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
   const c = document.createElement("canvas");
   c.width = Math.round(bmp.width * scale);
@@ -67,7 +69,7 @@ export default function FloorPlanPanel({
       }
     } catch {
       setProblems([
-        "Couldn't read that file. Use a CubiCasa / CubiCasa5K SVG, or a clear photo of the floor plan (JPEG, PNG or WebP).",
+        "Couldn't read that file. Use a CubiCasa / CubiCasa5K SVG, or a clear photo of the floor plan (JPEG, PNG, WebP, or HEIC).",
       ]);
     } finally {
       setBusy(false);
@@ -104,7 +106,7 @@ export default function FloorPlanPanel({
         <input
           ref={input}
           type="file"
-          accept="image/jpeg,image/png,image/webp,image/svg+xml,.svg"
+          accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif,image/svg+xml,.svg"
           className="hidden"
           onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
         />
