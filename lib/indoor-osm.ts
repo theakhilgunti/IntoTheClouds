@@ -6,6 +6,7 @@ import type { BuildingModel, Point, RoomType } from "@/packages/schema/building-
 import { toLocal, type LatLng } from "./geo";
 import { signedArea } from "./outline";
 import { overlayIndoorOnModel as overlayLite, type IndoorRoomLite } from "./indoor-overlay";
+import { geoCacheKey, ttlGet, ttlSet } from "./ttl-cache";
 
 const ENDPOINTS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
 const UA = "CloudScan-HackRPI/0.1 (hackathon project)";
@@ -60,6 +61,10 @@ function closeRing(pts: Point[]): Point[] {
 
 /** Overpass query for Simple Indoor ways around a point. */
 export async function fetchIndoorRooms(origin: LatLng, radius = 60): Promise<IndoorRoom[]> {
+  const cacheKey = `${geoCacheKey(origin.lat, origin.lng)}|${Math.round(radius)}`;
+  const cached = ttlGet<IndoorRoom[]>("osm-indoor", cacheKey);
+  if (cached) return cached;
+
   const q = `[out:json][timeout:45];
 (
   way["indoor"~"^(room|corridor|area|level)$"](around:${radius},${origin.lat},${origin.lng});
@@ -97,12 +102,14 @@ out tags geom;`;
           ring,
         });
       }
+      ttlSet("osm-indoor", cacheKey, out);
       return out;
     } catch (e) {
       lastErr = e;
     }
   }
   console.warn("OSM indoor fetch failed", lastErr);
+  ttlSet("osm-indoor", cacheKey, [], 5 * 60 * 1000);
   return [];
 }
 

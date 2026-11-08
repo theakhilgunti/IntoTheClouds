@@ -135,6 +135,77 @@ describe("street and driveway", () => {
     }
   });
 
+  it("drops street chunks that cut through the house footprint", () => {
+    const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const features = accessFeatures({
+      footprint: house,
+      streetDir: [0, -1],
+      // Centerline runs straight through the house slab.
+      roads: [{ name: "Through Street", pts: [[0, -40], [0, 40]] }],
+      garage: null,
+      avoidRings: [house],
+    });
+    const roads = features.filter((f) => f.kind === "road");
+    assert.ok(roads.length >= 1, "street should still draw outside the house");
+    for (const r of roads) {
+      const c = r.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]] as [number, number], [0, 0] as [number, number]);
+      const mid: [number, number] = [c[0] / 4, c[1] / 4];
+      assert.ok(!pointInRing(mid, house), `road chunk center ${mid} must not sit inside the house`);
+    }
+  });
+
+  it("drops long mapped fence segments that would shoot past the scene disc", () => {
+    const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const { features, outdoorReach } = assembleCompound({
+      mainId: 1,
+      mainRing: house,
+      structures: [],
+      fences: [
+        // Sparse OSM barrier — one edge spans hundreds of meters.
+        [[-200, 20], [200, 20]],
+        // Short local fence inside the disc.
+        [[6, -2], [10, -2]],
+      ],
+      pools: [],
+      parking: [],
+      parcel: null,
+      aerial: [],
+      mainEaveHeight: 6,
+      streetDir: [0, -1],
+      trees: [],
+    });
+    const fences = features.filter((f) => f.kind === "fence" && f.source === "map");
+    assert.ok(
+      fences.every((f) => {
+        const c = f.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]] as [number, number], [0, 0] as [number, number]);
+        return Math.hypot(c[0] / 4, c[1] / 4) <= outdoorReach + 0.5;
+      }),
+      "mapped fences must stay inside the grid disc",
+    );
+    assert.ok(
+      !fences.some((f) => {
+        const xs = f.polygon.map((p) => p[0]);
+        return Math.max(...xs) - Math.min(...xs) > 40;
+      }),
+      "hundred-meter OSM fence edges must not render as one ribbon",
+    );
+  });
+
+  it("keeps curb-side streets that pass beside houses (not through them)", () => {
+    const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const neighbor: [number, number][] = [[12, -4], [22, -4], [22, 4], [12, 4]];
+    const features = accessFeatures({
+      footprint: house,
+      streetDir: [0, -1],
+      // Street south of both pads — close to the curb but not inside.
+      roads: [{ name: "Curb Street", pts: [[-40, -6], [40, -6]] }],
+      garage: null,
+      avoidRings: [house, neighbor],
+    });
+    const roads = features.filter((f) => f.kind === "road" && f.label === "Curb Street");
+    assert.ok(roads.length >= 3, `curb street should render, got ${roads.length}`);
+  });
+
   it("places the nearest mapped fire hydrants around the house", () => {
     const house: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
     const R = roadReach(house);
@@ -173,8 +244,8 @@ describe("street and driveway", () => {
     assert.ok(accessoryReach(house) >= 18, "garage/shed still has a usable lot radius");
     assert.ok(accessoryReach(house) < neighborReach(house), "garage/shed lot radius stays tighter than neighbors");
     assert.ok(accessoryReach(house) < accessoryReach(campus), "small houses keep accessories closer");
-    assert.equal(neighborShellCap(house), 15);
-    assert.equal(neighborShellCap(campus), 15);
+    assert.equal(neighborShellCap(house), 20);
+    assert.equal(neighborShellCap(campus), 20);
     assert.ok(neighborShellCap(campus) <= MAX_NEIGHBOR_SHELLS);
     assert.ok(roadRibbonCap(campus) > neighborShellCap(campus), "streets keep more runs than neighbor shells");
     assert.ok(neighborReach(campus) < siteReach(campus) * 0.5, "large complexes stay well inside siteReach");
@@ -192,8 +263,15 @@ describe("street and driveway", () => {
     assert.ok(cloud >= estH, "cloud never shrinks below cap-based estimate");
     const outdoor = outdoorReachFromNeighbors(house, [{ kind: "neighbor", polygon: farNbr }]);
     assert.equal(outdoor, outdoorSceneReach(house, [farNbr]));
-    assert.ok(outdoor >= cloud, "outdoor disc never shrinks below neighbor cloud");
-    assert.equal(outdoor, roadReach(house), "outdoor disc follows roadReach so streets/signs stay");
+    assert.ok(outdoor >= cloud * 0.85, "outdoor disc stays near neighbor cloud after mild foundation scale");
+    assert.ok(
+      outdoor === Math.round(Math.max(cloud, roadReach(house)) * (0.9 + 0.2 * Math.min(1, Math.max(0, (Math.hypot(5, 4) - 10) / 50)))),
+      "outdoor disc = max(cloud, roadReach) × mild foundation scale",
+    );
+    assert.ok(
+      outdoorSceneReach(campus, []) > outdoorSceneReach(house, []),
+      "larger foundation gets a mildly wider scene/grid disc",
+    );
     // Compact tax lot keeps the obstacle disc smaller than a campus footprint.
     const compactLot: [number, number][] = [[-9, -7], [9, -7], [9, 7], [-9, 7]];
     assert.ok(neighborReach(house, compactLot) < neighborReach(campus));

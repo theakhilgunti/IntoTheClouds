@@ -2198,14 +2198,27 @@ export default function Viewer({
         {(() => {
           const feats = model.compound?.features ?? [];
           const hasDem = !!lotGrade?.dem;
+          const sceneR = outdoorReachFromNeighbors(model.footprint, feats);
+          const inGrid = (poly: Point[]) => {
+            if (!poly.length) return false;
+            let sx = 0;
+            let sy = 0;
+            for (const p of poly) {
+              sx += p[0];
+              sy += p[1];
+            }
+            return Math.hypot(sx / poly.length, sy / poly.length) <= sceneR + 0.75;
+          };
           // Outside lot/yard pad + base disc stay off — keep streets, pads, and structures.
           // No solid house pad (grid/DEM convey grade). With DEM, also skip coarse radius + neighbor pads.
+          // Hard rule: nothing draws outside the reference grid disc.
           const noYard = feats.filter(
             (f) =>
               f.kind !== "yard" &&
               f.id !== "terrain-main" &&
               !(hasDem && f.id === "terrain-radius") &&
-              !(hasDem && f.id.startsWith("terrain-nbr")),
+              !(hasDem && f.id.startsWith("terrain-nbr")) &&
+              (f.id === "terrain-radius" || inGrid(f.polygon)),
           );
           // Draw terrain first so pads sit under structures.
           const ordered = [...noYard].sort((a, b) => Number(a.kind !== "terrain") - Number(b.kind !== "terrain"));

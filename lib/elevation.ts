@@ -5,6 +5,7 @@
 import { fromLocal, type LatLng } from "./geo";
 import type { Point } from "@/packages/schema/building-model";
 import type { DemGrid, LotGrade } from "./compound-geom";
+import { geoCacheKey, ttlGet, ttlSet } from "./ttl-cache";
 
 export type { DemGrid };
 
@@ -21,7 +22,7 @@ async function fetchOpenTopoBatch(points: LatLng[], dataset: string): Promise<(n
   if (!points.length) return [];
   const out: (number | null)[] = new Array(points.length).fill(null);
   for (let start = 0; start < points.length; start += BATCH) {
-    if (start > 0) await sleep(1100); // free tier ~1 req/s
+    if (start > 0) await sleep(1050); // free tier ~1 req/s
     const slice = points.slice(start, start + BATCH);
     const locs = slice.map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join("|");
     const url = `${OPENTOPO}/${dataset}?locations=${encodeURIComponent(locs)}`;
@@ -93,9 +94,14 @@ export async function fetchSiteDem(opts: {
   /** Grid spacing in meters. */
   cellM?: number;
 }): Promise<DemGrid | null> {
-  // Dense enough to read hills, sparse enough for OpenTopo batches.
-  const cell = Math.max(12, Math.min(30, opts.cellM ?? 18));
+  // Aim for ≤ ~169 samples (~2 OpenTopo batches) so free-tier rate limits stay short.
   const half = Math.max(40, opts.halfExtentM);
+  const targetCols = 13;
+  const autoCell = Math.ceil((2 * half) / (targetCols - 1));
+  const cell = Math.max(18, Math.min(40, opts.cellM ?? autoCell));
+  const demKey = `${geoCacheKey(opts.geoOrigin.lat, opts.geoOrigin.lng)}|${Math.round(half)}|${cell}`;
+  const cached = ttlGet<DemGrid>("site-dem", demKey);
+  if (cached) return cached;
   const cols = Math.floor((2 * half) / cell) + 1;
   const rows = cols;
   const x0 = -half;
@@ -126,7 +132,9 @@ export async function fetchSiteDem(opts: {
     }
   }
   if (!elev) elev = geoPts.map(() => null);
-  const filled = await fillMissingWithEpqs(geoPts, elev);
+  // Skip slow per-point EPQS when OpenTopo already covered most of the grid.
+  const openCoverage = elev.filter((e) => e != null).length / Math.max(1, elev.length);
+  const filled = openCoverage >= 0.55 ? elev : await fillMissingWithEpqs(geoPts, elev);
   const usable = filled.map((e, i) => e ?? elev![i]);
   const ok = usable.filter((e) => e != null) as number[];
   if (ok.length < Math.max(4, usable.length * 0.35)) {
@@ -166,7 +174,9 @@ export async function fetchSiteDem(opts: {
     source = "usgs-epqs";
   }
 
-  return { x0, y0, cell, cols, rows, z: rel, source };
+  const grid: DemGrid = { x0, y0, cell, cols, rows, z: rel, source };
+  ttlSet("site-dem", demKey, grid);
+  return grid;
 }
 
 /** Attach a DEM grid onto a plane grade (plane remains the fallback outside / if dem missing). */

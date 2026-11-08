@@ -54,6 +54,12 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 07:12 | Cursor | UI-140 | Mild foundation-scaled grid disc; cull fences/features outside disc; drop long OSM fence spans (compound-v68). |
+| 07:06 | Cursor | UI-139 | Soften road avoid (inside-only); raise street-run cap so curb roads stay (compound-v67). |
+| 07:04 | Cursor | UI-138 | Skip street ribbon chunks through house/neighbor/shed pads; narrower ribbons (compound-v66). |
+| 06:50 | Cursor | UI-137 | TTL cache OSM/DEM/indoor (~1h); Gemini+Street View only with user photo; skip indoor Overpass for houses. |
+| 06:43 | Cursor | UI-136 | Neighbor shell cap 20; uncap hydrants/stops/signals; wider accessory/shed reach (compound-v65). |
+| 06:40 | Cursor | UI-135 | Faster scans: skip Gemini when map has floors; parallel imagery/DEM; fewer Overpass supplements; coarser DEM (compound-v64). |
 | 06:28 | Cursor | UI-134 | Widen roadReach floor/scale (~110 m+) so street ribbons stretch farther (compound-v63). |
 | 06:19 | Cursor | UI-133 | Raise scan/floorplan maxDuration to 300s; longer Overpass/DEM/Gemini fetch timeouts. |
 | 06:16 | Cursor | UI-132 | Restore roads/signs: outdoor disc follows roadReach; street ribbon cap decoupled from shells (compound-v62). |

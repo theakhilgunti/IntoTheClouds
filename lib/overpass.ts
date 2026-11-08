@@ -6,6 +6,7 @@ import {
 import type { Point } from "@/packages/schema/building-model";
 import { normStreet, parseStreetAddress, streetsMatch } from "./address";
 import { SITE_REACH_MAX_M } from "./compound-geom";
+import { geoCacheKey, ttlGet, ttlSet } from "./ttl-cache";
 
 const ENDPOINTS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
 
@@ -322,6 +323,16 @@ function houseLabel(b: OsmBuilding): string {
  * is not inside any outline, prefer buildings in that direction.
  */
 export async function lookupBuilding(origin: LatLng, heading?: number | null, hint?: AddressHint): Promise<OsmContext> {
+  const cacheKey = [
+    geoCacheKey(origin.lat, origin.lng),
+    hint?.wayId ?? "",
+    hint?.force ? "f" : "",
+    heading != null && Number.isFinite(heading) ? String(Math.round(heading / 30)) : "",
+    (hint?.address ?? "").toLowerCase().slice(0, 48),
+  ].join("|");
+  const cached = ttlGet<OsmContext>("osm-lookup", cacheKey);
+  if (cached) return cached;
+
   // Match siteReach ceiling so neighbors/streets/grid (neighborReach) still have OSM data at the edge.
   const R = SITE_REACH_MAX_M;
   const HYDRANT_R = SITE_REACH_MAX_M;
@@ -357,23 +368,12 @@ out tags geom;`;
   const rawTrees = [...apiTrees];
   const rawSignals = [...apiSignals];
   const rawStops = [...apiStops];
-  // OSM map bbox (R) often misses the nearest street hydrants past ~150–200 m — always merge Overpass.
-  try {
-    const extra = await fetchHydrantsOverpass(origin, HYDRANT_R);
-    const seen = new Set(rawHydrants.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`));
-    for (const p of extra) {
-      const key = `${p[0].toFixed(1)},${p[1].toFixed(1)}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        rawHydrants.push(p);
-      }
-    }
-  } catch (e) {
-    console.warn("Hydrant Overpass supplement failed", e);
-  }
-  try {
-    const extra = await fetchRoadSignsOverpass(origin, R);
-    const merge = (into: Point[], add: Point[]) => {
+  // Main Overpass query already returns hydrants/signs; OSM map bbox often misses them past ~150 m.
+  // Only supplement when sparse, and fetch both in parallel.
+  const needHydrants = rawHydrants.length < 2;
+  const needSigns = rawSignals.length + rawStops.length < 2;
+  if (needHydrants || needSigns) {
+    const mergePts = (into: Point[], add: Point[]) => {
       const seen = new Set(into.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`));
       for (const p of add) {
         const key = `${p[0].toFixed(1)},${p[1].toFixed(1)}`;
@@ -383,10 +383,25 @@ out tags geom;`;
         }
       }
     };
-    merge(rawSignals, extra.trafficSignals);
-    merge(rawStops, extra.stopSigns);
-  } catch (e) {
-    console.warn("Road-sign Overpass supplement failed", e);
+    const [extraHydrants, extraSigns] = await Promise.all([
+      needHydrants
+        ? fetchHydrantsOverpass(origin, HYDRANT_R).catch((e) => {
+            console.warn("Hydrant Overpass supplement failed", e);
+            return [] as Point[];
+          })
+        : Promise.resolve([] as Point[]),
+      needSigns
+        ? fetchRoadSignsOverpass(origin, R).catch((e) => {
+            console.warn("Road-sign Overpass supplement failed", e);
+            return { trafficSignals: [] as Point[], stopSigns: [] as Point[] };
+          })
+        : Promise.resolve({ trafficSignals: [] as Point[], stopSigns: [] as Point[] }),
+    ]);
+    if (needHydrants) mergePts(rawHydrants, extraHydrants);
+    if (needSigns) {
+      mergePts(rawSignals, extraSigns.trafficSignals);
+      mergePts(rawStops, extraSigns.stopSigns);
+    }
   }
 
   const buildings: OsmBuilding[] = [];
@@ -504,12 +519,11 @@ out tags geom;`;
     nearby.unshift({ id: building.id, label: houseLabel(building) });
   }
 
-  // All mapped hydrants in range (beacons render every one kept on the scene).
+  // All mapped hydrants in range (no count cap — scene radius filters later).
   const hydrants = rawHydrants
     .map((p) => ({ p, d: dist(here, p) }))
     .filter((h) => h.d < HYDRANT_R)
     .sort((a, b) => a.d - b.d)
-    .slice(0, 60)
     .map((h) => h.p);
 
   const seenTree = new Set<string>();
@@ -526,7 +540,7 @@ out tags geom;`;
     .slice(0, 160)
     .map((t) => t.p);
 
-  const dedupeNear = (pts: Point[], max = 120) => {
+  const dedupeNear = (pts: Point[]) => {
     const seen = new Set<string>();
     return pts
       .map((p) => ({ p, d: dist(here, p) }))
@@ -538,14 +552,15 @@ out tags geom;`;
         seen.add(key);
         return true;
       })
-      .slice(0, max)
       .map((t) => t.p);
   };
   const trafficSignals = dedupeNear(rawSignals);
   const stopSigns = dedupeNear(rawStops);
 
-  return {
+  const ctx: OsmContext = {
     building, chosenBy, buildingCount: buildings.length, nearby, roadDir, roadName, roadDistance,
     structures: buildings, fences, pools, parking, roads, hydrants, trees, trafficSignals, stopSigns,
   };
+  ttlSet("osm-lookup", cacheKey, ctx);
+  return ctx;
 }

@@ -597,12 +597,12 @@ export const MAX_ROAD_FEATURES = 140;
 export const ROAD_CHUNK_M = 24;
 /** Cap mapped + aerial trees kept around the site. */
 export const MAX_TREE_MARKERS = 80;
-/** Cap fire hydrants kept on the scene (nearest first). */
-export const MAX_HYDRANTS = 48;
-/** Cap inferred crossing lights (OSM-mapped signals are kept separately, uncapped aside from scene radius). */
-export const MAX_TRAFFIC_SIGNALS = 10;
-/** Cap mapped stop signs / traffic signals kept along loaded roads. */
-export const MAX_ROAD_SIGNS = 60;
+/** @deprecated Hydrants are uncapped (radius only). Kept for older imports. */
+export const MAX_HYDRANTS = Number.POSITIVE_INFINITY;
+/** @deprecated Inferred signals are uncapped (radius only). Kept for older imports. */
+export const MAX_TRAFFIC_SIGNALS = Number.POSITIVE_INFINITY;
+/** @deprecated Road signs are uncapped (radius only). Kept for older imports. */
+export const MAX_ROAD_SIGNS = Number.POSITIVE_INFINITY;
 /** How close a mapped sign must sit to a drawn road ribbon (meters). */
 export const ROAD_SIGN_ALONG_M = 16;
 
@@ -668,15 +668,15 @@ export function roadReach(mainRing: Point[], parcel?: Point[] | null): number {
 
 /** How many nearest neighbor shells to keep (flat cap for every footprint size). */
 export function neighborShellCap(_mainRing: Point[]): number {
-  return Math.min(MAX_NEIGHBOR_SHELLS, 15);
+  return Math.min(MAX_NEIGHBOR_SHELLS, 20);
 }
 
 /** How many nearest street runs to keep — wider than the neighbor shell cap. */
 export function roadRibbonCap(mainRing: Point[]): number {
   const ext = foundationExtent(mainRing);
-  if (ext < 16) return 22;
-  if (ext < 28) return 26;
-  return Math.min(MAX_ROAD_RIBBONS, 30);
+  if (ext < 16) return 28;
+  if (ext < 28) return 32;
+  return Math.min(MAX_ROAD_RIBBONS, 36);
 }
 
 /**
@@ -718,8 +718,19 @@ export function neighborCloudReach(
 }
 
 /**
+ * Mild multiplier so the rendered grid/scene disc tracks foundation size a bit
+ * (~0.9× cottage → ~1.1× large complex) without rewriting reach math.
+ */
+export function foundationSceneScale(mainRing: Point[]): number {
+  const ext = foundationExtent(mainRing);
+  const t = Math.min(1, Math.max(0, (ext - 10) / 50));
+  return 0.9 + 0.2 * t;
+}
+
+/**
  * Outdoor disc for streets / DEM / grid / signs.
- * Always at least roadReach so tightening neighbor shells can't erase the street network.
+ * Always at least roadReach so tightening neighbor shells can't erase the street network,
+ * then nudged slightly by foundation size for the visible grid.
  */
 export function outdoorSceneReach(
   mainRing: Point[],
@@ -728,7 +739,7 @@ export function outdoorSceneReach(
 ): number {
   const cloud = neighborCloudReach(mainRing, neighborRings, parcel);
   const roads = roadReach(mainRing, parcel);
-  return Math.max(cloud, roads);
+  return Math.round(Math.max(cloud, roads) * foundationSceneScale(mainRing));
 }
 
 /** Derive outdoor disc from compound neighbor features (viewer / DEM clip). */
@@ -957,9 +968,9 @@ export function accessoryReach(mainRing: Point[], parcel?: Point[] | null): numb
   const ext = foundationExtent(mainRing);
   const nbr = neighborReach(mainRing, parcel);
   // Small/medium houses keep garages/sheds close (still covers a rear pad); campuses a bit farther.
-  const floor = ext < 28 ? 18 : 22;
-  const fromHouse = ext * (ext < 28 ? 1.2 : 1.35) + (ext < 28 ? 10 : 12);
-  return Math.min(nbr * (ext < 28 ? 0.55 : 0.7), Math.max(floor, fromHouse));
+  const floor = ext < 28 ? 22 : 26;
+  const fromHouse = ext * (ext < 28 ? 1.35 : 1.5) + (ext < 28 ? 12 : 16);
+  return Math.min(nbr * (ext < 28 ? 0.65 : 0.8), Math.max(floor, fromHouse));
 }
 
 /** True when point is inside the foundation or within `r` meters of its outline. */
@@ -1215,13 +1226,16 @@ export function assembleCompound(site: {
 
   let fenceCount = 0;
   const fenceCap = Math.min(240, Math.max(80, Math.round(siteR * 1.2)));
+  /** Mapped fence edges must stay fully inside the grid disc; reject sparse OSM multi-hundred-meter spans. */
+  const fenceSegMax = Math.min(36, Math.max(18, siteR * 0.28));
   for (const line of site.fences) {
     for (let i = 0; i < line.length - 1 && fenceCount < fenceCap; i++) {
       const a = line[i];
       const b = line[i + 1];
-      const mid: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-      if (!inScene(mid)) continue;
-      const polygon = ribbon(a, b, 0.14, Math.max(40, siteR * 0.65));
+      if (dist(a, b) < 0.4 || dist(a, b) > fenceSegMax) continue;
+      // Both ends in-disc — midpoint-only let long OSM barriers shoot past the grid.
+      if (!inScene(a) || !inScene(b)) continue;
+      const polygon = ribbon(a, b, 0.14, fenceSegMax + 2);
       if (!polygon) continue;
       features.push({
         id: `fence-${fenceCount}`,
@@ -1270,6 +1284,7 @@ export function assembleCompound(site: {
       for (const polygon of segs) {
         if (fenceCount >= fenceCap) break;
         const mid = ringCentroid(polygon);
+        if (!inScene(mid)) continue;
         if (main && distToRing(mid, main) < 1.2) continue;
         // Skip near-duplicates of mapped fence segments.
         if (
@@ -1471,7 +1486,14 @@ export function assembleCompound(site: {
   // Graded ground for the full neighbor render radius + pads under each building.
   features.unshift(...neighborhoodTerrainFeatures(main, neighborRings, outdoorReach));
 
-  return { features: features.slice(0, 360), outdoorReach };
+  // Hard clip: nothing in the compound may sit outside the grid/scene disc.
+  const clipped = features.filter((f) => {
+    if (f.id === "terrain-radius") return true;
+    if (f.polygon.length < 1) return false;
+    return inScene(ringCentroid(f.polygon));
+  });
+
+  return { features: clipped.slice(0, 360), outdoorReach };
 }
 
 /**
@@ -1678,6 +1700,14 @@ function segIntersect(a: Point, b: Point, c: Point, d: Point): Point | null {
  * Long street ribbons in a wide radius (main + connecting roads), driveway to the
  * garage/front, and stop signs / traffic signals along those roads.
  */
+/** True when a road centerline sample sits inside a building pad (no curb clearance — streets legitimately run past houses). */
+function roadPointHitsBuilding(p: Point, rings: Point[][]): boolean {
+  for (const ring of rings) {
+    if (ring.length >= 3 && pointInRing(p, ring)) return true;
+  }
+  return false;
+}
+
 export function accessFeatures(opts: {
   footprint: Point[];
   streetDir: Point | null;
@@ -1691,21 +1721,28 @@ export function accessFeatures(opts: {
   stopSigns?: Point[];
   /** Override disc (prefer neighborCloudReach from assembleCompound). */
   radiusM?: number;
+  /** Building pads streets must not cut through (focus + neighbors + sheds). */
+  avoidRings?: Point[][];
 }): SiteFeature[] {
   const here: Point = ringCentroid(opts.footprint);
   // Prefer an explicit outdoor disc; never fall below roadReach for streets/signs.
   const keepR = Math.max(opts.radiusM ?? 0, roadReach(opts.footprint));
   const ribbonCap = roadRibbonCap(opts.footprint);
   const roadMax = Math.max(70, keepR * 0.95);
-  const width = Math.min(12, Math.max(7.2, ringExtent(opts.footprint) * 0.15));
+  const width = Math.min(9, Math.max(6.5, ringExtent(opts.footprint) * 0.14));
+  // Prefer caller avoid rings; always include the focus footprint so streets can't cut the scanned house.
+  const avoid = (() => {
+    const rings = [...(opts.avoidRings ?? [])];
+    if (opts.footprint.length >= 3 && !rings.includes(opts.footprint)) rings.push(opts.footprint);
+    return rings;
+  })();
   const out: SiteFeature[] = [];
 
-  // Hydrants follow the same outdoor disc as streets / neighbors.
+  // Hydrants follow the same outdoor disc as streets / neighbors (no count cap).
   const nearestHydrants = [...(opts.hydrants ?? [])]
     .map((p) => ({ p, d: dist(here, p) }))
     .filter((h) => h.d < keepR)
-    .sort((a, b) => a.d - b.d)
-    .slice(0, MAX_HYDRANTS);
+    .sort((a, b) => a.d - b.d);
   nearestHydrants.forEach((h, i) => {
     const s = 0.45;
     out.push({
@@ -1772,6 +1809,9 @@ export function accessFeatures(opts: {
         const t1 = (i + 1) / n;
         const a: Point = [r.a[0] + (r.b[0] - r.a[0]) * t0, r.a[1] + (r.b[1] - r.a[1]) * t0];
         const b: Point = [r.a[0] + (r.b[0] - r.a[0]) * t1, r.a[1] + (r.b[1] - r.a[1]) * t1];
+        const mid: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        // Only drop chunks whose centerline is inside a building (not merely curb-adjacent).
+        if (roadPointHitsBuilding(mid, avoid)) continue;
         const poly = ribbon(a, b, width, ROAD_CHUNK_M + 12);
         if (!poly) continue;
         out.push({
@@ -1804,7 +1844,6 @@ export function accessFeatures(opts: {
     .map((p) => ({ p, d: dist(here, p) }))
     .filter((h) => h.d < keepR && nearRoad(h.p))
     .sort((a, b) => a.d - b.d)
-    .slice(0, MAX_ROAD_SIGNS)
     .forEach((h) => {
       const at = roadsidePlace(h.p, segs, here);
       if (out.some((f) => f.kind === "signal" && dist(ringCentroid(f.polygon), at) < 6)) return;
@@ -1824,7 +1863,6 @@ export function accessFeatures(opts: {
     .map((p) => ({ p, d: dist(here, p) }))
     .filter((h) => h.d < keepR && nearRoad(h.p))
     .sort((a, b) => a.d - b.d)
-    .slice(0, MAX_ROAD_SIGNS)
     .forEach((h) => {
       const at = roadsidePlace(h.p, segs, here);
       if (out.some((f) => f.kind === "stop" && dist(ringCentroid(f.polygon), at) < 5)) return;
@@ -1855,9 +1893,7 @@ export function accessFeatures(opts: {
           height: HEIGHT.signal,
           source: "estimated",
         });
-        if (signalN >= MAX_TRAFFIC_SIGNALS) break;
       }
-      if (signalN >= MAX_TRAFFIC_SIGNALS) break;
     }
   }
 

@@ -17,6 +17,7 @@ import {
   crossVerifySiteFeatures,
   entryStairFeatures,
   pickGarage,
+  roadReach,
   SITE_REACH_MIN_M,
   siteReach,
 } from "./compound-geom";
@@ -73,6 +74,17 @@ function storiesFromHeight(meters: number): number {
 function storiesFromPluto(n: number): number | null {
   if (!Number.isFinite(n) || n < 1 || n > 8) return null;
   return Math.max(1, Math.round(n - 0.01));
+}
+
+/** Public / campus buildings sometimes have OSM Simple Indoor — houses almost never do. */
+const INDOOR_LIKELY = new Set([
+  "school", "university", "college", "hospital", "library", "public", "civic", "office",
+  "commercial", "retail", "hotel", "dormitory", "apartments",
+]);
+
+function shouldFetchIndoor(tags: Record<string, string>): boolean {
+  if (Object.keys(tags).some((k) => k === "indoor" || k.startsWith("indoor:") || k === "room")) return true;
+  return INDOOR_LIKELY.has(tags.building ?? "");
 }
 
 const NOT_A_HOUSE = new Set([
@@ -222,7 +234,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v63" || saved.model.roof?.basis !== "roof-v4");
+      (saved.model.compound?.basis !== "compound-v68" || saved.model.roof?.basis !== "roof-v4");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -290,17 +302,42 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     });
   }
 
-  // 3. Aerial imagery.
+  // 3. Aerial imagery (+ Street View / Google sat only when Gemini will need them).
   step("imagery", "active");
   let aerial: Image | null = null;
   let aerialHalf = 40;
-  const extent = footprint ? Math.max(...footprint.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y)))) : 8;
-  try {
-    // Wide enough to cover the lot around large footprints; Esri needs ≥ ~40 m half-width.
-    const wantHalf = footprint ? siteReach(footprint) : SITE_REACH_MIN_M;
-    const shot = await aerialImage(center, wantHalf);
-    aerial = shot.image;
-    aerialHalf = shot.halfSize;
+  const tags = b?.tags ?? {};
+  const plutoStories = buildingOnLot && lot?.numFloors != null ? storiesFromPluto(lot.numFloors) : null;
+  // Gemini (and Street View / Google sat) only when the user uploaded a photo.
+  const skipGemini = !input.photo;
+  const wantHalf = footprint ? siteReach(footprint) : SITE_REACH_MIN_M;
+  const emptyStreetView = {
+    shots: [] as Awaited<ReturnType<typeof fetchStreetViewFacade>>["shots"],
+    pano: center,
+    lookHeading: 0,
+    status: "skipped" as const,
+    detail: "Skipped — photo AI runs only when you upload a house photo.",
+  };
+  const aerialP = aerialImage(center, wantHalf)
+    .then((shot) => ({ ok: true as const, shot }))
+    .catch((e: unknown) => ({ ok: false as const, error: e }));
+  const streetViewP =
+    skipGemini || !geminiAvailable()
+      ? Promise.resolve(emptyStreetView)
+      : fetchStreetViewFacade(center, { streetDir: osm?.roadDir ?? null }).catch((e) => {
+          console.warn("Street View fetch failed", e);
+          return {
+            shots: [] as Awaited<ReturnType<typeof fetchStreetViewFacade>>["shots"],
+            pano: center,
+            lookHeading: 0,
+            status: "failed" as const,
+            detail: String(e).slice(0, 160),
+          };
+        });
+  const [aerialRes, streetView] = await Promise.all([aerialP, streetViewP]);
+  if (aerialRes.ok) {
+    aerial = aerialRes.shot.image;
+    aerialHalf = aerialRes.shot.halfSize;
     sources.push({
       id: "esri",
       name: "Esri World Imagery",
@@ -308,12 +345,11 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       detail: `Aerial photo (~${Math.round(aerialHalf)} m half-width) centered on the building.`,
     });
     step("imagery", "done");
-  } catch (e) {
-    sources.push({ id: "esri", name: "Esri World Imagery", status: "failed", detail: String(e) });
+  } else {
+    sources.push({ id: "esri", name: "Esri World Imagery", status: "failed", detail: String(aerialRes.error) });
     step("imagery", "skipped", "Imagery unavailable");
   }
 
-  const tags = b?.tags ?? {};
   const mapFacts = [
     b ? `Outline area: ${Math.round(b.area)} m²` : "No mapped outline",
     tags.building ? `Building type: ${tags.building}` : null,
@@ -323,9 +359,9 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     tags["building:material"] ? `Material: ${tags["building:material"]}` : null,
   ].filter(Boolean).join("\n");
 
-  // Optional Google Maps Static satellite for structure cross-check (same place as Esri).
+  // Optional Google Maps Static satellite — only when Gemini site read will use it.
   let googleSat: Image | null = null;
-  if (aerial) {
+  if (aerial && !skipGemini && geminiAvailable()) {
     googleSat = await googleSatelliteImage(center, aerialHalf).catch(() => null);
     if (googleSat) {
       sources.push({
@@ -344,18 +380,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     }
   }
 
-  // Street View facade shots — cross-check stories / garage / entry from the road.
-  const streetView = await fetchStreetViewFacade(center, { streetDir: osm?.roadDir ?? null }).catch((e) => {
-    console.warn("Street View fetch failed", e);
-    return {
-      shots: [] as Awaited<ReturnType<typeof fetchStreetViewFacade>>["shots"],
-      pano: center,
-      lookHeading: 0,
-      status: "failed" as const,
-      detail: String(e).slice(0, 160),
-    };
-  });
-  if (streetView.status !== "skipped" || process.env.GOOGLE_MAPS_API_KEY) {
+  if (!skipGemini && (streetView.status !== "skipped" || process.env.GOOGLE_MAPS_API_KEY)) {
     sources.push({
       id: "streetview",
       name: "Google Street View",
@@ -364,17 +389,26 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     });
   }
 
-  // 4. Read the house from the photos (Gemini). The site boxes run alongside that, and a missing key just skips both.
+  // 4. Read the house from the photos (Gemini) — only when a user photo was uploaded.
   step("vision", "active");
   let facts: HouseFacts | null = null;
   const streetViewImages = streetView.shots.map((s) => s.image);
-  const sitePromise = geminiAvailable() && aerial
-    ? describeSite(aerial, googleSat).catch((e) => {
-        console.warn("aerial site read failed", e);
-        return [];
-      })
-    : Promise.resolve([]);
-  if (!geminiAvailable()) {
+  const sitePromise =
+    !skipGemini && geminiAvailable() && aerial
+      ? describeSite(aerial, googleSat).catch((e) => {
+          console.warn("aerial site read failed", e);
+          return [];
+        })
+      : Promise.resolve([]);
+  if (skipGemini) {
+    sources.push({
+      id: "gemini",
+      name: "Google Gemini (photo reading)",
+      status: "skipped",
+      detail: "No user photo — floors/roof come from map data or typical values (faster scan).",
+    });
+    step("vision", "skipped", "No photo uploaded");
+  } else if (!geminiAvailable()) {
     sources.push({
       id: "gemini", name: "Google Gemini (photo reading)", status: "skipped",
       detail: "No GEMINI_API_KEY configured, so floors, roof and garage come from map data or typical values.",
@@ -414,7 +448,6 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const siteBoxes = await sitePromise;
   const jpegSiteCues = aerial ? analyzeAerialSite(aerial, aerialHalf) : [];
   const sure = facts && facts.confidence >= 0.35 ? facts : null;
-  const plutoStories = buildingOnLot && lot?.numFloors != null ? storiesFromPluto(lot.numFloors) : null;
 
   // Merge: map data and photos first, typical values last. Record where each value came from.
   let stories = 2;
@@ -756,50 +789,69 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     }
   }
 
+  // Kick off DEM while indoor + compound assemble (roadReach ≈ final outdoor disc).
+  const originShiftEarly = b ? polygonCentroid(b.ring) : ([0, 0] as Point);
+  const modelGeoOrigin = fromLocal(origin, originShiftEarly);
+  const demHalfGuess = footprint ? Math.max(roadReach(footprint, parcelLocal), 110) : 110;
+  const demPromise = fetchSiteDem({ geoOrigin: modelGeoOrigin, halfExtentM: demHalfGuess }).catch((e) => {
+    console.warn("Site DEM fetch failed", e);
+    return null;
+  });
+
   let indoorUsed = 0;
   let typologyNote: string | null = null;
   if (!verified) {
     // Cross-verify: OSM Simple Indoor when mapped, else typology soft-check vs public plan stats.
-    try {
-      // Fetch relative to building centroid so indoor rings share the model footprint frame.
-      const rawIndoor = await fetchIndoorRooms(center, Math.max(40, Math.sqrt(b?.area ?? 100) * 1.2));
-      const overlay = overlayIndoorOnModel(built.model, rawIndoor);
-      if (overlay) {
-        // Re-cut walls/doors to the indoor rooms so nothing stays sealed behind stale template walls.
-        built.model = {
-          ...overlay.model,
-          floors: overlay.model.floors.map((f) => rebuildFloorCirculation(f)),
-        };
-        indoorUsed = overlay.used;
-        sources.push({
-          id: "osm-indoor",
-          name: "OpenStreetMap indoor",
-          status: "used",
-          detail: overlay.note,
-        });
-        attributes.push({
-          field: "Interior cross-check",
-          value: `${overlay.used} OSM indoor rooms`,
-          from: "map",
-          note: "Simple Indoor geometry overlapping this footprint",
-        });
-      } else {
-        sources.push({
-          id: "osm-indoor",
-          name: "OpenStreetMap indoor",
-          status: "skipped",
-          detail: rawIndoor.length
-            ? "Indoor ways mapped nearby, but not enough overlap this footprint."
-            : "No OSM Simple Indoor rooms mapped near this building.",
-        });
-      }
-    } catch (e) {
+    const tryIndoor = shouldFetchIndoor(tags);
+    if (!tryIndoor) {
       sources.push({
         id: "osm-indoor",
         name: "OpenStreetMap indoor",
-        status: "failed",
-        detail: String(e).slice(0, 160),
+        status: "skipped",
+        detail: "Skipped indoor Overpass for this building type (rare for houses).",
       });
+    } else {
+      try {
+        // Fetch relative to building centroid so indoor rings share the model footprint frame.
+        const rawIndoor = await fetchIndoorRooms(center, Math.max(40, Math.sqrt(b?.area ?? 100) * 1.2));
+        const overlay = overlayIndoorOnModel(built.model, rawIndoor);
+        if (overlay) {
+          // Re-cut walls/doors to the indoor rooms so nothing stays sealed behind stale template walls.
+          built.model = {
+            ...overlay.model,
+            floors: overlay.model.floors.map((f) => rebuildFloorCirculation(f)),
+          };
+          indoorUsed = overlay.used;
+          sources.push({
+            id: "osm-indoor",
+            name: "OpenStreetMap indoor",
+            status: "used",
+            detail: overlay.note,
+          });
+          attributes.push({
+            field: "Interior cross-check",
+            value: `${overlay.used} OSM indoor rooms`,
+            from: "map",
+            note: "Simple Indoor geometry overlapping this footprint",
+          });
+        } else {
+          sources.push({
+            id: "osm-indoor",
+            name: "OpenStreetMap indoor",
+            status: "skipped",
+            detail: rawIndoor.length
+              ? "Indoor ways mapped nearby, but not enough overlap this footprint."
+              : "No OSM Simple Indoor rooms mapped near this building.",
+          });
+        }
+      } catch (e) {
+        sources.push({
+          id: "osm-indoor",
+          name: "OpenStreetMap indoor",
+          status: "failed",
+          detail: String(e).slice(0, 160),
+        });
+      }
     }
 
     if (indoorUsed === 0) {
@@ -879,7 +931,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     warnings.push(...built.notes);
   }
 
-  const originShift = b ? polygonCentroid(b.ring) : ([0, 0] as Point);
+  const originShift = originShiftEarly;
   const shift = (ring: Point[]) => ring.map(([x, y]) => [x - originShift[0], y - originShift[1]] as Point);
   const geminiAerial = siteBoxes.flatMap((box) => {
     const polygon = boxToPolygon(box, aerialHalf);
@@ -923,6 +975,12 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     streetDir,
     trees: (osm?.trees ?? []).map((p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point),
   });
+  const avoidRings = [
+    built.model.footprint,
+    ...compound.features
+      .filter((f) => f.kind === "neighbor" || f.kind === "garage" || f.kind === "shed")
+      .map((f) => f.polygon),
+  ].filter((ring) => ring.length >= 3);
   const access = accessFeatures({
     footprint: built.model.footprint,
     streetDir,
@@ -934,6 +992,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     ),
     stopSigns: (osm?.stopSigns ?? []).map((p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point),
     radiusM: compound.outdoorReach,
+    avoidRings,
   });
   const verifiedSite = crossVerifySiteFeatures({
     features: compound.features,
@@ -944,16 +1003,8 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     ? verifiedSite.filter((f) => !(f.kind === "driveway" && f.source === "aerial"))
     : verifiedSite;
   const planeGrade = buildLotGrade(built.model.footprint, streetDir);
-  // Model (0,0) is the building centroid — sample DEM in that frame.
-  const modelGeoOrigin = fromLocal(origin, originShift);
-  // DEM matches the neighbor-cloud outdoor disc used for streets/grid.
-  const demHalf = compound.outdoorReach;
-  let dem = null as Awaited<ReturnType<typeof fetchSiteDem>>;
-  try {
-    dem = await fetchSiteDem({ geoOrigin: modelGeoOrigin, halfExtentM: demHalf, cellM: 18 });
-  } catch (e) {
-    console.warn("Site DEM fetch failed", e);
-  }
+  // DEM was started earlier (parallel with indoor/assemble); outdoorReach ≈ demHalfGuess.
+  const dem = await demPromise;
   const grade = withDem(planeGrade, dem);
   const exits: Point[] = [];
   for (const floor of built.model.floors) {
@@ -969,9 +1020,23 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     }
   }
   const entrySteps = entryStairFeatures({ streetDir, grade, exits });
+  const sceneR = compound.outdoorReach;
+  const insideScene = (poly: Point[]) => {
+    if (poly.length < 1) return false;
+    let sx = 0;
+    let sy = 0;
+    for (const p of poly) {
+      sx += p[0];
+      sy += p[1];
+    }
+    const n = poly.length;
+    return Math.hypot(sx / n, sy / n) <= sceneR + 0.5;
+  };
   built.model.compound = {
-    features: [...kept, ...access, ...entrySteps],
-    basis: "compound-v63",
+    features: [...kept, ...access, ...entrySteps].filter(
+      (f) => f.id === "terrain-radius" || insideScene(f.polygon),
+    ),
+    basis: "compound-v68",
     grade: grade ?? undefined,
   };
   if (grade?.dem) {
