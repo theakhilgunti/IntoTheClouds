@@ -30,9 +30,20 @@ def get_json(url):
         return json.load(r)
 
 
+def insecure_ctx():
+    """TLS context that accepts the backend's self-signed certificate (local demo only)."""
+    import ssl
+    c = ssl.create_default_context()
+    c.check_hostname, c.verify_mode = False, ssl.CERT_NONE
+    return c
+
+
+TLS_CTX = None  # set by --insecure
+
+
 def post_json(url, body):
     req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=5) as r:
+    with urllib.request.urlopen(req, timeout=5, context=TLS_CTX if url.startswith("https") else None) as r:
         return json.load(r)
 
 
@@ -55,8 +66,12 @@ async def main():
     p.add_argument("--radar", default="http://127.0.0.1:8888")
     p.add_argument("--backend", default="http://127.0.0.1:8000")
     p.add_argument("--hz", type=float, default=2.0)
+    p.add_argument("--insecure", action="store_true", help="accept the backend's self-signed https certificate")
     p.add_argument("--list", action="store_true", help="print the beacons the radar sees, then exit")
     args = p.parse_args()
+    global TLS_CTX
+    if args.insecure:
+        TLS_CTX = insecure_ctx()
 
     devices = get_json(args.radar + "/api/telemetry")["all_devices"]
     if args.list:
@@ -70,7 +85,7 @@ async def main():
     import websockets  # imported late so --list works without it
     ws_url = args.backend.replace("http", "ws", 1) + "/ws/telemetry"
     registered = {}
-    async with websockets.connect(ws_url) as ws:
+    async with websockets.connect(ws_url, ssl=TLS_CTX if ws_url.startswith("wss") else None) as ws:
         print(f"[bridge] streaming to {ws_url}")
         while True:
             matched = match_devices(get_json(args.radar + "/api/telemetry")["all_devices"], anchors)

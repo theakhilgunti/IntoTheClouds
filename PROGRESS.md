@@ -105,3 +105,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 08:10 | Claude Code | BE-13 | Step detector: low-pass + peak-only counting, 0.4 s gap, on-page sensitivity box (default 1.6), step events with peak logged to /api/phone/log; 1 new test (39 pass); not yet retested on iPhone |
 | 06:21 | Claude Code | BE-14b | Finished task |
 | 08:45 | Claude Code | BE-14 | User-set room size: GET/POST /api/room (width, length, height, margin, voxel, rf cell) resizes localizer, signal map and voxel grid, clears walk, reset keeps size; /walker page gets room inputs and a live top-down map (beacons, trail, heading arrow); 3 new tests (42 pass); frontend 3D view not updated; not yet tested on iPhone |
+| 06:36 | Claude Code | LC-06 | Finished task |
+| 09:30 | Claude Code | LC-06 | radar_bridge.py --insecure: accepts the self-signed https backend (wss + https POST); 16 tests pass; not yet run against live beacons |
