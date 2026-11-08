@@ -1564,7 +1564,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
       overflow: hidden;
       cursor: crosshair;
     }
-    canvas {
+    #canvasContainer > canvas {
       position: absolute;
       top: 0;
       left: 0;
@@ -2255,7 +2255,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
       <div class="sidebar-section" id="accelPanel">
         <div class="section-title"><span>ACCELEROMETER &amp; STEPS</span></div>
         <div style="font-size:0.78rem;line-height:1.5">
-          <canvas id="accCanvas" width="300" height="96" style="width:100%;background:#0006;border:1px solid #00f0ff44;border-radius:4px"></canvas>
+          <canvas id="accCanvas" width="300" height="96" style="position:static;top:auto;left:auto;display:block;width:100%;height:96px;background:#0006;border:1px solid #00f0ff44;border-radius:4px"></canvas>
           <div style="font-size:0.68rem;opacity:.8">last 8 s of gravity-removed motion &nbsp;
             <span style="color:#00f0ff">| dashboard step</span> &nbsp;<span style="color:#ff5cf0">| phone-page step</span> &nbsp;<span style="color:#fbbf24">- threshold</span></div>
           <div id="accLive" style="font-family:monospace;font-size:0.72rem;white-space:pre;margin-top:4px">accelerometer: --</div>

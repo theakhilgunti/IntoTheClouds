@@ -99,3 +99,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 08:10 | Claude Code | MAP-06 | Finished task |
 | 08:31 | Claude Code | MAP-07 | Finished task |
 | 09:05 | Claude Code | MAP-08 | Finished task |
+| 04:33 | Claude Code | MAP-10 | Fixed dashboard: the accelerometer chart canvas inherited the global full-screen canvas CSS and covered the map, blocking zoom/pan and showing as a stray signal trace; scoped that rule to the map canvas and pinned the chart in the sidebar; verified in headless Chrome (wheel + zoom buttons work, 0 JS errors) |
+| 09:33 | Claude Code | MAP-10 | Finished task |
