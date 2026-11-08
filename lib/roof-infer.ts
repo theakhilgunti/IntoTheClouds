@@ -409,7 +409,7 @@ export function decomposeRoofVolumes(poly: Pt[]): Pt[][] {
   }
 
   // Inside-corner L / T: split at the strongest reflex, recurse once for U-shapes.
-  let parts = splitLWings(ring);
+  const parts = splitLWings(ring);
   if (parts.length >= 2) {
     const expanded: Pt[][] = [];
     for (const p of parts) {

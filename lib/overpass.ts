@@ -278,8 +278,8 @@ export async function lookupBuilding(origin: LatLng, heading?: number | null, hi
 out tags geom;`;
   // OSM map API bbox uses R; hydrant nodes farther out are filled in by Overpass when needed.
   const { ways: els, hydrants: apiHydrants, trees: apiTrees } = await fetchMap(origin, q, R);
-  let rawHydrants = apiHydrants;
-  let rawTrees = [...apiTrees];
+  const rawHydrants = apiHydrants;
+  const rawTrees = [...apiTrees];
   // OSM map bbox (R) often misses the nearest street hydrants past ~150–200 m — always merge Overpass.
   try {
     const extra = await fetchHydrantsOverpass(origin, HYDRANT_R);
