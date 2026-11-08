@@ -60,7 +60,7 @@ function closeRing(pts: Point[]): Point[] {
 
 /** Overpass query for Simple Indoor ways around a point. */
 export async function fetchIndoorRooms(origin: LatLng, radius = 60): Promise<IndoorRoom[]> {
-  const q = `[out:json][timeout:20];
+  const q = `[out:json][timeout:45];
 (
   way["indoor"~"^(room|corridor|area|level)$"](around:${radius},${origin.lat},${origin.lng});
   way["room"](around:${radius},${origin.lat},${origin.lng});
@@ -73,7 +73,7 @@ out tags geom;`;
         method: "POST",
         body: "data=" + encodeURIComponent(q),
         headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA },
-        signal: AbortSignal.timeout(12000),
+        signal: AbortSignal.timeout(50000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const j = await res.json();

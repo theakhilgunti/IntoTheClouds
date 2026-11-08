@@ -26,6 +26,8 @@ import { frontDoorFractionFromFacade, nudgeRoomBays } from "./streetview-cues";
 import {
   buildingUseFromTag,
   buildingUseFromTags,
+  floorStackMetric,
+  gradeInsetsFirstFloor,
   isGenericResidentialUse,
   maxStoriesForUse,
   planWordForUse,
@@ -36,7 +38,15 @@ import { planLibrary, planUniversity } from "./layout-campus";
 import { connectZonesWithDoors } from "./door-connect";
 
 export type { BuildingUse };
-export { buildingUseFromTag, buildingUseFromTags, isGenericResidentialUse, maxStoriesForUse, planWordForUse };
+export {
+  buildingUseFromTag,
+  buildingUseFromTags,
+  floorStackMetric,
+  gradeInsetsFirstFloor,
+  isGenericResidentialUse,
+  maxStoriesForUse,
+  planWordForUse,
+};
 
 type Rect = { x0: number; y0: number; x1: number; y1: number };
 type PlanRoom = { id: string; name: string; type: RoomType; r: Rect; zone: string };
@@ -903,6 +913,12 @@ export function buildHouse(input: BuildInput): BuildOutput {
   );
 
   const rectOpts = rectifyOptsForExtent(Math.hypot(width, depth));
+  const insetGrade = gradeInsetsFirstFloor(use, stories);
+  if (insetGrade) {
+    notes.push(
+      "Lowest level sits into the hillside as a basement; grade meets the first floor above (typical residence-hall section).",
+    );
+  }
   const floors: Floor[] = plan.map((pf) => {
     const prefix = pf.level < 0 ? "b-" : `f${pf.level}-`;
     const rectPoly = (r: Rect): Point[] => [[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]];
@@ -918,10 +934,12 @@ export function buildHouse(input: BuildInput): BuildOutput {
           ...r,
           poly: rectifyRoomPoly(rectPoly(r.r), rectOpts.angleTolDeg, rectOpts.jogTol),
         }));
+    // Street doors on the first above-grade floor when L0 is hillside basement.
+    const entryFloor = insetGrade ? pf.level === 1 : pf.level === 0;
     const { walls, doors } = openingsForRooms(
       prefix,
       rooms.map((r) => ({ id: r.id, type: r.type, poly: r.poly, zone: r.zone })),
-      pf.level === 0,
+      entryFloor,
       drivewaySide,
       facadeOpenings,
     );
@@ -934,12 +952,19 @@ export function buildHouse(input: BuildInput): BuildOutput {
       if (up) stairs.push({ id: `${prefix}s-up`, polygon: stairPoly.map(T), toLevel: pf.level + 1 });
       if (down) stairs.push({ id: `${prefix}s-down`, polygon: stairPoly.map(T), toLevel: pf.level - 1 });
     }
+    const intoHill = insetGrade && pf.level === 0;
+    const stack = floorStackMetric(pf.level, { insetGrade });
     return {
       level: pf.level,
-      name: floorName(pf.level),
-      elevation: pf.level < 0 ? -2.5 : pf.level * 2.8,
-      height: pf.level < 0 ? 2.5 : 2.8,
-      rooms: rooms.map((r) => ({ id: `${prefix}${r.id}`, name: r.name, type: r.type, polygon: r.poly.map(T) })),
+      name: stack.name,
+      elevation: stack.elevation,
+      height: stack.height,
+      rooms: rooms.map((r) => ({
+        id: `${prefix}${r.id}`,
+        name: r.name,
+        type: intoHill && r.type === "living" ? "basement" : r.type,
+        polygon: r.poly.map(T),
+      })),
       walls: walls.map((w) => ({ ...w, a: T(w.a), b: T(w.b) })),
       doors,
       stairs,

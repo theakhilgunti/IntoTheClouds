@@ -3,9 +3,11 @@ import { describe, it } from "node:test";
 import {
   accessFeatures,
   accessoryReach,
+  applyDemPads,
   assembleCompound,
   boxToPolygon,
   buildLotGrade,
+  buildingDemPads,
   compoundReach,
   crossVerifySiteFeatures,
   demExtent,
@@ -14,6 +16,7 @@ import {
   expandRing,
   fenceRibbonsFromPolygon,
   foundationExtent,
+  foundationSitY,
   gradeHeight,
   MAX_NEIGHBOR_SHELLS,
   MAX_ROAD_FEATURES,
@@ -25,6 +28,7 @@ import {
   neighborShellCap,
   neighborShellHeight,
   outdoorReachFromNeighbors,
+  outdoorSceneReach,
   pickNeighborHits,
   pointInRing,
   ringSeparation,
@@ -154,7 +158,7 @@ describe("street and driveway", () => {
     assert.ok(Math.hypot(c0[0] - 8, c0[1] + 12) < 0.5 || Math.hypot(c0[0] + 6, c0[1] + 16) < 0.5);
   });
 
-  it("scales site reach with complex size; neighbors/roads stay slightly tighter", () => {
+  it("scales site reach with complex size; neighbors tighter than streets", () => {
     const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
     const campus: [number, number][] = [[-40, -35], [40, -35], [40, 35], [-40, 35]];
     const Rh = siteReach(house);
@@ -163,17 +167,22 @@ describe("street and driveway", () => {
     assert.ok(Rc > Rh, "larger footprint should get a wider scene disc");
     assert.ok(Rc <= SITE_REACH_MAX_M);
     assert.ok(neighborReach(campus) < Rc, "neighbor disc stays inside siteReach fetch ceiling");
-    assert.equal(roadReach(campus), neighborReach(campus), "search ceiling still aligns");
+    assert.ok(roadReach(campus) > neighborReach(campus), "streets reach past the neighbor shell disc");
+    assert.ok(roadReach(campus) <= Rc, "street disc stays inside siteReach fetch ceiling");
     assert.equal(compoundReach(house), Rh);
-    assert.ok(accessoryReach(house) >= 28, "garage/shed still has a usable lot radius");
+    assert.ok(accessoryReach(house) >= 18, "garage/shed still has a usable lot radius");
     assert.ok(accessoryReach(house) < neighborReach(house), "garage/shed lot radius stays tighter than neighbors");
-    assert.ok(neighborShellCap(house) <= neighborShellCap(campus));
+    assert.ok(accessoryReach(house) < accessoryReach(campus), "small houses keep accessories closer");
+    assert.equal(neighborShellCap(house), 15);
+    assert.equal(neighborShellCap(campus), 15);
     assert.ok(neighborShellCap(campus) <= MAX_NEIGHBOR_SHELLS);
-    assert.equal(roadRibbonCap(campus), neighborShellCap(campus), "street run cap mirrors neighbor shell cap");
-    assert.ok(neighborReach(house) < neighborReach(campus), "small plots keep a tighter neighbor disc");
+    assert.ok(roadRibbonCap(campus) > neighborShellCap(campus), "streets keep more runs than neighbor shells");
+    assert.ok(neighborReach(campus) < siteReach(campus) * 0.5, "large complexes stay well inside siteReach");
+    assert.ok(roadReach(house) > neighborReach(house), "small lots still give streets a bit more room");
+    assert.ok(roadReach(house) >= 90, "street disc has a usable floor");
     const estH = estimateNeighborCloudReach(house);
     const estC = estimateNeighborCloudReach(campus);
-    assert.ok(estH <= neighborReach(house) && estH >= 48);
+    assert.ok(estH <= neighborReach(house) && estH >= 40);
     assert.ok(estC >= estH, "larger cap/footprint → larger estimated cloud");
     const closeNbr: [number, number][] = [[12, -3], [20, -3], [20, 3], [12, 3]];
     const farNbr: [number, number][] = [[40, -4], [48, -4], [48, 4], [40, 4]];
@@ -181,10 +190,10 @@ describe("street and driveway", () => {
     assert.ok(cloud <= neighborReach(house));
     assert.ok(cloud >= Math.min(neighborReach(house), Math.hypot(48, 4) + 12) - 0.5, "cloud covers farthest kept shell");
     assert.ok(cloud >= estH, "cloud never shrinks below cap-based estimate");
-    assert.equal(
-      outdoorReachFromNeighbors(house, [{ kind: "neighbor", polygon: farNbr }]),
-      neighborCloudReach(house, [farNbr]),
-    );
+    const outdoor = outdoorReachFromNeighbors(house, [{ kind: "neighbor", polygon: farNbr }]);
+    assert.equal(outdoor, outdoorSceneReach(house, [farNbr]));
+    assert.ok(outdoor >= cloud, "outdoor disc never shrinks below neighbor cloud");
+    assert.equal(outdoor, roadReach(house), "outdoor disc follows roadReach so streets/signs stay");
     // Compact tax lot keeps the obstacle disc smaller than a campus footprint.
     const compactLot: [number, number][] = [[-9, -7], [9, -7], [9, 7], [-9, 7]];
     assert.ok(neighborReach(house, compactLot) < neighborReach(campus));
@@ -333,7 +342,7 @@ describe("compound assembly", () => {
     assert.ok(siteReach(house) >= SITE_REACH_MIN_M);
     assert.ok(siteReach(house) <= SITE_REACH_MAX_M);
     assert.ok(neighborReach(house) >= accessoryReach(house));
-    assert.equal(roadReach(house), neighborReach(house));
+    assert.ok(roadReach(house) > neighborReach(house));
     assert.ok(roadReach(house) <= siteReach(house));
     const { features } = assembleCompound({
       mainId: 1,
@@ -416,14 +425,18 @@ describe("compound assembly", () => {
   it("caps neighbor shells to neighborShellCap (nearest first)", () => {
     const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
     const cap = neighborShellCap(house);
+    const reach = neighborReach(house);
     const structures = [{ id: 1, tag: "house", ring: house, area: 80 }];
-    // Pack many house-like pads well inside neighborReach so the max-count clamp fires.
+    // Pack many house-like pads in a ring inside neighborReach so the max-count clamp fires.
     for (let i = 0; i < cap + 8; i++) {
-      const x = 11 + i * 3.2;
+      const ang = (i / (cap + 8)) * Math.PI * 2;
+      const d = Math.min(reach * 0.55, 14 + (i % 3) * 3);
+      const cx = Math.cos(ang) * d;
+      const cy = Math.sin(ang) * d;
       structures.push({
         id: i + 2,
         tag: "house",
-        ring: [[x, -3], [x + 2.8, -3], [x + 2.8, 3], [x, 3]],
+        ring: [[cx - 1.4, cy - 1.4], [cx + 1.4, cy - 1.4], [cx + 1.4, cy + 1.4], [cx - 1.4, cy + 1.4]],
         area: 50,
       });
     }
@@ -440,28 +453,30 @@ describe("compound assembly", () => {
     const neighbors = features.filter((f) => f.kind === "neighbor");
     assert.equal(neighbors.length, cap);
     assert.ok(cap <= MAX_NEIGHBOR_SHELLS);
-    const firstX = Math.min(...neighbors[0].polygon.map((p) => p[0]));
-    assert.ok(firstX < 15, "nearest neighbor should be kept first");
   });
 
-  it("spreads capped neighbors around the focus instead of one-sided clusters", () => {
+  it("keeps only the nearest neighbors when the cap binds", () => {
     const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
-    const cap = Math.min(8, neighborShellCap(house));
+    const cap = neighborShellCap(house);
     const structures = [{ id: 1, tag: "house", ring: house, area: 80 }];
-    // Dense cluster east + lone peers north/west/south.
-    for (let i = 0; i < cap + 6; i++) {
-      const x = 12 + i * 3;
+    // Close ring fills the cap; far peers sit well beyond it.
+    const reach = neighborReach(house);
+    for (let i = 0; i < cap + 4; i++) {
+      const ang = (i / (cap + 4)) * Math.PI * 2;
+      const d = Math.min(reach * 0.5, 12 + (i % 4) * 2);
+      const cx = Math.cos(ang) * d;
+      const cy = Math.sin(ang) * d;
       structures.push({
         id: 100 + i,
         tag: "house",
-        ring: [[x, -2], [x + 2.5, -2], [x + 2.5, 2], [x, 2]],
+        ring: [[cx - 1.2, cy - 1.2], [cx + 1.2, cy - 1.2], [cx + 1.2, cy + 1.2], [cx - 1.2, cy + 1.2]],
         area: 50,
       });
     }
     structures.push(
-      { id: 2, tag: "house", ring: [[-4, 22], [4, 22], [4, 28], [-4, 28]], area: 70 },
-      { id: 3, tag: "house", ring: [[-28, -3], [-20, -3], [-20, 3], [-28, 3]], area: 70 },
-      { id: 4, tag: "house", ring: [[-4, -28], [4, -28], [4, -22], [-4, -22]], area: 70 },
+      { id: 2, tag: "house", ring: [[-4, 50], [4, 50], [4, 56], [-4, 56]], area: 70 },
+      { id: 3, tag: "house", ring: [[-55, -3], [-48, -3], [-48, 3], [-55, 3]], area: 70 },
+      { id: 4, tag: "house", ring: [[-4, -56], [4, -56], [4, -50], [-4, -50]], area: 70 },
     );
     const { features } = assembleCompound({
       mainId: 1,
@@ -474,15 +489,11 @@ describe("compound assembly", () => {
       streetDir: [0, -1],
     });
     const neighbors = features.filter((f) => f.kind === "neighbor");
-    assert.ok(neighbors.length <= neighborShellCap(house));
-    const centers = neighbors.map((f) => {
-      const n = f.polygon.length;
-      return f.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]] as [number, number], [0, 0]).map((v) => v / n);
-    });
-    assert.ok(centers.some((c) => c[1] > 15), "should keep a north peer");
-    assert.ok(centers.some((c) => c[0] < -15), "should keep a west peer");
-    assert.ok(centers.some((c) => c[1] < -15), "should keep a south peer");
-    // Angular helper itself prefers spread when given an explicit cap.
+    assert.equal(neighbors.length, cap);
+    assert.equal(neighbors.some((f) => f.id === "neighbor-2"), false, "far north peer should drop");
+    assert.equal(neighbors.some((f) => f.id === "neighbor-3"), false, "far west peer should drop");
+    assert.equal(neighbors.some((f) => f.id === "neighbor-4"), false, "far south peer should drop");
+    assert.ok(neighbors.every((f) => Number(f.id.replace("neighbor-", "")) >= 100), "only close ring peers stay");
     const hits = structures
       .filter((s) => s.id !== 1)
       .map((s) => ({
@@ -492,11 +503,12 @@ describe("compound assembly", () => {
           s.ring.reduce((a, p) => a + p[1], 0) / s.ring.length,
         ),
       }));
-    const picked = pickNeighborHits(hits, 8, [0, 0]);
-    assert.equal(picked.length, 8);
-    assert.ok(picked.some((h) => h.s.id === 2));
-    assert.ok(picked.some((h) => h.s.id === 3));
-    assert.ok(picked.some((h) => h.s.id === 4));
+    const picked = pickNeighborHits(hits, 4, [0, 0]);
+    assert.equal(picked.length, 4);
+    for (let i = 1; i < picked.length; i++) {
+      assert.ok(picked[i - 1]!.d <= picked[i]!.d, "picked order is nearest-first");
+    }
+    assert.ok(picked.every((h) => h.s.id >= 100), "helper keeps nearest close peers");
   });
 
   it("sizes neighbor shells from OSM levels/height or the focus house eave", () => {
@@ -698,6 +710,29 @@ describe("compound assembly", () => {
     assert.ok(buf);
     assert.equal(buf!.positions.length, 3 * 3 * 3);
     assert.ok(buf!.indices.length >= 6);
+    const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    const nbr: [number, number][] = [[-5, -28], [5, -28], [5, -20], [-5, -20]];
+    const sit = foundationSitY(nbr, grade);
+    assert.ok(sit < -2, `neighbor on street DEM should sit below slab, got ${sit}`);
+    assert.ok(
+      foundationSitY(nbr, grade, 0.2) <= sit + 1e-9,
+      "low-percentile sit stays ≤ median (median is the default)",
+    );
+    const pads = buildingDemPads(house, [nbr], grade);
+    assert.equal(pads.length, 2);
+    assert.equal(pads[0]!.y, 0);
+    assert.ok(Math.abs(applyDemPads(2, [0, 0], pads, dem.cell) - 0) < 1e-6, "focus pad flattens slab");
+    assert.ok(
+      Math.abs(applyDemPads(-4, [0, -24], pads, dem.cell) - pads[1]!.y) < 1e-6,
+      "neighbor pad shelves under shell",
+    );
+    const atWall = applyDemPads(-4, [0, -4.01], pads, dem.cell);
+    assert.ok(Math.abs(atWall) < 0.15, `wall join should match slab, got ${atWall}`);
+    const midBand = applyDemPads(-4, [0, -12], pads, dem.cell);
+    assert.ok(Math.abs(midBand + 4) < 1.2, `mid-band should keep natural DEM, got ${midBand}`);
+    const padded = demHeightfieldBuffers(dem, { radiusM: 40, pads });
+    assert.ok(padded);
+    assert.ok(Math.abs(padded!.positions[4 * 3 + 1]!) < 0.1, "padded DEM sits at slab under house");
     // Stairs should climb from DEM street grade up to the slab.
     const steps = entryStairFeatures({
       streetDir: [0, -1],

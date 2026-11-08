@@ -159,7 +159,7 @@ export async function describeHouse(opts: {
         contents: [{ role: "user", parts }],
         generationConfig: { responseMimeType: "application/json", responseSchema: RESPONSE_SCHEMA, temperature: 0.2 },
       }),
-      signal: AbortSignal.timeout(45000),
+      signal: AbortSignal.timeout(90000),
     },
   );
   if (!res.ok) {
@@ -260,7 +260,7 @@ export async function describeSite(aerial: Image, crossCheck?: Image | null): Pr
         contents: [{ role: "user", parts }],
         generationConfig: { responseMimeType: "application/json", responseSchema: SITE_SCHEMA, temperature: 0.1 },
       }),
-      signal: AbortSignal.timeout(35000),
+      signal: AbortSignal.timeout(90000),
     },
   );
   if (!res.ok) throw new Error(`Gemini HTTP ${res.status}`);

@@ -27,7 +27,7 @@ async function fetchOpenTopoBatch(points: LatLng[], dataset: string): Promise<(n
     const url = `${OPENTOPO}/${dataset}?locations=${encodeURIComponent(locs)}`;
     const res = await fetch(url, {
       headers: { "User-Agent": UA, Accept: "application/json" },
-      signal: AbortSignal.timeout(25000),
+      signal: AbortSignal.timeout(60000),
     });
     if (!res.ok) throw new Error(`OpenTopo ${dataset} HTTP ${res.status}`);
     const j = (await res.json()) as { status?: string; results?: Array<{ elevation: number | null }> };
@@ -44,7 +44,7 @@ async function fetchOpenTopoBatch(points: LatLng[], dataset: string): Promise<(n
 async function fetchEpqsPoint(p: LatLng): Promise<number | null> {
   const url = `https://epqs.nationalmap.gov/v1/json?x=${p.lng}&y=${p.lat}&wkid=4326&units=Meters&includeDate=false`;
   try {
-    const res = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(8000) });
+    const res = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(20000) });
     if (!res.ok) return null;
     const j = (await res.json()) as { value?: number | string } | number;
     const raw = typeof j === "number" ? j : j?.value;

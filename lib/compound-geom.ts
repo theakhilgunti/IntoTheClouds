@@ -288,6 +288,97 @@ export function demExtent(grade: LotGrade | null | undefined): { min: number; ma
   return { min, max };
 }
 
+export type DemPad = { ring: Point[]; y: number; softM?: number };
+
+/**
+ * Grade under a footprint for rigid shells. Default median — low percentiles
+ * snap halls like Burdett into a hole; basements dig via negative floor elevation.
+ */
+export function foundationSitY(
+  poly: Point[],
+  grade: LotGrade | null | undefined,
+  pct = 0.5,
+): number {
+  if (!poly.length) return 0;
+  const zs: number[] = [];
+  const sample = (p: Point) => zs.push(gradeHeight(p, grade));
+  for (const p of poly) sample(p);
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i]!;
+    const b = poly[(i + 1) % poly.length]!;
+    sample([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+  }
+  const n = poly.length;
+  sample([
+    poly.reduce((s, p) => s + p[0], 0) / n,
+    poly.reduce((s, p) => s + p[1], 0) / n,
+  ]);
+  zs.sort((a, b) => a - b);
+  const t = Math.max(0, Math.min(1, pct));
+  const i = Math.max(0, Math.min(zs.length - 1, Math.floor((zs.length - 1) * t)));
+  return zs[i] ?? 0;
+}
+
+/**
+ * Outside settle band. Kept modest — a long forced ramp rewrites natural hills
+ * into a steeper terrace. Continuity at the wall comes from w→1 as d→0.
+ */
+function padSoftM(ring: Point[], cell: number): number {
+  const ext = foundationExtent(ring);
+  return Math.max(cell * 0.85, Math.min(30, ext * 0.28 + 10));
+}
+
+/** Foundation shelves: focus slab at y=0, neighbors at dig-in sit height. */
+export function buildingDemPads(
+  footprint: Point[],
+  neighborRings: Point[][],
+  grade: LotGrade | null | undefined,
+): DemPad[] {
+  const cell = grade?.dem?.cell ?? 18;
+  const pads: DemPad[] = [];
+  if (footprint.length >= 3) {
+    pads.push({
+      ring: footprint.map((p) => [p[0], p[1]] as Point),
+      y: 0,
+      softM: padSoftM(footprint, cell),
+    });
+  }
+  for (const ring of neighborRings) {
+    if (ring.length < 3) continue;
+    pads.push({
+      ring: ring.map((p) => [p[0], p[1]] as Point),
+      y: foundationSitY(ring, grade, 0.5),
+      softM: padSoftM(ring, cell),
+    });
+  }
+  return pads;
+}
+
+/**
+ * Flatten under the footprint; outside, ease-out toward the slab so the wall join
+ * is continuous while most of the natural DEM hill is left alone.
+ */
+export function applyDemPads(h: number, p: Point, pads: DemPad[] | undefined, cellM = 18): number {
+  if (!pads?.length) return h;
+  let out = h;
+  for (const pad of pads) {
+    if (pad.ring.length < 3) continue;
+    const soft = Math.max(cellM * 0.7, pad.softM ?? Math.max(12, cellM * 0.85));
+    if (pointInRing(p, pad.ring)) return pad.y;
+    const d = distToRing(p, pad.ring);
+    if (d >= soft) continue;
+    const u = 1 - d / soft;
+    // Quartic ease-out: full match at the wall (no cliff), ~6% pull at mid-band.
+    const w = u * u * u * u;
+    out = out + (pad.y - out) * w;
+  }
+  return out;
+}
+
+function surfaceHeight(p: Point, grade: LotGrade | null | undefined, pads?: DemPad[]): number {
+  return applyDemPads(gradeHeight(p, grade), p, pads, grade?.dem?.cell ?? 18);
+}
+
 /**
  * Line-segment positions for a ground grid warped to lot grade / DEM.
  * Three.js coords: x east, y up, z = −modelY. Each cell edge is subdivided so hills read clearly.
@@ -296,13 +387,14 @@ export function terrainGridLinePositions(
   grade: LotGrade | null | undefined,
   size: number,
   divisions: number,
-  opts?: { yBias?: number; /** Samples per cell edge (≥1). */ subdivide?: number },
+  opts?: { yBias?: number; /** Samples per cell edge (≥1). */ subdivide?: number; pads?: DemPad[] },
 ): Float32Array {
   const half = Math.max(8, size) / 2;
   const divs = Math.max(4, Math.min(64, Math.round(divisions)));
   const step = (half * 2) / divs;
   const sub = Math.max(1, Math.min(8, Math.round(opts?.subdivide ?? (grade?.dem ? 4 : 1))));
   const yBias = opts?.yBias ?? -0.12;
+  const pads = opts?.pads;
   const pts: number[] = [];
   const pushSeg = (mx0: number, my0: number, mx1: number, my1: number) => {
     for (let s = 0; s < sub; s++) {
@@ -312,7 +404,7 @@ export function terrainGridLinePositions(
       const ay = my0 + (my1 - my0) * t0;
       const bx = mx0 + (mx1 - mx0) * t1;
       const by = my0 + (my1 - my0) * t1;
-      pts.push(ax, gradeHeight([ax, ay], grade) + yBias, -ay, bx, gradeHeight([bx, by], grade) + yBias, -by);
+      pts.push(ax, surfaceHeight([ax, ay], grade, pads) + yBias, -ay, bx, surfaceHeight([bx, by], grade, pads) + yBias, -by);
     }
   };
   for (let i = 0; i <= divs; i++) {
@@ -332,15 +424,22 @@ export function terrainGridLinePositions(
 /**
  * Triangle buffers for a DEM heightfield in Three.js coords (x east, y up, z = −modelY).
  * Each DEM sample becomes a vertex so outdoor relief reads as real topography, not a plane tilt.
+ * Optional `pads` carve foundation shelves so shells meet grade without floating.
  */
 export function demHeightfieldBuffers(
   dem: DemGrid,
-  opts?: { yBias?: number; /** Keep only cells whose center is within this model-frame radius. */ radiusM?: number },
+  opts?: {
+    yBias?: number;
+    /** Keep only cells whose center is within this model-frame radius. */
+    radiusM?: number;
+    pads?: DemPad[];
+  },
 ): { positions: Float32Array; indices: Uint32Array } | null {
   if (dem.cols < 2 || dem.rows < 2 || dem.z.length < dem.cols * dem.rows) return null;
   const yBias = opts?.yBias ?? -0.05;
   const radius = opts?.radiusM;
   const r2 = radius != null && radius > 0 ? radius * radius : null;
+  const pads = opts?.pads;
   const n = dem.cols * dem.rows;
   const positions = new Float32Array(n * 3);
   const keep = new Uint8Array(n);
@@ -351,9 +450,11 @@ export function demHeightfieldBuffers(
       const my = dem.y0 + r * dem.cell;
       const inside = r2 == null || mx * mx + my * my <= r2 * 1.02;
       keep[i] = inside ? 1 : 0;
-      const h = dem.z[i];
+      let h = dem.z[i];
+      if (!Number.isFinite(h)) h = 0;
+      h = applyDemPads(h, [mx, my], pads, dem.cell);
       positions[i * 3] = mx;
-      positions[i * 3 + 1] = (Number.isFinite(h) ? h : 0) + yBias;
+      positions[i * 3 + 1] = h + yBias;
       positions[i * 3 + 2] = -my;
     }
   }
@@ -394,7 +495,9 @@ export function entryStairFeatures(opts: {
     // Sample ground a few treads toward the street — bottom of the run.
     const sample: Point = [door[0] + downhill[0] * 2.2, door[1] + downhill[1] * 2.2];
     const ground = gradeHeight(sample, opts.grade);
-    // Top of stairs flush with the slab (y=0); always at least a short porch rise.
+    // No exterior stairs when grade already meets/exceeds the slab — those dig into the hillside.
+    if (ground >= 0.05) continue;
+    // Top of stairs flush with the slab (y=0); climb up from street grade only.
     const topY = 0.02;
     const bottomY = Math.min(topY - 0.4, ground - 0.05);
     const rise = topY - bottomY;
@@ -534,37 +637,46 @@ export function plotExtent(mainRing: Point[], parcel?: Point[] | null): number {
 }
 
 /**
- * Render search ceiling for neighbor shells + outdoor obstacles (trees/fences/hydrants disc).
- * Scales with plot/foundation size — small lots stay tight; campuses open up.
+ * Render search ceiling for neighbor shells (trees/fences near houses stay on outdoorReach).
+ * Small lots stay neighborhood-wide; large complexes stay tight so campuses don't fill with shells.
  */
 export function neighborReach(mainRing: Point[], parcel?: Point[] | null): number {
   const plot = plotExtent(mainRing, parcel);
   const ext = foundationExtent(mainRing);
-  // ~12 m lot → ~55 m; ~25 m lot → ~90 m; large campus plot → toward siteReach ceiling.
-  const fromPlot = Math.round(plot * 2.35 + 26);
-  const fromHouse = Math.round(ext * 2.6 + 36);
+  // ~12 m house → ~48 m; mid lot → ~65 m; Burdett-scale → capped harder (~0.42–0.55× siteReach).
+  const fromPlot = Math.round(plot * 1.55 + 18);
+  const fromHouse = Math.round(ext * 1.65 + 26);
   const raw = Math.max(fromPlot, fromHouse);
-  const ceil = Math.round(siteReach(mainRing) * 0.82);
-  return Math.min(ceil, Math.max(55, raw));
+  const frac = ext > 40 ? 0.42 : ext > 24 ? 0.52 : 0.7;
+  const ceil = Math.round(siteReach(mainRing) * frac);
+  return Math.min(ceil, Math.max(40, raw));
 }
 
-/** Streets / hydrants / signs — prefer neighborCloudReach when shells are known. */
+/**
+ * Streets / hydrants / signs — independent of the tight neighbor shell disc
+ * so roads and signs still fill the neighborhood when shells stay close-in.
+ */
 export function roadReach(mainRing: Point[], parcel?: Point[] | null): number {
-  return neighborReach(mainRing, parcel);
-}
-
-/** How many nearest neighbor shells to keep for this footprint / plot. */
-export function neighborShellCap(mainRing: Point[]): number {
+  const plot = plotExtent(mainRing, parcel);
   const ext = foundationExtent(mainRing);
-  if (ext < 16) return 12;
-  if (ext < 28) return 16;
-  if (ext < 45) return 22;
-  return Math.min(MAX_NEIGHBOR_SHELLS, 32);
+  const fromPlot = Math.round(plot * 2.8 + 36);
+  const fromHouse = Math.round(ext * 3.1 + 48);
+  const raw = Math.max(fromPlot, fromHouse);
+  const ceil = Math.round(siteReach(mainRing) * 0.92);
+  return Math.min(ceil, Math.max(90, raw));
 }
 
-/** How many nearest street runs to keep — mirrors neighborShellCap. */
+/** How many nearest neighbor shells to keep (flat cap for every footprint size). */
+export function neighborShellCap(_mainRing: Point[]): number {
+  return Math.min(MAX_NEIGHBOR_SHELLS, 15);
+}
+
+/** How many nearest street runs to keep — wider than the neighbor shell cap. */
 export function roadRibbonCap(mainRing: Point[]): number {
-  return neighborShellCap(mainRing);
+  const ext = foundationExtent(mainRing);
+  if (ext < 16) return 22;
+  if (ext < 28) return 26;
+  return Math.min(MAX_ROAD_RIBBONS, 30);
 }
 
 /**
@@ -605,6 +717,20 @@ export function neighborCloudReach(
   return Math.min(search, Math.max(estimated, observed, 48));
 }
 
+/**
+ * Outdoor disc for streets / DEM / grid / signs.
+ * Always at least roadReach so tightening neighbor shells can't erase the street network.
+ */
+export function outdoorSceneReach(
+  mainRing: Point[],
+  neighborRings: Point[][],
+  parcel?: Point[] | null,
+): number {
+  const cloud = neighborCloudReach(mainRing, neighborRings, parcel);
+  const roads = roadReach(mainRing, parcel);
+  return Math.max(cloud, roads);
+}
+
 /** Derive outdoor disc from compound neighbor features (viewer / DEM clip). */
 export function outdoorReachFromNeighbors(
   footprint: Point[],
@@ -612,7 +738,7 @@ export function outdoorReachFromNeighbors(
   parcel?: Point[] | null,
 ): number {
   const rings = features.filter((f) => f.kind === "neighbor").map((f) => f.polygon);
-  return neighborCloudReach(footprint, rings, parcel);
+  return outdoorSceneReach(footprint, rings, parcel);
 }
 
 /** Distance used for neighbor radius: ring gap, falling back to centroid→foundation. */
@@ -622,49 +748,16 @@ export function neighborDistance(main: Point[] | null, mainC: Point, ring: Point
 }
 
 /**
- * Pick nearest neighbors with angular spread so the cloud surrounds the focus house
- * instead of filling the cap with a lopsided cluster on one side (campuses / row houses).
+ * Keep only the nearest neighbor shells (by foundation gap / centroid distance).
+ * Cap is applied strictly nearest-first — no angular fill that pulls in far peers.
  */
 export function pickNeighborHits<T extends { d: number; s: { id: number; ring: Point[] } }>(
   hits: T[],
   cap: number,
-  mainC: Point,
+  _mainC: Point,
 ): T[] {
-  if (hits.length <= cap) return hits;
-  const sectors = Math.min(8, Math.max(4, Math.ceil(cap / 2)));
-  const buckets: T[][] = Array.from({ length: sectors }, () => []);
-  for (const h of hits) {
-    const c = ringCentroid(h.s.ring);
-    const ang = Math.atan2(c[1] - mainC[1], c[0] - mainC[0]);
-    const i = Math.floor(((ang + Math.PI) / (2 * Math.PI)) * sectors) % sectors;
-    buckets[i]!.push(h);
-  }
-  for (const b of buckets) b.sort((a, b) => a.d - b.d);
-  const picked: T[] = [];
-  const used = new Set<number>();
-  // Round-robin: nearest from each sector first, then keep filling by distance.
-  let guard = 0;
-  while (picked.length < cap && guard++ < hits.length + sectors) {
-    let added = false;
-    for (const b of buckets) {
-      if (picked.length >= cap) break;
-      const next = b.find((h) => !used.has(h.s.id));
-      if (!next) continue;
-      picked.push(next);
-      used.add(next.s.id);
-      added = true;
-    }
-    if (!added) break;
-  }
-  if (picked.length < cap) {
-    for (const h of [...hits].sort((a, b) => a.d - b.d)) {
-      if (picked.length >= cap) break;
-      if (used.has(h.s.id)) continue;
-      picked.push(h);
-      used.add(h.s.id);
-    }
-  }
-  return picked.sort((a, b) => a.d - b.d);
+  if (hits.length <= cap) return [...hits].sort((a, b) => a.d - b.d);
+  return [...hits].sort((a, b) => a.d - b.d).slice(0, Math.max(0, cap));
 }
 
 export type NeighborHeightInput = {
@@ -863,8 +956,10 @@ export function compoundReach(mainRing: Point[]): number {
 export function accessoryReach(mainRing: Point[], parcel?: Point[] | null): number {
   const ext = foundationExtent(mainRing);
   const nbr = neighborReach(mainRing, parcel);
-  // Garage/shed stay inside the plot-scaled neighbor disc.
-  return Math.min(nbr * 0.65, Math.max(28, ext * 1.45 + 14));
+  // Small/medium houses keep garages/sheds close (still covers a rear pad); campuses a bit farther.
+  const floor = ext < 28 ? 18 : 22;
+  const fromHouse = ext * (ext < 28 ? 1.2 : 1.35) + (ext < 28 ? 10 : 12);
+  return Math.min(nbr * (ext < 28 ? 0.55 : 0.7), Math.max(floor, fromHouse));
 }
 
 /** True when point is inside the foundation or within `r` meters of its outline. */
@@ -1035,7 +1130,7 @@ export function assembleCompound(site: {
   }
 
   // Dwellings within neighborReach of the focus foundation — attached, next-door, across the street.
-  // Angular pick keeps the cloud centered on the house (not a one-sided campus cluster).
+  // Nearest-first pick — only the closest shells within reach fill the cap.
   const neighborHits = pickNeighborHits(
     site.structures
       .filter((s) => {
@@ -1054,7 +1149,7 @@ export function assembleCompound(site: {
   );
   const neighborRings = neighborHits.map((h) => h.s.ring);
   // Streets / fences / terrain / DEM share the disc implied by capped neighbor shells.
-  outdoorReach = neighborCloudReach(site.mainRing, neighborRings, parcel);
+  outdoorReach = outdoorSceneReach(site.mainRing, neighborRings, parcel);
   siteR = outdoorReach;
   reach = outdoorReach;
   inScene = (p: Point) => dist(p, mainC) <= outdoorReach;
@@ -1598,8 +1693,8 @@ export function accessFeatures(opts: {
   radiusM?: number;
 }): SiteFeature[] {
   const here: Point = ringCentroid(opts.footprint);
-  // Streets / hydrants / signs share the neighbor-cloud outdoor disc + nearest-N cap.
-  const keepR = opts.radiusM ?? roadReach(opts.footprint);
+  // Prefer an explicit outdoor disc; never fall below roadReach for streets/signs.
+  const keepR = Math.max(opts.radiusM ?? 0, roadReach(opts.footprint));
   const ribbonCap = roadRibbonCap(opts.footprint);
   const roadMax = Math.max(70, keepR * 0.95);
   const width = Math.min(12, Math.max(7.2, ringExtent(opts.footprint) * 0.15));

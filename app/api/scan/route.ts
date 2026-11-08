@@ -2,7 +2,7 @@ import { runScan, ScanError, type ScanInput } from "@/lib/scan";
 import type { ScanEvent } from "@/lib/sources";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const num = (v: FormDataEntryValue | null) => {
   if (typeof v !== "string" || v === "") return undefined;

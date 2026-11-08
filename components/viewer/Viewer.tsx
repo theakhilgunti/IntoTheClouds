@@ -20,14 +20,17 @@ import type {
 } from "@/packages/schema/building-model";
 import { buildRoofPositions, type Pt } from "@/lib/roof-geom";
 import {
+  buildingDemPads,
   demExtent,
   demHeightfieldBuffers,
+  foundationSitY,
   gradeHeight,
   outdoorReachFromNeighbors,
   roadDeckHeight,
   smoothHeightSeries,
   terrainGridLinePositions,
   wallAbutsNeighbor,
+  type DemPad,
 } from "@/lib/compound-geom";
 import { buildNav, routeToMarker, type Route } from "@/lib/route";
 import ProAnchors3D, { ProFirefighter, ProResponder, type DrillPhase, type FireScale } from "./ProAnchors3D";
@@ -92,7 +95,8 @@ function footprintGradeFit(poly: Point[], grade: LotGrade | null | undefined) {
   }
   sample(c);
   zs.sort((a, b) => a - b);
-  const sitY = zs[Math.floor(zs.length / 2)] ?? 0;
+  // Median sit — low percentiles bury multi-story halls; basements dig via floor elev.
+  const sitY = foundationSitY(poly, grade, 0.5);
   const relief = (zs[zs.length - 1] ?? 0) - (zs[0] ?? 0);
   // Big / complex / cliffy footprints: keep walls vertical. Small gentle hills: allow slant.
   const damp =
@@ -639,6 +643,7 @@ function DemTerrainMesh({
   grade,
   footprint,
   features,
+  pads,
   hovered,
   onOver,
   onOut,
@@ -646,6 +651,7 @@ function DemTerrainMesh({
   grade: LotGrade;
   footprint: Point[];
   features: CompoundFeature[];
+  pads?: DemPad[];
   hovered: boolean;
   onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
   onOut: (id: string) => void;
@@ -658,14 +664,14 @@ function DemTerrainMesh({
         ? footprint
         : ([[-10, -10], [10, -10], [10, 10], [-10, 10]] as Point[]);
     const radius = outdoorReachFromNeighbors(fp, features);
-    const buf = demHeightfieldBuffers(dem, { yBias: LAYER_Y.terrain, radiusM: radius });
+    const buf = demHeightfieldBuffers(dem, { yBias: LAYER_Y.terrain, radiusM: radius, pads });
     if (!buf) return null;
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(buf.positions, 3));
     g.setIndex(new THREE.BufferAttribute(buf.indices, 1));
     g.computeVertexNormals();
     return g;
-  }, [grade.dem, footprint, features]);
+  }, [grade.dem, footprint, features, pads]);
   if (!geo || !grade.dem) return null;
   const src = grade.dem.source;
   return (
@@ -692,23 +698,26 @@ function TerrainGrid({
   grade,
   size,
   divisions,
+  pads,
 }: {
   grade: LotGrade | null | undefined;
   size: number;
   divisions: number;
+  pads?: DemPad[];
 }) {
   const geo = useMemo(() => {
     const pos = terrainGridLinePositions(grade, size, divisions, {
       yBias: -0.1,
       subdivide: grade?.dem ? 4 : grade && grade.slope > 0 ? 2 : 1,
+      pads,
     });
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
     return g;
-  }, [grade, size, divisions]);
+  }, [grade, size, divisions, pads]);
   return (
-    <lineSegments geometry={geo} raycast={noopRaycast}>
-      <lineBasicMaterial color="#3d6ec4" transparent opacity={0.55} depthWrite={false} />
+    <lineSegments geometry={geo} raycast={noopRaycast} renderOrder={8}>
+      <lineBasicMaterial color="#7eb6ff" transparent opacity={0.88} depthWrite={false} />
     </lineSegments>
   );
 }
@@ -1065,6 +1074,9 @@ function SiteFeatureMesh({
   if (feature.kind === "steps") {
     if (!slabGeo) return null;
     // feature.height is the absolute top Y of this tread (slab ≈ 0).
+    // Skip treads buried under DEM / grade — they read as stairs into the ground.
+    const buried = feature.height < gy - 0.08;
+    if (buried) return null;
     return (
       <mesh
         geometry={slabGeo}
@@ -1749,6 +1761,11 @@ export default function Viewer({
   const tiltFromPolar = (p: number) => (MAX_POLAR - p) / (MAX_POLAR - MIN_POLAR);
   const frontYaw = useMemo(() => streetFrontYaw(model), [model]);
   const lotGrade = model.compound?.grade ?? null;
+  const demPads = useMemo(() => {
+    const feats = model.compound?.features ?? [];
+    const nbrs = feats.filter((f) => f.kind === "neighbor").map((f) => f.polygon);
+    return buildingDemPads(model.footprint, nbrs, lotGrade);
+  }, [model.footprint, model.compound?.features, lotGrade]);
   const [orbitYaw, setOrbitYaw] = useState(0);
   const [tiltAmt, setTiltAmt] = useState(0.42);
   const applyingOrbit = useRef(false);
@@ -2218,6 +2235,7 @@ export default function Viewer({
                   grade={lotGrade}
                   footprint={model.footprint}
                   features={model.compound?.features ?? []}
+                  pads={demPads}
                   hovered={tip?.id === "terrain-dem"}
                   onOver={showTip}
                   onOut={hideTip}
@@ -2376,14 +2394,15 @@ export default function Viewer({
 
         <TerrainGrid
           grade={lotGrade}
+          pads={demPads}
           size={
             outdoorReachFromNeighbors(model.footprint, model.compound?.features ?? []) * 2
           }
           divisions={Math.max(
-            20,
+            24,
             Math.min(
-              48,
-              Math.round(outdoorReachFromNeighbors(model.footprint, model.compound?.features ?? []) / 5),
+              56,
+              Math.round(outdoorReachFromNeighbors(model.footprint, model.compound?.features ?? []) / 4.5),
             ),
           )}
         />

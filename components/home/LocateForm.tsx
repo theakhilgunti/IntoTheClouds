@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { useSheetNav } from "@/components/ui/SheetTransition";
-import { saveScan, recentScans, type SavedScan, type ScanQuery } from "@/lib/clientStore";
+import { ensureSessionScans, saveScan, recentScans, type SavedScan, type ScanQuery } from "@/lib/clientStore";
 import { isHeicFile, isImageUpload, toJpegFile } from "@/lib/heic";
 import { streamScan } from "@/lib/scanClient";
 import { STEP_LABELS, type StepKey } from "@/lib/sources";
@@ -85,7 +85,10 @@ export default function LocateForm() {
   const scanAbortRef = useRef<AbortController | null>(null);
   const pickLock = useRef(false);
 
-  useEffect(() => setRecent(recentScans()), []);
+  useEffect(() => {
+    ensureSessionScans();
+    setRecent(recentScans());
+  }, []);
 
   useEffect(() => {
     return () => {

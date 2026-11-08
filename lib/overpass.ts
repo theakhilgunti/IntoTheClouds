@@ -128,7 +128,7 @@ async function fromOsmApi(o: LatLng, radius: number): Promise<OsmFetch> {
   const bbox = [o.lng - dLng, o.lat - dLat, o.lng + dLng, o.lat + dLat].map((n) => n.toFixed(6)).join(",");
   const res = await fetch(`https://api.openstreetmap.org/api/0.6/map.json?bbox=${bbox}`, {
     headers: { "User-Agent": UA },
-    signal: AbortSignal.timeout(12000),
+    signal: AbortSignal.timeout(45000),
   });
   if (!res.ok) throw new Error(`OSM API HTTP ${res.status}`);
   const j = await res.json();
@@ -187,7 +187,7 @@ async function fetchMap(origin: LatLng, overpassQuery: string, radius = 150): Pr
 
 /** Dedicated hydrant node query — OSM map bbox often misses street hydrants past ~150 m. */
 async function fetchHydrantsOverpass(origin: LatLng, radius: number): Promise<Point[]> {
-  const q = `[out:json][timeout:20];
+  const q = `[out:json][timeout:45];
 (
   node["emergency"="fire_hydrant"](around:${radius},${origin.lat},${origin.lng});
   node["amenity"="fire_hydrant"](around:${radius},${origin.lat},${origin.lng});
@@ -200,7 +200,7 @@ out body;`;
         method: "POST",
         body: "data=" + encodeURIComponent(q),
         headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA },
-        signal: AbortSignal.timeout(12000),
+        signal: AbortSignal.timeout(50000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const j = await res.json();
@@ -226,7 +226,7 @@ async function runQuery(origin: LatLng, query: string): Promise<OsmFetch> {
         method: "POST",
         body: "data=" + encodeURIComponent(query),
         headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA },
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(60000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const j = await res.json();
@@ -270,7 +270,7 @@ async function fetchRoadSignsOverpass(
   origin: LatLng,
   radius: number,
 ): Promise<{ trafficSignals: Point[]; stopSigns: Point[] }> {
-  const q = `[out:json][timeout:20];
+  const q = `[out:json][timeout:45];
 (
   node["highway"="traffic_signals"](around:${radius},${origin.lat},${origin.lng});
   node["highway"="stop"](around:${radius},${origin.lat},${origin.lng});
@@ -283,7 +283,7 @@ out body;`;
         method: "POST",
         body: "data=" + encodeURIComponent(q),
         headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA },
-        signal: AbortSignal.timeout(12000),
+        signal: AbortSignal.timeout(50000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const j = await res.json();
@@ -325,7 +325,7 @@ export async function lookupBuilding(origin: LatLng, heading?: number | null, hi
   // Match siteReach ceiling so neighbors/streets/grid (neighborReach) still have OSM data at the edge.
   const R = SITE_REACH_MAX_M;
   const HYDRANT_R = SITE_REACH_MAX_M;
-  const q = `[out:json][timeout:25];
+  const q = `[out:json][timeout:60];
 (
   way["building"](around:${R},${origin.lat},${origin.lng});
   way["highway"~"^(residential|service|tertiary|secondary|primary|unclassified|living_street|trunk)$"](around:${R},${origin.lat},${origin.lng});

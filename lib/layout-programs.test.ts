@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 import {
   buildingUseFromTag,
   buildingUseFromTags,
+  floorStackMetric,
+  gradeInsetsFirstFloor,
   maxStoriesForUse,
   planWordForUse,
 } from "./layout-use.ts";
@@ -83,6 +85,20 @@ describe("per-level program floors", () => {
     assert.ok(g.some((n) => /Lounge|Laundry|Study/i.test(n)));
     assert.ok(!g.some((n) => /^Room /i.test(n)));
     assert.ok(u.some((n) => /^Room /i.test(n)));
+  });
+
+  it("tall dormitory: lowest floor digs into grade; four floors sit above", () => {
+    assert.equal(gradeInsetsFirstFloor("dormitory", 5), true);
+    assert.equal(gradeInsetsFirstFloor("dormitory", 3), false);
+    assert.equal(gradeInsetsFirstFloor("house", 5), false);
+    const base = floorStackMetric(0, { insetGrade: true });
+    const first = floorStackMetric(1, { insetGrade: true });
+    const top = floorStackMetric(4, { insetGrade: true });
+    assert.equal(base.name, "Basement");
+    assert.ok(base.elevation < -1.5);
+    assert.equal(first.name, "1st Floor");
+    assert.equal(first.elevation, 0);
+    assert.equal(top.name, "4th Floor");
   });
 
   it("apartments: lobby on L0, denser units above", () => {

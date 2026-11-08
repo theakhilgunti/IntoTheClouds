@@ -54,6 +54,15 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 06:19 | Cursor | UI-133 | Raise scan/floorplan maxDuration to 300s; longer Overpass/DEM/Gemini fetch timeouts. |
+| 06:16 | Cursor | UI-132 | Restore roads/signs: outdoor disc follows roadReach; street ribbon cap decoupled from shells (compound-v62). |
+| 06:14 | Cursor | UI-131 | Neighbor shell cap flat 15 for all footprints (compound-v61). |
+| 06:12 | Cursor | UI-130 | Neighbor shell caps inverse by size: small 14 → mid 12 → large 10 → campus 8 (compound-v60). |
+| 06:10 | Cursor | UI-129 | Neighbor shells: pure nearest-first pick (drop angular fill), compound-v59. |
+| 06:08 | Cursor | UI-128 | Lower neighbor + garage/shed caps for small/medium houses (compound-v58). |
+| 06:02 | Cursor | UI-127 | Hide buried entry stairs; tighter large-complex neighbor reach; higher small-lot shell cap (compound-v57). |
+| 05:58 | Cursor | UI-126 | Clear saved-house list at the start of each browser session. |
+| 05:55 | Cursor | UI-125 | Redo hill stack: DEM pads (ease-out), median sit, brighter grid, tighter nbr / wider streets, dorm L0 basement (compound-v56). |
 | 05:25 | Cursor | UI-119 | Demo house: electrical panels + gas meter meshes and service-line run. |
 | 05:20 | Cursor | UI-118 | Neighbor/obstacle disc scales with plot size (tighter small lots, fewer shells), compound-v55. |
 | 05:15 | Cursor | UI-117 | Jagged near-square pads (28 Bache) → one hip instead of torn multi-wing roofs; roof-v4. |

@@ -4,7 +4,7 @@ import { looksLikeCubiCasaSvg, readCubiCasaSvg } from "@/lib/cubicasa-svg";
 import { geminiAvailable } from "@/lib/vision";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const IMAGE_TYPES = /^image\/(jpeg|png|webp)$/;
 const SVG_TYPES = /^(image\/svg\+xml|text\/xml|application\/xml|text\/plain)$/;

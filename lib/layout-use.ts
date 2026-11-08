@@ -56,6 +56,32 @@ export function isGenericResidentialUse(tags: Record<string, string> | undefined
   return !t || t === "yes" || t === "residential" || t === "house" || t === "detached" || t === "semidetached_house" || t === "terrace" || t === "bungalow";
 }
 
+/**
+ * Tall dorms/apartments often map N levels where the lowest is into the hillside
+ * (Burdett: 5 rendered → basement + 4 above). Grade meets the first above-grade floor.
+ */
+export function gradeInsetsFirstFloor(use: BuildingUse | undefined | null, stories: number): boolean {
+  return (use === "dormitory" || use === "apartments") && stories >= 4;
+}
+
+function ordinalFloorName(level: number): string {
+  if (level < 0) return "Basement";
+  const n = level + 1;
+  const ord = n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : `${n}th`;
+  return `${ord} Floor`;
+}
+
+/** Elevations / labels for one plan level (buildHouse + unit tests). */
+export function floorStackMetric(
+  level: number,
+  opts: { insetGrade: boolean },
+): { name: string; elevation: number; height: number } {
+  if (opts.insetGrade && level === 0) return { name: "Basement", elevation: -2.4, height: 2.4 };
+  if (opts.insetGrade) return { name: ordinalFloorName(level - 1), elevation: (level - 1) * 2.8, height: 2.8 };
+  if (level < 0) return { name: ordinalFloorName(level), elevation: -2.5, height: 2.5 };
+  return { name: ordinalFloorName(level), elevation: level * 2.8, height: 2.8 };
+}
+
 /** Max modeled floors by building program — houses stay modest; public / multi-unit can go taller. */
 export function maxStoriesForUse(use: BuildingUse | undefined | null): number {
   if (use === "church") return 2;

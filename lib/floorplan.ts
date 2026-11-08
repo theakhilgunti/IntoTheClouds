@@ -96,7 +96,7 @@ export async function readFloorPlan(image: Image, levelName: string): Promise<Pl
         contents: [{ role: "user", parts: [{ inlineData: { mimeType: image.mime, data: image.base64 } }, { text: prompt }] }],
         generationConfig: { responseMimeType: "application/json", responseSchema: PLAN_SCHEMA, temperature: 0 },
       }),
-      signal: AbortSignal.timeout(50000),
+      signal: AbortSignal.timeout(90000),
     },
   );
   if (!res.ok) throw new Error(`Gemini HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
