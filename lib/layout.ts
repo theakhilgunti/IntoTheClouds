@@ -16,31 +16,22 @@ import { minAreaRect } from "./geo";
 import { roomBays } from "./compound-geom";
 import { clipPolyToRect, signedArea, wallsAlongOutline, type OutlineWall } from "./outline";
 import { frontDoorFractionFromFacade, nudgeRoomBays } from "./streetview-cues";
+import {
+  buildingUseFromTag,
+  buildingUseFromTags,
+  maxStoriesForUse,
+  planWordForUse,
+  type BuildingUse,
+} from "./layout-use";
+
+export type { BuildingUse };
+export { buildingUseFromTag, buildingUseFromTags, maxStoriesForUse, planWordForUse };
 
 type Rect = { x0: number; y0: number; x1: number; y1: number };
 type PlanRoom = { id: string; name: string; type: RoomType; r: Rect; zone: string };
 type PlanFloor = { level: number; rooms: PlanRoom[]; stair: Rect | null };
 
 export type GarageSide = "none" | "left" | "right";
-
-/** Interior program — OSM building=* when known. */
-export type BuildingUse = "house" | "school" | "office" | "church" | "commercial";
-
-export function buildingUseFromTag(tag: string | undefined | null): BuildingUse {
-  const t = (tag ?? "").toLowerCase().trim();
-  if (!t || t === "yes" || t === "house" || t === "detached" || t === "semidetached_house" || t === "terrace" || t === "bungalow" || t === "static_caravan" || t === "residential") {
-    return "house";
-  }
-  if (t === "school" || t === "kindergarten" || t === "university" || t === "college" || t === "college_building") return "school";
-  if (t === "church" || t === "cathedral" || t === "chapel" || t === "mosque" || t === "synagogue" || t === "temple" || t === "place_of_worship") {
-    return "church";
-  }
-  if (t === "office" || t === "commercial" || t === "retail" || t === "supermarket" || t === "warehouse" || t === "industrial" || t === "public") {
-    return t === "office" ? "office" : "commercial";
-  }
-  if (t === "apartments" || t === "dormitory" || t === "hotel") return "house";
-  return "house";
-}
 
 export type HouseSpec = {
   width: number; // across the front
@@ -55,13 +46,6 @@ export type HouseSpec = {
   /** Override depth-based bay count (e.g. from Street View front windows). */
   bays?: number | null;
 };
-
-/** Max modeled floors by building program — keeps houses compact, public buildings taller. */
-export function maxStoriesForUse(use: BuildingUse | undefined | null): number {
-  if (use === "church") return 1;
-  if (use === "school" || use === "office" || use === "commercial") return 6;
-  return 3;
-}
 
 function floorName(level: number): string {
   if (level < 0) return "Basement";
@@ -397,12 +381,228 @@ function planChurch(spec: HouseSpec, notes: string[]): PlanFloor[] {
   return [{ level: 0, rooms, stair: null }];
 }
 
+type CorridorUnitKind = "dormitory" | "apartments" | "hotel" | "hospital";
+
+/** Double-loaded corridor with repeating units — dorms, apartments, hotels, hospital wings. */
+function planCorridorUnits(spec: HouseSpec, notes: string[], kind: CorridorUnitKind): PlanFloor[] {
+  const W = spec.width, D = spec.depth;
+  const x0 = -W / 2, x1 = W / 2, y0 = -D / 2, y1 = D / 2;
+  const hallW = Math.min(2.6, Math.max(1.5, W * 0.11));
+  const hx0 = -hallW / 2, hx1 = hallW / 2;
+  const hasStairs = spec.stories > 1;
+  const stairLen = Math.min(STAIR_LEN, D * 0.18);
+  const lobbyD = kind === "hotel" || kind === "hospital" ? Math.min(6, Math.max(3.2, D * 0.16)) : Math.min(4, D * 0.12);
+  const stair: Rect | null = hasStairs
+    ? { x0: hx0, y0: y0 + lobbyD, x1: hx1, y1: y0 + lobbyD + stairLen }
+    : null;
+  const unitRows = Math.max(2, Math.min(8, spec.bays ?? Math.round(D / (kind === "apartments" ? 9 : 6.5))));
+  const usableY0 = y0 + (kind === "hotel" || kind === "hospital" ? lobbyD : 0);
+  const edges = Array.from({ length: unitRows + 1 }, (_, i) => usableY0 + ((y1 - usableY0) * i) / unitRows);
+  const floors: PlanFloor[] = [];
+
+  for (let lv = 0; lv < spec.stories; lv++) {
+    const prefix = `${kind[0]}${lv}`;
+    const rooms: PlanRoom[] = [
+      { id: `${prefix}-hall`, name: "Corridor", type: "hallway", r: { x0: hx0, y0, x1: hx1, y1 }, zone: "hall" },
+    ];
+    if (stair) rooms.push({ id: `${prefix}-stair`, name: "Stairs", type: "stair", r: stair, zone: "hall" });
+
+    if (lv === 0 && (kind === "hotel" || kind === "hospital")) {
+      rooms.push({
+        id: `${prefix}-lobby`,
+        name: kind === "hotel" ? "Lobby" : "Main Lobby / Admitting",
+        type: "hallway",
+        r: { x0, y0, x1, y1: y0 + lobbyD },
+        zone: "lobby",
+      });
+      if (kind === "hospital") {
+        rooms.push({
+          id: `${prefix}-nurse`,
+          name: "Nurse Station",
+          type: "office",
+          r: { x0: hx0, y0: y0 + lobbyD, x1: hx1, y1: y0 + lobbyD + Math.min(4, D * 0.12) },
+          zone: "nurse",
+        });
+      }
+    } else if (lv === 0 && kind === "dormitory") {
+      rooms.push(
+        { id: `${prefix}-lounge`, name: "Lounge", type: "living", r: { x0, y0, x1: hx0, y1: y0 + lobbyD }, zone: "lounge" },
+        { id: `${prefix}-bath`, name: "Shared Bath", type: "bathroom", r: { x0: hx1, y0, x1, y1: y0 + lobbyD }, zone: "bath" },
+      );
+    }
+
+    let unitNo = 1;
+    for (let i = 0; i < unitRows; i++) {
+      const yA = Math.max(edges[i], lv === 0 && (kind === "hotel" || kind === "hospital") ? y0 + lobbyD : usableY0);
+      const yB = edges[i + 1];
+      if (yB - yA < 2.0) continue;
+      if (kind === "apartments") {
+        const mid = (yA + yB) / 2;
+        rooms.push(
+          {
+            id: `${prefix}-uL${i}liv`,
+            name: `Unit ${lv + 1}${String(unitNo).padStart(2, "0")} Living`,
+            type: "living",
+            r: { x0, y0: yA, x1: hx0, y1: mid },
+            zone: `uL${i}`,
+          },
+          {
+            id: `${prefix}-uL${i}bed`,
+            name: `Unit ${lv + 1}${String(unitNo).padStart(2, "0")} Bedroom`,
+            type: "bedroom",
+            r: { x0, y0: mid, x1: hx0, y1: yB },
+            zone: `uL${i}`,
+          },
+        );
+        unitNo++;
+        rooms.push(
+          {
+            id: `${prefix}-uR${i}liv`,
+            name: `Unit ${lv + 1}${String(unitNo).padStart(2, "0")} Living`,
+            type: "living",
+            r: { x0: hx1, y0: yA, x1, y1: mid },
+            zone: `uR${i}`,
+          },
+          {
+            id: `${prefix}-uR${i}bed`,
+            name: `Unit ${lv + 1}${String(unitNo).padStart(2, "0")} Bedroom`,
+            type: "bedroom",
+            r: { x0: hx1, y0: mid, x1, y1: yB },
+            zone: `uR${i}`,
+          },
+        );
+        unitNo++;
+      } else if (kind === "hospital") {
+        rooms.push({
+          id: `${prefix}-pL${i}`,
+          name: `Patient ${lv + 1}${String(unitNo).padStart(2, "0")}`,
+          type: "bedroom",
+          r: { x0, y0: yA, x1: hx0, y1: yB },
+          zone: `pL${i}`,
+        });
+        unitNo++;
+        rooms.push({
+          id: `${prefix}-pR${i}`,
+          name: `Patient ${lv + 1}${String(unitNo).padStart(2, "0")}`,
+          type: "bedroom",
+          r: { x0: hx1, y0: yA, x1, y1: yB },
+          zone: `pR${i}`,
+        });
+        unitNo++;
+      } else {
+        const label =
+          kind === "hotel"
+            ? `Guest ${lv + 1}${String(unitNo).padStart(2, "0")}`
+            : `Room ${lv + 1}${String(unitNo).padStart(2, "0")}`;
+        rooms.push({
+          id: `${prefix}-rL${i}`,
+          name: label,
+          type: "bedroom",
+          r: { x0, y0: yA, x1: hx0, y1: yB },
+          zone: `rL${i}`,
+        });
+        unitNo++;
+        const labelR =
+          kind === "hotel"
+            ? `Guest ${lv + 1}${String(unitNo).padStart(2, "0")}`
+            : `Room ${lv + 1}${String(unitNo).padStart(2, "0")}`;
+        rooms.push({
+          id: `${prefix}-rR${i}`,
+          name: labelR,
+          type: "bedroom",
+          r: { x0: hx1, y0: yA, x1, y1: yB },
+          zone: `rR${i}`,
+        });
+        unitNo++;
+      }
+    }
+
+    if (kind === "dormitory" && lv > 0) {
+      rooms.push({
+        id: `${prefix}-bath`,
+        name: "Shared Bath",
+        type: "bathroom",
+        r: { x0: hx0, y0: y1 - 3.0, x1: hx1, y1 },
+        zone: "bath",
+      });
+    } else if (kind === "hotel" && lv > 0) {
+      rooms.push({
+        id: `${prefix}-svc`,
+        name: "Service / Linen",
+        type: "utility",
+        r: { x0: hx0, y0: y1 - 2.8, x1: hx1, y1 },
+        zone: "svc",
+      });
+    } else if (kind === "hospital" && lv > 0) {
+      rooms.push({
+        id: `${prefix}-nurse`,
+        name: "Nurse Station",
+        type: "office",
+        r: { x0: hx0, y0: y0 + 1, x1: hx1, y1: y0 + Math.min(4, D * 0.12) },
+        zone: "nurse",
+      });
+    }
+
+    floors.push({ level: lv, rooms, stair });
+  }
+
+  const label =
+    kind === "dormitory"
+      ? "Dormitory-style layout: double-loaded corridor with bedrooms and shared baths"
+      : kind === "apartments"
+        ? "Apartment-style layout: corridor with living/bedroom unit pads"
+        : kind === "hotel"
+          ? "Hotel-style layout: lobby on the ground floor and guest rooms along a corridor above"
+          : "Hospital-style layout: wing corridor with patient rooms and a nurse station";
+  notes.push(`${label}. Estimated program plan, not a measured survey.`);
+  return floors;
+}
+
+/** Large open floor + office strip — warehouse / light industrial. */
+function planWarehouse(spec: HouseSpec, notes: string[]): PlanFloor[] {
+  const W = spec.width, D = spec.depth;
+  const x0 = -W / 2, x1 = W / 2, y0 = -D / 2, y1 = D / 2;
+  const officeD = Math.min(8, Math.max(3.5, D * 0.18));
+  const hasStairs = spec.stories > 1;
+  const hx0 = -1.2, hx1 = 1.2;
+  const stair: Rect | null = hasStairs
+    ? { x0: hx0, y0: y0 + officeD, x1: hx1, y1: y0 + officeD + Math.min(STAIR_LEN, D * 0.15) }
+    : null;
+  const floors: PlanFloor[] = [];
+  for (let lv = 0; lv < Math.min(spec.stories, 3); lv++) {
+    const prefix = `w${lv}`;
+    const rooms: PlanRoom[] = [];
+    if (lv === 0) {
+      rooms.push(
+        { id: `${prefix}-office`, name: "Office / Receiving", type: "office", r: { x0, y0, x1: 0, y1: y0 + officeD }, zone: "office" },
+        { id: `${prefix}-break`, name: "Break / Lockers", type: "utility", r: { x0: 0, y0, x1, y1: y0 + officeD }, zone: "break" },
+        { id: `${prefix}-floor`, name: "Warehouse Floor", type: "other", r: { x0, y0: y0 + officeD, x1, y1 }, zone: "floor" },
+        { id: `${prefix}-dock`, name: "Loading / Dock", type: "other", r: { x0: x1 - Math.min(8, W * 0.25), y0: y1 - Math.min(6, D * 0.15), x1, y1 }, zone: "dock" },
+      );
+    } else {
+      rooms.push(
+        { id: `${prefix}-mezz`, name: "Mezzanine / Storage", type: "other", r: { x0, y0, x1, y1 }, zone: "floor" },
+        { id: `${prefix}-office`, name: "Upper Office", type: "office", r: { x0, y0, x1: x0 + Math.min(10, W * 0.35), y1: y0 + officeD }, zone: "office" },
+      );
+    }
+    if (stair) rooms.push({ id: `${prefix}-stair`, name: "Stairs", type: "stair", r: stair, zone: "hall" });
+    floors.push({ level: lv, rooms, stair });
+  }
+  notes.push("Warehouse-style layout: office strip at the front and open floor behind. Estimated, not measured.");
+  return floors;
+}
+
 function planBuilding(spec: HouseSpec, notes: string[]): PlanFloor[] {
   const use = spec.use ?? "house";
   if (use === "school") return planSchool(spec, notes);
   if (use === "office") return planOffice(spec, notes, false);
   if (use === "commercial") return planOffice(spec, notes, true);
   if (use === "church") return planChurch({ ...spec, stories: 1, basement: false }, notes);
+  if (use === "dormitory") return planCorridorUnits(spec, notes, "dormitory");
+  if (use === "apartments") return planCorridorUnits(spec, notes, "apartments");
+  if (use === "hotel") return planCorridorUnits(spec, notes, "hotel");
+  if (use === "hospital") return planCorridorUnits(spec, notes, "hospital");
+  if (use === "warehouse") return planWarehouse({ ...spec, basement: false, garage: "none" }, notes);
   return planHouse(spec, notes);
 }
 
@@ -539,6 +739,8 @@ export type BuildInput = {
     frontWindows?: number | null;
     sideEntry?: "left" | "right" | "none" | "unknown";
   } | null;
+  /** Override depth-based bay / unit-row count (facade or typology nudge). */
+  bays?: number | null;
 };
 
 export type BuildOutput = { model: BuildingModel; width: number; depth: number; facing: string; notes: string[] };
@@ -581,11 +783,16 @@ export function buildHouse(input: BuildInput): BuildOutput {
     if (Math.abs(s) > 0.4) drivewaySide = s > 0 ? "right" : "left";
   }
   const facadeBays =
-    use === "house" && input.facade?.frontWindows != null
-      ? nudgeRoomBays(roomBays(depth), input.facade.frontWindows)
-      : null;
-  if (facadeBays != null && facadeBays !== roomBays(depth)) {
+    input.bays != null
+      ? Math.max(2, Math.min(8, Math.round(input.bays)))
+      : use === "house" && input.facade?.frontWindows != null
+        ? nudgeRoomBays(roomBays(depth), input.facade.frontWindows)
+        : null;
+  if (facadeBays != null && input.bays == null && facadeBays !== roomBays(depth)) {
     notes.push(`Street-facing window rhythm suggests about ${facadeBays} room bays along the depth.`);
+  }
+  if (facadeBays != null && input.bays != null) {
+    notes.push(`Typology soft-check nudged unit/bay rows toward ${facadeBays}.`);
   }
   const facadeOpenings: FacadeOpenings | null =
     use === "house" && input.facade

@@ -23,7 +23,9 @@ import {
 import { fetchSiteDem, withDem } from "./elevation";
 import { fetchStreetViewFacade } from "./streetview";
 import { inNyc, lookupParcel, type ParcelHit } from "./parcel";
-import { buildHouse, buildingUseFromTag, maxStoriesForUse, type GarageSide } from "./layout";
+import { buildHouse, buildingUseFromTags, maxStoriesForUse, planWordForUse, type GarageSide } from "./layout";
+import { fetchIndoorRooms, overlayIndoorOnModel } from "./indoor-osm";
+import { fingerprintLayout, softCheckTypology } from "./plan-typology";
 import { analyzeAerialRoof } from "./aerial-roof";
 import { analyzeAerialSite } from "./aerial-site";
 import { inferRoofPlan } from "./roof-infer";
@@ -134,7 +136,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       warnings.push("We couldn't match this address to a specific mapped building, so we used the closest one. It may be a neighbor. Check it against the aerial photo.");
     }
     if (NOT_A_HOUSE.has(b.tags.building)) {
-      const useHint = buildingUseFromTag(b.tags.building);
+      const useHint = buildingUseFromTags(b.tags);
       if (useHint === "house") {
         warnings.push(`OpenStreetMap lists this as "${b.tags.building}", not a house. The room layout assumes a home.`);
       } else {
@@ -164,7 +166,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v21" || saved.model.roof?.basis !== "roof-v3");
+      (saved.model.compound?.basis !== "compound-v22" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -359,8 +361,8 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   } else {
     attributes.push({ field: "Floors above ground", value: "2", from: "estimated", note: "Most common for houses in the area" });
   }
-  // Cap by program: houses stay compact; schools/offices may show more levels + public stair links.
-  const buildingUsePreview = buildingUseFromTag(b?.tags.building);
+  // Cap by program: houses stay compact; schools/offices/multi-unit may show more levels + public stair links.
+  const buildingUsePreview = buildingUseFromTags(b?.tags);
   const storyCap = maxStoriesForUse(buildingUsePreview);
   if (stories > storyCap) {
     warnings.push(
@@ -562,9 +564,10 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   if (facts) confidence += 0.15 * facts.confidence;
   confidence = Math.min(0.9, confidence);
 
-  const buildingUse = buildingUseFromTag(b?.tags.building);
+  const buildingUse = buildingUseFromTags(b?.tags);
+  const planWord = planWordForUse(buildingUse);
   const verified = verifiedInterior(id);
-  const built = buildHouse({
+  let built = buildHouse({
     id,
     source: input.address ? "address" : "photo",
     confidence: Math.round(confidence * 100) / 100,
@@ -601,31 +604,118 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       built.model.address = tagged;
     }
   }
+
+  let indoorUsed = 0;
+  let typologyNote: string | null = null;
   if (!verified) {
-    const planWord =
-      buildingUse === "school"
-        ? "school"
-        : buildingUse === "office"
-          ? "office"
-          : buildingUse === "commercial"
-            ? "commercial"
-            : buildingUse === "church"
-              ? "worship"
-              : "house";
-    built.model.interior = {
-      status: "estimated",
-      source: `typical ${planWord} layout inside the mapped outline`,
-      reasons: [],
-      knownLevels: [],
-      notes: [
-        buildingUse === "house"
-          ? "Rooms follow a common house plan. They are not a measured scan of this house."
-          : `Rooms follow a typical ${planWord} plan for OSM building=${b?.tags.building ?? "yes"}. They are not a measured scan.`,
-      ],
-    };
+    // Cross-verify: OSM Simple Indoor when mapped, else typology soft-check vs public plan stats.
+    try {
+      // Fetch relative to building centroid so indoor rings share the model footprint frame.
+      const rawIndoor = await fetchIndoorRooms(center, Math.max(40, Math.sqrt(b?.area ?? 100) * 1.2));
+      const overlay = overlayIndoorOnModel(built.model, rawIndoor);
+      if (overlay) {
+        built.model = overlay.model;
+        indoorUsed = overlay.used;
+        sources.push({
+          id: "osm-indoor",
+          name: "OpenStreetMap indoor",
+          status: "used",
+          detail: overlay.note,
+        });
+        attributes.push({
+          field: "Interior cross-check",
+          value: `${overlay.used} OSM indoor rooms`,
+          from: "map",
+          note: "Simple Indoor geometry overlapping this footprint",
+        });
+      } else {
+        sources.push({
+          id: "osm-indoor",
+          name: "OpenStreetMap indoor",
+          status: "skipped",
+          detail: rawIndoor.length
+            ? "Indoor ways mapped nearby, but not enough overlap this footprint."
+            : "No OSM Simple Indoor rooms mapped near this building.",
+        });
+      }
+    } catch (e) {
+      sources.push({
+        id: "osm-indoor",
+        name: "OpenStreetMap indoor",
+        status: "failed",
+        detail: String(e).slice(0, 160),
+      });
+    }
+
+    if (indoorUsed === 0) {
+      const fp = fingerprintLayout(built.model.floors, buildingUse, built.width, built.depth);
+      const check = softCheckTypology(fp);
+      typologyNote = check.note;
+      if (!check.ok && check.nudgeBays != null) {
+        built = buildHouse({
+          id,
+          source: input.address ? "address" : "photo",
+          confidence: Math.round(confidence * 100) / 100,
+          address,
+          lat: center.lat,
+          lng: center.lng,
+          footprint,
+          streetDir,
+          stories,
+          basement: buildingUse === "house" ? basement : false,
+          garage: buildingUse === "house" ? garage : "none",
+          roof,
+          ridgeAlong,
+          roofPlan,
+          garageAt: buildingUse === "house" ? garageAt : null,
+          use: buildingUse,
+          bays: check.nudgeBays,
+          facade:
+            buildingUse === "house" && sure
+              ? {
+                  entry: sure.entry,
+                  frontDoorT: sure.front_door_t ?? null,
+                  frontWindows: sure.front_windows ?? null,
+                  sideEntry: sure.side_entry,
+                }
+              : null,
+        });
+        warnings.push(check.note);
+      } else if (!check.ok) {
+        warnings.push(check.note);
+      }
+      attributes.push({
+        field: "Interior cross-check",
+        value: check.ok ? "Typology OK" : "Typology soft-nudge",
+        from: "estimated",
+        note: check.note,
+      });
+      sources.push({
+        id: "typology",
+        name: "Plan typology check",
+        status: "used",
+        detail: check.note,
+      });
+    }
+
+    if (indoorUsed === 0) {
+      built.model.interior = {
+        status: "estimated",
+        source: `typical ${planWord} layout inside the mapped outline`,
+        reasons: [],
+        knownLevels: [],
+        notes: [
+          buildingUse === "house"
+            ? "Rooms follow a common house plan. They are not a measured scan of this house."
+            : `Rooms follow a typical ${planWord} plan for OSM building=${b?.tags.building ?? "yes"}. They are not a measured scan.`,
+          ...(typologyNote ? [typologyNote] : []),
+        ],
+      };
+    }
+    // When indoorUsed > 0, overlayIndoorOnModel already set interior metadata.
     attributes.push({
       field: "Building type",
-      value: b?.tags.building ? String(b.tags.building) : "house",
+      value: b?.tags.building ? String(b.tags.building) : planWord,
       from: b?.tags.building ? "map" : "estimated",
       note: `Interior uses a typical ${planWord} room layout`,
     });
@@ -716,7 +806,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const entrySteps = entryStairFeatures({ streetDir, grade, exits });
   built.model.compound = {
     features: [...kept, ...access, ...entrySteps],
-    basis: "compound-v21",
+    basis: "compound-v22",
     grade: grade ?? undefined,
   };
   if (grade?.dem) {
@@ -838,14 +928,31 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   attributes.push(
     verified
       ? { field: "Interior", value: "Verified", from: "map", note: `Source: ${verified.interior?.source}` }
-      : { field: "Interior", value: "Typical layout", from: "estimated", note: "A common room plan inside the real outline. Not a measured scan." },
+      : indoorUsed > 0
+        ? {
+            field: "Interior",
+            value: "OSM indoor + shell",
+            from: "map",
+            note: "OpenStreetMap Simple Indoor rooms inside the mapped outline. Not a full survey.",
+          }
+        : {
+            field: "Interior",
+            value: `Typical ${planWord} layout`,
+            from: "estimated",
+            note: "A common room plan inside the real outline. Not a measured scan.",
+          },
   );
   sources.push(
     verified
       ? { id: "layout", name: "Verified interior", status: "used", detail: `Real room layout from: ${verified.interior?.source}.` }
       : {
-          id: "layout", name: "Interior layout", status: "used",
-          detail: "Typical room plan drawn inside the mapped outline. Not a measured scan.",
+          id: "layout",
+          name: "Interior layout",
+          status: "used",
+          detail:
+            indoorUsed > 0
+              ? `OSM Simple Indoor (${indoorUsed} rooms) overlaid on the estimated shell.`
+              : `Typical ${planWord} room plan drawn inside the mapped outline. Not a measured scan.`,
         },
   );
   const shown = built.model.compound?.features ?? [];
