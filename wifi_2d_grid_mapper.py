@@ -196,6 +196,9 @@ class GlobalState:
             }
         }
         
+        # Calibration points per anchor: {anchor_id: [(distance_m, median_rssi), ...]} (MAP-04)
+        self.calib_points = {1: [], 2: [], 3: []}
+
         # All discovered signals: signal_id -> info dict
         self.signals = {}
         
@@ -252,6 +255,7 @@ class GlobalState:
                         "signal_name": a["signal_name"],
                         "A_ref": a["A_ref"],
                         "n_exp": a["n_exp"],
+                        "calib_points": [list(p) for p in self.calib_points.get(aid, [])],
                         "x": a["x"],
                         "y": a["y"]
                     } for aid, a in self.anchors.items()
@@ -282,6 +286,7 @@ class GlobalState:
                         self.anchors[aid]["signal_name"] = a_cfg.get("signal_name", "Unassigned")
                         self.anchors[aid]["A_ref"] = float(a_cfg.get("A_ref", -42.0))
                         self.anchors[aid]["n_exp"] = float(a_cfg.get("n_exp", 2.40))
+                        self.calib_points[aid] = [tuple(map(float, p)) for p in a_cfg.get("calib_points", []) if len(p) == 2]
                         self.anchors[aid]["x"] = float(a_cfg.get("x", self.anchors[aid]["x"]))
                         self.anchors[aid]["y"] = float(a_cfg.get("y", self.anchors[aid]["y"]))
             print(f"[CONFIG] Loaded saved anchor settings from {CONFIG_PATH}")
@@ -293,6 +298,35 @@ STATE = GlobalState()
 # =============================================================================
 # High-Level Mathematical Models: ITU-R P.1238, Trilateration & Kalman Filter
 # =============================================================================
+
+DEFAULT_A_REF = -42.0
+DEFAULT_N_EXP = 2.4
+CALIB_MIN_SAMPLES = 5
+
+
+def rssi_stats(values):
+    """Median / std / count of recent RSSI samples (median resists multipath spikes)."""
+    v = [float(x) for x in values if isinstance(x, (int, float))]
+    if not v:
+        return {"median": None, "std": None, "n": 0}
+    return {"median": round(float(np.median(v)), 1), "std": round(float(np.std(v)), 2), "n": len(v)}
+
+
+def fit_path_loss(points):
+    """Least-squares fit of RSSI = A - 10 n log10(d) to [(d_m, rssi), ...].
+    One point -> keeps n unknown (returns n=None). Returns (A at 1 m, n, rmse_db)."""
+    pts = [(float(d), float(r)) for d, r in points if d and d > 0]
+    if not pts:
+        raise ValueError("no points")
+    if len({round(d, 3) for d, _ in pts}) < 2:
+        return None, None, None
+    x = np.array([-10.0 * math.log10(d) for d, _ in pts])
+    y = np.array([r for _, r in pts])
+    M = np.vstack([np.ones_like(x), x]).T
+    (A, n), *_ = np.linalg.lstsq(M, y, rcond=None)
+    rmse = float(np.sqrt(np.mean((M @ np.array([A, n]) - y) ** 2)))
+    return round(float(A), 1), round(float(n), 2), round(rmse, 2)
+
 
 def rssi_to_distance(rssi_dbm: float, A_ref: float, n_exp: float) -> tuple[float, float, float]:
     """
@@ -1725,6 +1759,38 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- Full Calibration Panel (MAP-04) -->
+      <div class="sidebar-section" id="calibPanel">
+        <div class="section-title"><span>CALIBRATION</span></div>
+        <div style="font-size:0.78rem;line-height:1.5">
+          Anchor <select id="calAnchor" onchange="refreshCalib()"><option value="1">A1</option><option value="2">A2</option><option value="3">A3</option></select>
+          <span id="calName" style="opacity:.8"></span>
+          <div id="calLive" style="margin:4px 0">live: --</div>
+          <div>A (1 m ref): <strong id="calA">--</strong> dBm &nbsp; n: <strong id="calN">--</strong></div>
+          <div style="margin-top:6px"><b>1. Distance capture</b> (stand still ~3 s first)<br>
+            distance <input id="calDist" type="number" step="0.1" value="1.0" style="width:60px"> m
+            <button class="btn-calib" onclick="calib('capture')">➕ Capture point &amp; fit</button>
+            <button class="btn-calib secondary" onclick="calib('one_point')">Set A only (keep n)</button></div>
+          <div>Points: <span id="calPts">none</span>
+            <button class="btn-calib secondary" onclick="calib('fit')">Refit</button>
+            <button class="btn-calib secondary" onclick="calib('clear_points')">Clear points</button></div>
+          <div style="margin-top:6px"><b>2. Manual</b><br>
+            A <input id="calSetA" type="number" step="0.5" style="width:60px"> n <input id="calSetN" type="number" step="0.05" style="width:55px">
+            x <input id="calSetX" type="number" step="0.1" style="width:55px"> y <input id="calSetY" type="number" step="0.1" style="width:55px">
+            <button class="btn-calib secondary" onclick="calibSet()">Apply</button></div>
+          <div>n for all anchors <input id="calNAll" type="number" step="0.05" value="2.4" style="width:55px">
+            <button class="btn-calib secondary" onclick="calib('set_n_all',{n_exp:parseFloat(calNAll.value)})">Apply to all</button></div>
+          <div style="margin-top:6px"><b>3. Check at a known spot</b><br>
+            I am at x <input id="calVX" type="number" step="0.1" value="1" style="width:55px"> y <input id="calVY" type="number" step="0.1" value="1" style="width:55px">
+            <button class="btn-calib" onclick="calibVerify()">Check</button>
+            <div id="calVerify" style="white-space:pre;font-family:monospace;font-size:0.72rem"></div></div>
+          <div style="margin-top:6px">
+            <button class="btn-calib secondary" onclick="calib('reset')">Reset this anchor</button>
+            <button class="btn-calib secondary" onclick="if(confirm('Reset calibration of all anchors?')) calib('reset',{anchor_id:'all'})">Reset all</button></div>
+          <div id="calMsg" style="color:#fbbf24;margin-top:4px"></div>
+        </div>
+      </div>
+
       <!-- Environment & Grid Configuration -->
       <div class="sidebar-section">
         <div class="section-title">
@@ -2391,6 +2457,40 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
       refreshSignals();
     }
 
+    // ---- Full calibration panel (MAP-04)
+    async function calib(action, extra) {
+      const body = Object.assign({action, anchor_id: parseInt(calAnchor.value), distance_m: parseFloat(calDist.value)}, extra || {});
+      const r = await fetch('/api/calib', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const d = await r.json();
+      calMsg.innerText = r.ok ? (action + ' ok' + (d.rmse_db !== undefined ? `, fit error ${d.rmse_db} dB` : '') + (d.sample ? `, used median ${d.sample.median} dBm (sd ${d.sample.std}, n ${d.sample.n})` : '')) : ('Error: ' + d.detail);
+      refreshCalib();
+    }
+    function calibSet() {
+      const b = {};
+      [['A_ref', calSetA], ['n_exp', calSetN], ['x', calSetX], ['y', calSetY]].forEach(([k, el]) => { if (el.value !== '') b[k] = parseFloat(el.value); });
+      calib('set', b);
+    }
+    async function calibVerify() {
+      const r = await fetch('/api/calib', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'verify', x: parseFloat(calVX.value), y: parseFloat(calVY.value)})});
+      const d = await r.json();
+      if (!r.ok) { calVerify.innerText = 'Error: ' + d.detail; return; }
+      calVerify.innerText = `estimated position ${d.estimated_pos.join(', ')}  error ${d.position_error_m} m\n` +
+        d.anchors.map(a => `A${a.anchor_id}: true ${a.true_m} m, est ${a.est_m ?? '--'} m (${a.error_m ?? '--'}), rssi ${a.rssi ?? '--'}, A that fits ${a.A_that_fits ?? '--'}`).join('\n');
+    }
+    async function refreshCalib() {
+      try {
+        const all = await (await fetch('/api/calib_status')).json();
+        const a = all[calAnchor.value];
+        calName.innerText = a.signal_name || '';
+        calA.innerText = a.A_ref; calN.innerText = a.n_exp;
+        calLive.innerText = a.live.n ? `live: median ${a.live.median} dBm, sd ${a.live.std} dB, ${a.live.n} samples` + (a.live.std > 4 ? '  (noisy: hold still)' : '') : 'live: no samples (assign a live signal)';
+        calPts.innerText = a.points.length ? a.points.map(p => `${p[0]}m@${p[1]}`).join(', ') : 'none';
+        if (document.activeElement !== calSetX) calSetX.placeholder = a.x;
+        if (document.activeElement !== calSetY) calSetY.placeholder = a.y;
+      } catch (e) {}
+    }
+    setInterval(refreshCalib, 1000); refreshCalib();
+
     async function calibrateAnchor(anchorId, distM) {
       const res = await fetch('/api/calibrate', {
         method: 'POST',
@@ -2695,6 +2795,20 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
             return
 
         # 3. Discovered Signals List
+        if url.path == "/api/calib_status":
+            with STATE.lock:
+                out = {}
+                for aid, a in STATE.anchors.items():
+                    st = rssi_stats(list(a["history"])[-15:])
+                    out[str(aid)] = {"signal_name": a["signal_name"], "A_ref": a["A_ref"], "n_exp": a["n_exp"],
+                                     "x": a["x"], "y": a["y"], "live": st,
+                                     "points": [list(p) for p in STATE.calib_points.get(aid, [])]}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(out).encode('utf-8'))
+            return
+
         if url.path == "/api/signals":
             with STATE.lock:
                 now = time.time()
@@ -2803,6 +2917,106 @@ class RadarHTTPHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "ok"}).encode('utf-8'))
+            return
+
+        # 3a. Full calibration API (MAP-04). action:
+        #   capture  {anchor_id, distance_m}  add a point at that distance from the live median, refit
+        #   one_point {anchor_id, distance_m} set A from live median, keep n
+        #   fit      {anchor_id}             least-squares A and n from stored points
+        #   clear_points {anchor_id}         forget stored points
+        #   set      {anchor_id, A_ref?, n_exp?, x?, y?}  manual values
+        #   reset    {anchor_id | "all"}     defaults (A -42, n 2.4), points cleared
+        #   set_n_all {n_exp}                one exponent for every anchor
+        #   verify   {x, y}                  you stand at a known spot: per-anchor predicted vs true distance
+        if url.path == "/api/calib":
+            act = req_data.get("action")
+            code, res = 200, {"status": "ok"}
+            try:
+                with STATE.lock:
+                    raw_id = req_data.get("anchor_id", 1)
+                    aid = None if raw_id == "all" else int(raw_id)
+                    a = STATE.anchors.get(aid) if aid is not None else None
+                    if act in ("capture", "one_point"):
+                        if a is None:
+                            raise ValueError("unknown anchor")
+                        d = float(req_data.get("distance_m", 1.0))
+                        if not (0.1 <= d <= 100):
+                            raise ValueError("distance_m must be 0.1-100")
+                        st = rssi_stats(list(a["history"])[-15:])
+                        if st["n"] < CALIB_MIN_SAMPLES:
+                            raise ValueError(f"only {st['n']} recent samples for this anchor; wait for {CALIB_MIN_SAMPLES} (is its signal assigned and live?)")
+                        if act == "one_point":
+                            a["A_ref"] = round(st["median"] + 10.0 * a["n_exp"] * math.log10(d), 1)
+                        else:
+                            STATE.calib_points[aid].append((round(d, 2), st["median"]))
+                            A, n, rmse = fit_path_loss(STATE.calib_points[aid])
+                            if A is None:  # first distance only: fix A with current n
+                                a["A_ref"] = round(st["median"] + 10.0 * a["n_exp"] * math.log10(d), 1)
+                            else:
+                                a["A_ref"], a["n_exp"] = A, float(np.clip(n, 1.2, 6.0))
+                                res["rmse_db"] = rmse
+                        res["sample"] = st
+                    elif act == "fit":
+                        if a is None:
+                            raise ValueError("unknown anchor")
+                        A, n, rmse = fit_path_loss(STATE.calib_points[aid])
+                        if A is None:
+                            raise ValueError("need points at 2 or more different distances")
+                        a["A_ref"], a["n_exp"] = A, float(np.clip(n, 1.2, 6.0))
+                        res["rmse_db"] = rmse
+                    elif act == "clear_points":
+                        if a is None:
+                            raise ValueError("unknown anchor")
+                        STATE.calib_points[aid] = []
+                    elif act == "set":
+                        if a is None:
+                            raise ValueError("unknown anchor")
+                        if "A_ref" in req_data:
+                            v = float(req_data["A_ref"])
+                            if not (-100 <= v <= 0): raise ValueError("A_ref must be -100..0 dBm")
+                            a["A_ref"] = round(v, 1)
+                        if "n_exp" in req_data:
+                            v = float(req_data["n_exp"])
+                            if not (1.0 <= v <= 6.0): raise ValueError("n_exp must be 1.0-6.0")
+                            a["n_exp"] = round(v, 2)
+                        for k in ("x", "y"):
+                            if k in req_data:
+                                a[k] = float(req_data[k])
+                    elif act == "reset":
+                        for i in (STATE.anchors if aid is None else [aid]):
+                            STATE.anchors[i]["A_ref"], STATE.anchors[i]["n_exp"] = DEFAULT_A_REF, DEFAULT_N_EXP
+                            STATE.calib_points[i] = []
+                    elif act == "set_n_all":
+                        v = float(req_data["n_exp"])
+                        if not (1.0 <= v <= 6.0): raise ValueError("n_exp must be 1.0-6.0")
+                        for x in STATE.anchors.values():
+                            x["n_exp"] = round(v, 2)
+                    elif act == "verify":
+                        tx, ty = float(req_data["x"]), float(req_data["y"])
+                        rows = []
+                        for i, x in STATE.anchors.items():
+                            st = rssi_stats(list(x["history"])[-15:])
+                            true_d = math.hypot(tx - x["x"], ty - x["y"])
+                            est = rssi_to_distance(st["median"], x["A_ref"], x["n_exp"])[0] if st["n"] else None
+                            # A that would make this reading exact at the true distance
+                            a_fix = round(st["median"] + 10.0 * x["n_exp"] * math.log10(max(true_d, 0.1)), 1) if st["n"] else None
+                            rows.append({"anchor_id": i, "true_m": round(true_d, 2), "est_m": None if est is None else round(est, 2),
+                                         "error_m": None if est is None else round(est - true_d, 2), "rssi": st["median"], "A_that_fits": a_fix})
+                        res["anchors"] = rows
+                        res["position_error_m"] = round(math.hypot(STATE.pos_x - tx, STATE.pos_y - ty), 2)
+                        res["estimated_pos"] = [round(STATE.pos_x, 2), round(STATE.pos_y, 2)]
+                    else:
+                        raise ValueError(f"unknown action {act!r}")
+                    if act != "verify":
+                        STATE.save_config()
+                    if a is not None:
+                        res.update(A_ref=a["A_ref"], n_exp=a["n_exp"], points=[list(p) for p in STATE.calib_points[aid]])
+            except (ValueError, TypeError, KeyError) as e:
+                code, res = 400, {"status": "error", "detail": str(e)}
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode('utf-8'))
             return
 
         # 3. Calibrate Anchor 1-Meter Reference RSSI & 2-Point Exponent Fit

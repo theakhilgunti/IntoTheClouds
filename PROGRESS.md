@@ -89,3 +89,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 10:20 | Claude Code | MAP-02 | wifi_2d_grid_mapper.py runs on macOS: CoreWLAN Wi-Fi driver (MacWlanDriver), iPhone compass heading polled from the backend /api/phone with a Set +X button (POST /api/align), ThreadingHTTPServer so the live stream no longer blocks other requests; not committed; beacons not visible at test time |
 | 07:09 | Claude Code | MAP-03 | Finished task |
 | 10:50 | Claude Code | MAP-03 | Mac Wi-Fi signals keyed by SSID (not SSID+channel) so laptop hotspots that hop channel keep their anchor assignment; strongest AP per SSID; not committed |
+| 07:13 | Claude Code | MAP-04 | Finished task |
+| 11:30 | Claude Code | MAP-04 | Mapper calibration panel: live median/sd/sample count, capture point at any distance with least-squares A+n fit, set-A-only, refit, clear, manual A/n/x/y, n for all, reset one/all, known-spot check (per-anchor true vs estimated distance, A that fits, position error); POST /api/calib, GET /api/calib_status; points saved in anchors_config.json; 7 tests (test_wifi_2d_grid_mapper_calib.py) |
