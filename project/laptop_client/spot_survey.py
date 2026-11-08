@@ -4,9 +4,12 @@
 1) Stand on a taped spot whose x,y (metres) you measured, then record it:
      python spot_survey.py collect --anchors anchors.json --spot 2,1.5 --seconds 10 --out survey.json
    Averages each anchor's RSSI over the time and appends a spot to survey.json.
-   Bluetooth anchors are scanned directly with bleak (the radar's BLE feed stalls after a few
-   minutes), matched by address or name. Wi-Fi anchors come from the radar dashboard
-   (unified_rf_distance_radar.py must be running). Needs numpy + bleak, e.g. the radar venv.
+   Wi-Fi anchors (our 3 laptop hotspots ITC-A1..A3): --wifi netsh (default on Windows) scans
+   directly with `netsh`, matching each anchor's `match` against the SSID or BSSID. netsh gives
+   signal quality converted to dBm and can repeat stale values, so use --seconds 10 or more.
+   --wifi radar reads the radar dashboard instead (unified_rf_distance_radar.py must be running),
+   --wifi none skips Wi-Fi. Bluetooth is off unless you add --bluetooth (phone beacons only;
+   needs bleak, matched by address or name). Needs numpy.
 2) Build the map once you have spots on both sides of the wall:
      python spot_survey.py map --anchors anchors.json --survey survey.json --png map.png \
          [--p0 -55] [--n 2.5] [--blocked-db 6] [--wall 2,-2,2,6]
@@ -33,6 +36,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
 from app.fusion.spot_map import SpotMap2D  # noqa: E402
 from radar_bridge import get_json, match_devices  # noqa: E402
+import win_scan_benchmark  # noqa: E402  (stdlib only: netsh parser)
 
 
 def xy(text):
@@ -43,6 +47,34 @@ def match_bt(address, name, anchors):
     """Anchor ids whose `match` is a case-insensitive substring of a BLE address or name."""
     hay = f"{address} {name or ''}".lower()
     return [x["id"] for x in anchors if x["match"].lower() in hay]
+
+
+def match_wifi(nets, anchors):
+    """{anchor_id: strongest network} where the anchor's `match` is a case-insensitive substring of the SSID or BSSID."""
+    out = {}
+    for a in anchors:
+        needle = a["match"].lower()
+        hits = [n for n in nets if needle in (n.get("ssid") or "").lower() or needle in (n.get("bssid") or "").lower()]
+        if hits:
+            out[a["id"]] = max(hits, key=lambda n: n["rssi_dbm"])
+    return out
+
+
+def scan_wifi_netsh(anchors, seconds, scan=None, sleep=time.sleep):
+    """Run `netsh` repeatedly for `seconds`; -> {anchor_id: [rssi_dbm, ...]}. `scan` is injectable for tests."""
+    scan = scan or (lambda: win_scan_benchmark.run_scan(10.0))
+    out = {x["id"]: [] for x in anchors}
+    end = time.time() + seconds
+    while True:
+        try:
+            for aid, n in match_wifi(scan(), anchors).items():
+                out[aid].append(n["rssi_dbm"])
+        except Exception as e:  # netsh missing (not Windows) or Wi-Fi off
+            print(f"[wifi] netsh scan failed: {e}", file=sys.stderr)
+            return out
+        if time.time() >= end:
+            return out
+        sleep(1.0)
 
 
 async def scan_bt(anchors, seconds):
@@ -66,6 +98,9 @@ def cmd_collect(a):
     # Wi-Fi comes from the radar, polled while the Bluetooth scan runs. Only Wi-Fi devices count
     # here, so a stale radar Bluetooth entry can never match a Bluetooth anchor.
     stop = threading.Event()
+    if a.wifi == "netsh":
+        for aid, vals in scan_wifi_netsh(anchors, a.seconds).items():
+            samples[aid].extend(vals)
 
     def poll_wifi():
         while not stop.is_set():
@@ -79,11 +114,16 @@ def cmd_collect(a):
             stop.wait(1.0)
 
     t = threading.Thread(target=poll_wifi, daemon=True)
-    t.start()
-    for aid, vals in asyncio.run(scan_bt(anchors, a.seconds)).items():
-        samples[aid].extend(vals)
+    if a.wifi == "radar":
+        t.start()
+    if a.bluetooth:
+        for aid, vals in asyncio.run(scan_bt(anchors, a.seconds)).items():
+            samples[aid].extend(vals)
+    elif a.wifi == "radar":
+        stop.wait(a.seconds)
     stop.set()
-    t.join(timeout=2)
+    if t.is_alive():
+        t.join(timeout=2)
     spot = {"xy": xy(a.spot), "readings": {}}
     for aid, vals in samples.items():
         if len(vals) >= 3:
@@ -191,6 +231,9 @@ def main():
     c.add_argument("--seconds", type=float, default=10)
     c.add_argument("--out", default="survey.json")
     c.add_argument("--radar", default="http://127.0.0.1:8888")
+    c.add_argument("--wifi", choices=["netsh", "radar", "none"],
+                   default="netsh" if sys.platform == "win32" else "radar", help="Wi-Fi source (default netsh on Windows)")
+    c.add_argument("--bluetooth", action="store_true", help="also scan Bluetooth anchors (phone beacons; needs bleak)")
     c.set_defaults(fn=cmd_collect)
     d = sub.add_parser("map")
     d.add_argument("--anchors", required=True)

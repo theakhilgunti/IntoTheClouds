@@ -51,6 +51,8 @@ Keep the page open and the screen on. Keep the iPhone away from laptops and meta
 - If beacons will not broadcast or readings are flat, fall back to showing zones ("near A1 / middle / near A3").
 
 ## 6. Obstacle map with a baseline
+On the walker laptop, `spot_survey.py collect` scans the beacon hotspots directly with `netsh` (`--wifi netsh` is the default on Windows; Bluetooth is off unless you pass `--bluetooth`). In `anchors.json` set each `match` to the SSID, e.g. `"ITC-A1"`. Use `--seconds 10` or more because `netsh` can repeat stale values.
+
 Survey the same taped spots twice: first with nothing in the way (`collect --out empty.json`), then with the obstacle in place (`collect --out survey.json`). Then:
 `python spot_survey.py map --anchors anchors.json --survey survey.json --baseline empty.json`
 Spots within 0.2 m are matched. This removes path-loss model error (BE-11). It is an obstacle **hint**, not a floor plan.
