@@ -863,60 +863,104 @@ function wrapPi(a: number) {
   return x;
 }
 
-/**
- * Orbit azimuth for the street-facing front of the house.
- * Model frame: +x east, +y north. Three.js: +x east, +z = south (−plan y).
- * Camera on the street looks toward the house → azimuth = atan2(streetEast, streetSouth).
- */
-function streetFrontYaw(model: BuildingModel): number {
+/** Direction from the house toward the nearest mapped road point (plan east/north). */
+function nearestStreetDir(model: BuildingModel): [number, number] | null {
   const roads = model.compound?.features.filter((f) => f.kind === "road") ?? [];
-  if (roads.length) {
-    let sx = 0;
-    let sy = 0;
-    let n = 0;
-    for (const r of roads) {
-      for (const [x, y] of r.polygon) {
-        sx += x;
-        sy += y;
-        n++;
+  if (!roads.length) return null;
+  const fp = model.footprint;
+  const cx = fp.reduce((s, p) => s + p[0], 0) / (fp.length || 1);
+  const cy = fp.reduce((s, p) => s + p[1], 0) / (fp.length || 1);
+  let bestD = Infinity;
+  let best: [number, number] | null = null;
+  for (const r of roads) {
+    for (const [x, y] of r.polygon) {
+      const d = (x - cx) ** 2 + (y - cy) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = [x - cx, y - cy];
       }
     }
-    if (n > 0) {
-      const east = sx / n;
-      const north = sy / n;
-      const len = Math.hypot(east, north) || 1;
-      // Direction from house toward the street (camera sits there).
-      return Math.atan2(east / len, -north / len);
-    }
   }
-  // Fallback: exterior ground-floor door farthest from the footprint centroid along its outward normal.
-  const floor0 = model.floors.find((f) => f.level === 0);
-  if (floor0) {
+  if (!best) return null;
+  const len = Math.hypot(best[0], best[1]) || 1;
+  return [best[0] / len, best[1] / len];
+}
+
+/**
+ * Orbit azimuth so rotate 0° faces the front door (camera sits outside looking in).
+ * Model frame: +x east, +y north. Three.js: +x east, +z = south (−plan y).
+ * Azimuth = atan2(outwardEast, −outwardNorth).
+ */
+function streetFrontYaw(model: BuildingModel): number {
+  const street = nearestStreetDir(model);
+  const floor =
+    model.floors.find((f) => f.level === 0 && f.doors.some((d) => d.exit)) ??
+    model.floors.find((f) => f.level >= 0 && f.doors.some((d) => d.exit)) ??
+    model.floors.find((f) => f.doors.some((d) => d.exit));
+  if (floor) {
     const fp = model.footprint;
     const cx = fp.reduce((s, p) => s + p[0], 0) / (fp.length || 1);
     const cy = fp.reduce((s, p) => s + p[1], 0) / (fp.length || 1);
-    let best: { east: number; north: number; score: number } | null = null;
-    for (const door of floor0.doors) {
-      const wall = floor0.walls.find((w) => w.id === door.wallId);
-      if (!wall?.exterior) continue;
-      const mx = (wall.a[0] + wall.b[0]) / 2;
-      const my = (wall.a[1] + wall.b[1]) / 2;
+    const roomPts = floor.rooms.flatMap((r) => r.polygon);
+    const mid: [number, number] = roomPts.length
+      ? [roomPts.reduce((s, p) => s + p[0], 0) / roomPts.length, roomPts.reduce((s, p) => s + p[1], 0) / roomPts.length]
+      : [cx, cy];
+
+    type Cand = { east: number; north: number; atY: number; named: boolean; streetDot: number };
+    const cands: Cand[] = [];
+    for (const door of floor.doors) {
+      if (!door.exit) continue;
+      const wall = floor.walls.find((w) => w.id === door.wallId);
+      if (!wall) continue;
+      const at: [number, number] = [
+        wall.a[0] + (wall.b[0] - wall.a[0]) * door.t,
+        wall.a[1] + (wall.b[1] - wall.a[1]) * door.t,
+      ];
       const dx = wall.b[0] - wall.a[0];
       const dy = wall.b[1] - wall.a[1];
       const len = Math.hypot(dx, dy) || 1;
-      // Outward-ish normal (left of wall dir); flip if it points inward.
+      // Start with left-of-wall normal, then force it outward (away from interior).
       let nx = -dy / len;
       let ny = dx / len;
-      if ((mx - cx) * nx + (my - cy) * ny < 0) {
+      if ((mid[0] - at[0]) * nx + (mid[1] - at[1]) * ny > 0) {
         nx = -nx;
         ny = -ny;
       }
-      const score = Math.hypot(mx - cx, my - cy);
-      if (!best || score > best.score) best = { east: nx, north: ny, score };
+      cands.push({
+        east: nx,
+        north: ny,
+        atY: at[1],
+        named: /front/i.test(door.id),
+        streetDot: street ? nx * street[0] + ny * street[1] : 0,
+      });
     }
-    if (best) return Math.atan2(best.east, -best.north);
+    if (cands.length) {
+      // Named "front" first; else the exit facing the nearest street; else southernmost.
+      cands.sort((a, b) => {
+        if (a.named !== b.named) return a.named ? -1 : 1;
+        if (street && Math.abs(a.streetDot - b.streetDot) > 0.05) return b.streetDot - a.streetDot;
+        return a.atY - b.atY;
+      });
+      const best = cands[0];
+      return Math.atan2(best.east, -best.north);
+    }
   }
-  // Layout convention when no street is known: front is plan −y → Three +Z → yaw 0.
+
+  // Entry marker placed by the user / scan — stand outside looking toward the house center.
+  const entry = model.markers.find((m) => m.type === "entry");
+  if (entry) {
+    const fp = model.footprint;
+    const cx = fp.reduce((s, p) => s + p[0], 0) / (fp.length || 1);
+    const cy = fp.reduce((s, p) => s + p[1], 0) / (fp.length || 1);
+    const east = entry.pos[0] - cx;
+    const north = entry.pos[1] - cy;
+    if (Math.hypot(east, north) > 0.2) return Math.atan2(east, -north);
+  }
+
+  // No door: stand on the nearest street looking at the house.
+  if (street) return Math.atan2(street[0], -street[1]);
+
+  // Layout convention: front is plan −y → Three +Z → yaw 0.
   return 0;
 }
 
@@ -935,7 +979,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const assumed = model.interior?.status !== "verified";
   const wrap = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<OrbitControlsImpl>(null);
-  // Rotate slider 0 = street-facing front. Tilt 1 = highest (top-down).
+  // Rotate slider 0 = front door. Tilt 1 = highest (top-down).
   const MIN_POLAR = 0.16;
   const MAX_POLAR = Math.PI * 0.48;
   const polarFromTilt = (t: number) => MAX_POLAR - Math.min(1, Math.max(0, t)) * (MAX_POLAR - MIN_POLAR);
@@ -946,6 +990,11 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const applyingOrbit = useRef(false);
   /** When true, orbit state came from drag — don't write angles back into OrbitControls. */
   const orbitFromDrag = useRef(false);
+  // New house → snap rotate 0° back to that house's front door.
+  useEffect(() => {
+    setOrbitYaw(0);
+    orbitFromDrag.current = false;
+  }, [model.id]);
   const [tip, setTip] = useState<{ id: string; title: string; detail: string; x: number; y: number } | null>(null);
 
   const showTip = (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => {
@@ -1024,7 +1073,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
     const d = Math.min((ext * 2.0 + height) * (portrait ? 1.45 : 1), ext * 3.2 + 18);
     const maxD = Math.min(Math.max(ext * 4.2, d * 1.45), large ? 260 : 180);
     const minD = Math.max(2.5, Math.min(large ? 10 : 6, ext * 0.15));
-    // Start on the street-facing side (front of the house).
+    // Start outside the front door looking in.
     const fy = streetFrontYaw(model);
     // Large extents need a wider near/far gap or depth buffer fights and orbit jitters.
     const near = Math.max(0.35, minD * 0.08);
@@ -1366,8 +1415,8 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
               value={orbitYaw}
               onChange={(e) => setOrbitYaw(Number(e.target.value))}
               className="h-1.5 w-24 cursor-pointer accent-bp-ink sm:w-32"
-              aria-label="Rotate view (0 faces the street front)"
-              title="0° = front of the house (street side)"
+              aria-label="Rotate view (0 faces the front door)"
+              title="0° = looking at the front door"
             />
           </label>
           <label className="flex items-center gap-2 font-data text-[11px] text-bp-line">

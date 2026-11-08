@@ -59,6 +59,7 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 00:40 | Cursor | UI-28 | Rotate 0° uses front-door outward normal (not road centroid). |
 | 17:50 | Antigravity | Scaffolding | Initialized FastAPI backend, React+Three.js frontend, mock simulator, and test suite. |
 | 17:52 | Backend-Agent | BE-01 | Tested claim CLI |
 | 18:12 | Claude Code | DOC-01 | Removed broken duplicate project/scripts/agent_claim.py; fixed AGENTS.md claim example path to project/backend/... |
@@ -112,3 +113,4 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 00:28 | Cursor | UI-25 | Flat roofs: ear-clip + split concave pads so lids stay on the building. |
 | 00:35 | Cursor | UI-26 | Nearest hydrant: tall red sky beacon POI with View toggle. |
 | 00:40 | Cursor | UI-27 | Hydrant beacons on the 3 nearest hydrants (tallest = closest). |
+| 00:42 | Cursor | UI-28 | Rotate 0° faces the front door (not road centroid). |
