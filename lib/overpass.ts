@@ -4,7 +4,7 @@ import {
   type LatLng,
 } from "./geo";
 import type { Point } from "@/packages/schema/building-model";
-import { normStreet, parseStreetAddress, PREFER_STREET_SLACK_M, streetsMatch } from "./address";
+import { normStreet, parseStreetAddress, streetsMatch } from "./address";
 import { SITE_REACH_MAX_M } from "./compound-geom";
 import { geoCacheKey, ttlGet, ttlSet } from "./ttl-cache";
 
@@ -526,20 +526,15 @@ out tags geom;`;
       }
       return { dir, name, d: best };
     };
-    // Soft-prefer the address street when it is near the closest curb; otherwise stay nearest.
+    // Facing always follows the named address street when that curb exists in the scene.
+    // Driveway mouth may still soft-prefer a nearer road in accessFeatures.
     const nearest = pickNearest(roads);
     const named =
       wantStreet
         ? roads.filter((r) => r.name && streetsMatch(normStreet(r.name), wantStreet))
         : [];
     const namedHit = named.length ? pickNearest(named) : null;
-    const hit =
-      namedHit &&
-      Number.isFinite(namedHit.d) &&
-      Number.isFinite(nearest.d) &&
-      namedHit.d <= nearest.d + PREFER_STREET_SLACK_M
-        ? namedHit
-        : nearest;
+    const hit = namedHit?.dir && Number.isFinite(namedHit.d) ? namedHit : nearest;
     if (hit.dir && Number.isFinite(hit.d)) {
       roadDir = hit.dir;
       roadName = hit.name;

@@ -16,6 +16,20 @@ export function parseStreetAddress(a?: string | null): { num: string; street: st
   return line ? { num: line[1].toLowerCase(), street: normStreet(line[2]) } : null;
 }
 
+/**
+ * Street name from a full address or a street-only geocode label like
+ * "Yardley Court, East Goshen Township, PA" (no house number).
+ */
+export function parseStreetName(a?: string | null): string | null {
+  const full = parseStreetAddress(a);
+  if (full) return full.street;
+  if (!a) return null;
+  const head = a.split(",")[0]?.trim();
+  if (!head || /^\d/.test(head)) return null;
+  const n = normStreet(head);
+  return n || null;
+}
+
 const PLUTO_SUFFIX: Record<string, string> = {
   ave: "AVENUE", st: "STREET", rd: "ROAD", dr: "DRIVE", ln: "LANE", ct: "COURT", blvd: "BOULEVARD",
   pl: "PLACE", cir: "CIRCLE", ter: "TERRACE", hwy: "HIGHWAY", pkwy: "PARKWAY",

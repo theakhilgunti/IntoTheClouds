@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { parseStreetAddress, plutoAddress, streetsMatch } from "./address.ts";
+import { parseStreetAddress, parseStreetName, plutoAddress, streetsMatch } from "./address.ts";
 
 describe("street address parsing", () => {
   it("reads a Census one-line address", () => {
@@ -29,5 +29,10 @@ describe("street address parsing", () => {
     assert.equal(streetsMatch("yardley ct", "yardley court"), true);
     assert.equal(streetsMatch("yardley ct", "yardley dr"), false);
     assert.equal(streetsMatch("yardley", "yardley ct"), true);
+  });
+
+  it("reads a street-only geocode label without a house number", () => {
+    assert.equal(parseStreetName("Yardley Court, East Goshen Township, PA"), "yardley ct");
+    assert.equal(parseStreetName("15 Yardley Ct, East Goshen, PA"), "yardley ct");
   });
 });

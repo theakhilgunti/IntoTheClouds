@@ -81,7 +81,45 @@ describe("street and driveway", () => {
     assert.equal(road?.label, "Simonson Avenue");
     assert.ok(drive);
     const midX = drive!.polygon.reduce((s, p) => s + p[0], 0) / drive!.polygon.length;
-    assert.ok(midX > 4, `driveway should sit east of the house, was ${midX}`);
+    assert.ok(midX > 2, `driveway should sit toward the garage side, was ${midX}`);
+    const ys = drive!.polygon.map((p) => p[1]);
+    const driveLen = Math.hypot(
+      drive!.polygon[0][0] - drive!.polygon[1][0],
+      drive!.polygon[0][1] - drive!.polygon[1][1],
+    );
+    assert.ok(driveLen <= 29, `driveway must stay bounded, len=${driveLen}`);
+    assert.ok(Math.max(...ys.map(Math.abs)) < 25, "driveway must not run away down the street");
+  });
+
+  it("aims the driveway with the house front and meets the mid-gap curb", () => {
+    const house: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
+    // Across-street neighbor near face at y=-30 → mid-gap centerline ≈ -18.
+    const across: [number, number][] = [[-4, -36], [4, -36], [4, -30], [-4, -30]];
+    const features = accessFeatures({
+      footprint: house,
+      streetDir: [0, -1],
+      roads: [{ name: "Yardley Court", pts: [[-200, -50], [200, -50]] }],
+      garage: null,
+      preferStreet: "Yardley Ct",
+      neighborRings: [across],
+    });
+    const drive = features.find((f) => f.kind === "driveway");
+    const roads = features.filter((f) => f.kind === "road" && f.label === "Yardley Court");
+    assert.ok(drive, "driveway should exist");
+    assert.ok(roads.length >= 1, "road should exist");
+    const xs = drive!.polygon.map((p) => p[0]);
+    const ys = drive!.polygon.map((p) => p[1]);
+    const cx = xs.reduce((a, b) => a + b, 0) / 4;
+    assert.ok(Math.abs(cx) < 6, `driveway should stay in front of the house, cx=${cx}`);
+    const midY =
+      roads.reduce((s, r) => {
+        const c = r.polygon.reduce((t, p) => t + p[1], 0) / 4;
+        return s + c;
+      }, 0) / roads.length;
+    assert.ok(midY > -22 && midY < -14, `curb should sit mid-gap, midY=${midY}`);
+    const driveTipY = Math.min(...ys);
+    const roadNearY = Math.max(...roads.flatMap((r) => r.polygon.map((p) => p[1])));
+    assert.ok(Math.abs(driveTipY - roadNearY) < 2.5, `driveway should touch road, tip=${driveTipY} road=${roadNearY}`);
   });
 
   it("keeps a long road stretch plus a connector and a traffic light at the cross", () => {
@@ -206,6 +244,107 @@ describe("street and driveway", () => {
     assert.ok(roads.length >= 3, `curb street should render, got ${roads.length}`);
   });
 
+  it("keeps curb chunks that only clip a neighbor pad, not the focus house", () => {
+    const house: [number, number][] = [[-5, -4], [5, -4], [5, 4], [-5, 4]];
+    // Neighbor sits on the street centerline to the east — old cull dropped those chunks.
+    const neighbor: [number, number][] = [[10, -8], [20, -8], [20, -4], [10, -4]];
+    const features = accessFeatures({
+      footprint: house,
+      streetDir: [0, -1],
+      roads: [{ name: "Curb Street", pts: [[-40, -6], [40, -6]] }],
+      garage: null,
+      avoidRings: [house, neighbor],
+    });
+    const roads = features.filter((f) => f.kind === "road" && f.label === "Curb Street");
+    assert.ok(roads.length >= 3, `front curb must survive neighbor-pad overlap, got ${roads.length}`);
+    assert.ok(
+      roads.some((r) => {
+        const c = r.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]] as [number, number], [0, 0] as [number, number]);
+        return c[0] / 4 > 8;
+      }),
+      "chunks beside the neighbor should still draw",
+    );
+  });
+
+  it("seats an oversized preferred curb mid-gap toward opposing neighbors", () => {
+    const house: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
+    const across: [number, number][] = [[-4, -36], [4, -36], [4, -30], [-4, -30]];
+    const features = accessFeatures({
+      footprint: house,
+      streetDir: [0, -1],
+      roads: [{ name: "Yardley Court", pts: [[-40, -50], [40, -50]] }],
+      garage: null,
+      preferStreet: "Yardley Ct",
+      neighborRings: [across],
+    });
+    const roads = features.filter((f) => f.kind === "road" && f.label === "Yardley Court");
+    assert.ok(roads.length >= 1, "preferred street should draw");
+    const midY =
+      roads.reduce((s, r) => {
+        const c = r.polygon.reduce((t, p) => t + p[1], 0) / 4;
+        return s + c;
+      }, 0) / roads.length;
+    // Facade y=-6, opp near y=-30 → mid ≈ -18.
+    assert.ok(midY > -22 && midY < -14, `curb should sit mid-gap, midY=${midY}`);
+    const drive = features.find((f) => f.kind === "driveway");
+    assert.ok(drive, "driveway must still attach after mid-gap seating");
+  });
+
+  it("falls back to a modest setback when no opposing neighbor exists", () => {
+    const house: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
+    const features = accessFeatures({
+      footprint: house,
+      streetDir: [0, -1],
+      roads: [{ name: "Yardley Court", pts: [[-40, -40], [40, -40]] }],
+      garage: null,
+      preferStreet: "Yardley Ct",
+      neighborRings: [],
+    });
+    const roads = features.filter((f) => f.kind === "road" && f.label === "Yardley Court");
+    const midY =
+      roads.reduce((s, r) => {
+        const c = r.polygon.reduce((t, p) => t + p[1], 0) / 4;
+        return s + c;
+      }, 0) / roads.length;
+    // halfFront(6) + FALLBACK_DRIVE(8) + halfRoad(~3.5) ≈ 17.5 → y ≈ -17.5
+    assert.ok(midY > -22 && midY < -12, `fallback curb should sit ahead of the house, midY=${midY}`);
+    assert.ok(features.some((f) => f.kind === "driveway"), "driveway to the seated curb must still draw");
+  });
+
+  it("orients the preferred curb perpendicular to the driveway", () => {
+    const house: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
+    // Angled OSM run — must be rebuilt east-west (perp to south-facing driveway).
+    const features = accessFeatures({
+      footprint: house,
+      streetDir: [0, -1],
+      roads: [{ name: "Yardley Court", pts: [[-30, -45], [30, -25]] }],
+      garage: null,
+      preferStreet: "Yardley Ct",
+      neighborRings: [],
+    });
+    const drive = features.find((f) => f.kind === "driveway");
+    const roads = features.filter((f) => f.kind === "road" && f.label === "Yardley Court");
+    assert.ok(drive, "driveway should exist");
+    assert.ok(roads.length >= 1, "road should exist");
+    // Ribbon edge 0→1 runs along the driveway length.
+    const d = drive!.polygon;
+    const ddx = d[1]![0] - d[0]![0];
+    const ddy = d[1]![1] - d[0]![1];
+    const dl = Math.hypot(ddx, ddy) || 1;
+    const driveDir: [number, number] = [ddx / dl, ddy / dl];
+    // Road long edge should be ~horizontal (perp to south driveway).
+    const ys = roads.flatMap((r) => r.polygon.map((p) => p[1]));
+    const ySpan = Math.max(...ys) - Math.min(...ys);
+    assert.ok(ySpan < 12, `perp curb should stay flat along Y, ySpan=${ySpan}`);
+    const road = roads[0]!;
+    const rdx = road.polygon[1]![0] - road.polygon[0]![0];
+    const rdy = road.polygon[1]![1] - road.polygon[0]![1];
+    const rl = Math.hypot(rdx, rdy) || 1;
+    const roadDir: [number, number] = [rdx / rl, rdy / rl];
+    const dot = Math.abs(driveDir[0] * roadDir[0] + driveDir[1] * roadDir[1]);
+    assert.ok(dot < 0.25, `driveway should be perp to curb, |drive·road|=${dot}`);
+  });
+
   it("prefers the address street over a nearer arterial when within slack", () => {
     const house: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
     const features = accessFeatures({
@@ -224,27 +363,34 @@ describe("street and driveway", () => {
     assert.ok(labels.includes("Yardley Court"), `expected Yardley Court ribbon, got ${labels.join(",")}`);
     const drive = features.find((f) => f.kind === "driveway");
     assert.ok(drive, "driveway should attach");
-    const midY = drive!.polygon.reduce((s, p) => s + p[1], 0) / drive!.polygon.length;
-    assert.ok(midY < -10, `driveway should reach toward Yardley Court (y≈-18), midY=${midY}`);
+    const court = features.filter((f) => f.kind === "road" && f.label === "Yardley Court");
+    assert.ok(court.length >= 1, "Yardley Court ribbon should draw");
+    const driveTipY = Math.min(...drive!.polygon.map((p) => p[1]));
+    const courtNearY = Math.max(...court.flatMap((r) => r.polygon.map((p) => p[1])));
+    // Short drive must meet the pulled named street, not the nearer Pike.
+    assert.ok(Math.abs(driveTipY - courtNearY) < 2.5, `driveway should touch Yardley Court, tip=${driveTipY} curb=${courtNearY}`);
   });
 
-  it("falls back to the nearest curb when the address street is much farther", () => {
+  it("attaches the driveway to the named address street even when a nearer arterial exists", () => {
     const house: [number, number][] = [[-4, -6], [4, -6], [4, 6], [-4, 6]];
     const features = accessFeatures({
       footprint: house,
       streetDir: [0, -1],
       roads: [
         { name: "Paoli Pike", pts: [[-80, -8], [80, -8]] },
-        // Court well beyond +15 m slack vs nearest (~8 m).
         { name: "Yardley Court", pts: [[-40, -40], [40, -40]] },
       ],
       garage: null,
       preferStreet: "Yardley Ct",
     });
+    const labels = features.filter((f) => f.kind === "road").map((f) => f.label);
+    assert.ok(labels.includes("Yardley Court"), "named address street still draws");
     const drive = features.find((f) => f.kind === "driveway");
     assert.ok(drive, "driveway should attach");
-    const midY = drive!.polygon.reduce((s, p) => s + p[1], 0) / drive!.polygon.length;
-    assert.ok(midY > -20, `driveway should latch to nearer Paoli Pike (y≈-8), midY=${midY}`);
+    const court = features.filter((f) => f.kind === "road" && f.label === "Yardley Court");
+    const driveTipY = Math.min(...drive!.polygon.map((p) => p[1]));
+    const courtNearY = Math.max(...court.flatMap((r) => r.polygon.map((p) => p[1])));
+    assert.ok(Math.abs(driveTipY - courtNearY) < 2.5, `driveway should latch to Yardley Court, tip=${driveTipY} curb=${courtNearY}`);
   });
 
   it("places the nearest mapped fire hydrants around the house", () => {
@@ -291,7 +437,7 @@ describe("street and driveway", () => {
     assert.ok(roadRibbonCap(campus) > neighborShellCap(campus), "streets keep more runs than neighbor shells");
     assert.ok(neighborReach(campus) < siteReach(campus) * 0.5, "large complexes stay well inside siteReach");
     assert.ok(roadReach(house) > neighborReach(house), "small lots still give streets a bit more room");
-    assert.ok(roadReach(house) >= 110, "street disc has a usable floor");
+    assert.ok(roadReach(house) >= 170, "street disc has a usable floor");
     const estH = estimateNeighborCloudReach(house);
     const estC = estimateNeighborCloudReach(campus);
     assert.ok(estH <= neighborReach(house) && estH >= 40);
@@ -304,14 +450,16 @@ describe("street and driveway", () => {
     assert.ok(cloud >= estH, "cloud never shrinks below cap-based estimate");
     const outdoor = outdoorReachFromNeighbors(house, [{ kind: "neighbor", polygon: farNbr }]);
     assert.equal(outdoor, outdoorSceneReach(house, [farNbr]));
-    assert.ok(outdoor >= cloud * 0.85, "outdoor disc stays near neighbor cloud after mild foundation scale");
-    assert.ok(
-      outdoor === Math.round(Math.max(cloud, roadReach(house)) * (0.9 + 0.2 * Math.min(1, Math.max(0, (Math.hypot(5, 4) - 10) / 50)))),
-      "outdoor disc = max(cloud, roadReach) × mild foundation scale",
+    const scale = 0.9 + 0.2 * Math.min(1, Math.max(0, (Math.hypot(5, 4) - 10) / 50));
+    assert.ok(outdoor >= roadReach(house), "outdoor disc never shrinks below roadReach");
+    assert.equal(
+      outdoor,
+      Math.max(Math.round(cloud * scale), roadReach(house)),
+      "outdoor disc = max(scaled cloud, roadReach)",
     );
     assert.ok(
-      outdoorSceneReach(campus, []) > outdoorSceneReach(house, []),
-      "larger foundation gets a mildly wider scene/grid disc",
+      outdoorSceneReach(campus, []) >= outdoorSceneReach(house, []),
+      "larger foundation keeps at least as wide a scene/grid disc",
     );
     // Compact tax lot keeps the obstacle disc smaller than a campus footprint.
     const compactLot: [number, number][] = [[-9, -7], [9, -7], [9, 7], [-9, 7]];
@@ -332,11 +480,14 @@ describe("street and driveway", () => {
     const stop = features.find((f) => f.kind === "stop");
     assert.ok(signal, "traffic signal beside the road");
     assert.ok(stop, "stop sign beside the road");
+    const roads = features.filter((f) => f.kind === "road");
+    const roadMidY =
+      roads.reduce((s, r) => s + r.polygon.reduce((t, p) => t + p[1], 0) / 4, 0) / Math.max(1, roads.length);
     const sc = signal!.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((n) => n / 4);
     const tc = stop!.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((n) => n / 4);
-    // Centerline nodes get nudged onto the curb (toward the house at y≈0).
-    assert.ok(Math.abs(sc[1] + 14) > 2.5, `signal should leave the roadway centerline, y=${sc[1]}`);
-    assert.ok(Math.abs(tc[1] + 14) > 2.5, `stop should leave the roadway centerline, y=${tc[1]}`);
+    // Centerline nodes get nudged onto the curb (toward the house).
+    assert.ok(Math.abs(sc[1] - roadMidY) > 2.5, `signal should leave the roadway centerline, y=${sc[1]} mid=${roadMidY}`);
+    assert.ok(Math.abs(tc[1] - roadMidY) > 2.5, `stop should leave the roadway centerline, y=${tc[1]} mid=${roadMidY}`);
     assert.ok(!features.some((f) => f.kind === "signal" && Math.hypot(f.polygon[0][0] - 200, f.polygon[0][1]) < 5));
     assert.ok(!features.some((f) => f.kind === "stop" && f.polygon.some((p) => Math.abs(p[1] - 80) < 2)));
   });

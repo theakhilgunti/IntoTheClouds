@@ -4,7 +4,7 @@
  */
 import { fromLocal, pointInPolygon, polygonArea, polygonCentroid, toLocal, type LatLng } from "./geo";
 import { geocode, nominatimBuildingId } from "./geocode";
-import { parseStreetAddress } from "./address";
+import { parseStreetAddress, parseStreetName } from "./address";
 import { lookupBuilding, type OsmContext } from "./overpass";
 import { pinnedWayId } from "./pins";
 import { verifiedInterior } from "./interiors";
@@ -104,7 +104,10 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   step("locate", "active");
   let origin: LatLng;
   let geocodedWay: number | null = null;
-  let address = input.address?.trim() ?? "";
+  const queryAddress = input.address?.trim() ?? "";
+  let address = queryAddress;
+  // Keep the user's street even when Nominatim returns a street-only label without a house number.
+  const queryStreet = parseStreetName(queryAddress);
   let streetOnlyGeocode = false;
   if (address) {
     const g = await geocode(address, sources);
@@ -134,9 +137,12 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   // 2. Real building outline from OpenStreetMap.
   step("outline", "active");
   let osm: OsmContext | null = null;
+  // Prefer the user's typed address for street/house matching — geocode labels often drop the number.
+  const outlineAddress = queryAddress || address;
   try {
-    const wayId = input.wayId ?? pinnedWayId(address) ?? geocodedWay ?? (address ? await nominatimBuildingId(input.address ?? address) : null);
-    osm = await lookupBuilding(origin, input.heading, { address, wayId, force: input.wayId != null });
+    const wayId =
+      input.wayId ?? pinnedWayId(outlineAddress) ?? geocodedWay ?? (outlineAddress ? await nominatimBuildingId(outlineAddress) : null);
+    osm = await lookupBuilding(origin, input.heading, { address: outlineAddress, wayId, force: input.wayId != null });
   } catch (e) {
     sources.push({ id: "osm", name: "OpenStreetMap buildings", status: "failed", detail: `Map server didn't respond (${String(e)}).` });
   }
@@ -246,7 +252,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v68" || saved.model.roof?.basis !== "roof-v4");
+      (saved.model.compound?.basis !== "compound-v81" || saved.model.roof?.basis !== "roof-v4");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -996,10 +1002,12 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       .map((f) => f.polygon),
   ].filter((ring) => ring.length >= 3);
   const preferStreet =
+    queryStreet ??
+    parseStreetName(outlineAddress) ??
+    parseStreetName(address) ??
     osm?.roadName ??
-    parseStreetAddress(input.address)?.street ??
-    parseStreetAddress(address)?.street ??
     null;
+  const neighborRings = compound.features.filter((f) => f.kind === "neighbor").map((f) => f.polygon);
   const access = accessFeatures({
     footprint: built.model.footprint,
     streetDir,
@@ -1012,6 +1020,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     stopSigns: (osm?.stopSigns ?? []).map((p) => [p[0] - originShift[0], p[1] - originShift[1]] as Point),
     radiusM: compound.outdoorReach,
     avoidRings,
+    neighborRings,
     preferStreet,
   });
   const verifiedSite = crossVerifySiteFeatures({
@@ -1056,7 +1065,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     features: [...kept, ...access, ...entrySteps].filter(
       (f) => f.id === "terrain-radius" || insideScene(f.polygon),
     ),
-    basis: "compound-v68",
+    basis: "compound-v81",
     grade: grade ?? undefined,
   };
   if (grade?.dem) {

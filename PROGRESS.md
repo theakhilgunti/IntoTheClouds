@@ -9,7 +9,7 @@
 
 | Task ID | Claimed Files / Directories | Owner / Agent | Branch | Status | Timestamp (UTC) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| *None* | *(No active locks — all modules available)* | — | — | ⚪ Open | — |
+| — | — | — | — | ⚪ Open | — |
 
 ---
 
@@ -54,6 +54,20 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 09:40 | Cursor | UI-163 | Rebuild preferred curb perpendicular to driveway on mid-gap line (compound-v81). |
+| 09:36 | Cursor | UI-162 | Seat curb mid-gap house↔opposing neighbors; restore facade→curb driveway (compound-v80). |
+| 09:30 | Cursor | UI-161 | Short driveway (~3.5 m) meets pulled curb near-edge; road brought in so they touch (compound-v79). |
+| 09:27 | Cursor | UI-160 | Driveway follows house streetDir, ray-hits curb so it meets the road (compound-v78). |
+| 09:24 | Cursor | UI-159 | Driveway: facade→nearest curb only, ≤12 m cap; no slide along long OSM runs (compound-v77). |
+| 09:19 | Cursor | UI-158 | Fix short driveway after curb pull; pull to near-edge ~2.5 m (centerline + half width, compound-v76). |
+| 09:16 | Cursor | UI-157 | Keep user street for facing after street-only geocode; tighter curb pull (~5 m); driveway hard-prefers named street (compound-v75). |
+| 09:13 | Cursor | UI-156 | Pull oversized curb setbacks to ~7 m; road cull uses focus house only (compound-v74). |
+| 09:07 | Cursor | UI-155 | Facing/roadDir always follows named address street; driveway keeps soft nearest slack. |
+| 08:59 | Cursor | UI-154 | Ribbon cap back to 100; scale road radius (site 220–480 m, floor 170 m, compound-v73). |
+| 08:58 | Cursor | UI-153 | Road ribbon cap 400 / features 1200 (compound-v72). |
+| 08:57 | Cursor | UI-152 | Road ribbon cap 100 / features 400 (compound-v71). |
+| 08:55 | Cursor | UI-151 | Road ribbon cap 48 / features 180; ease site/road reach to 180–380 m / floor 130 m (compound-v70). |
+| 08:52 | Cursor | UI-150 | Wider street disc: site 200–420 m, roadReach floor 150 m, outdoor never below roadReach (compound-v69). |
 | 08:46 | Cursor | UI-149 | Neighbor shell cap 20 → 25. |
 | 08:41 | Cursor | UI-148 | Soft-prefer address street within +15m; require matching street suffixes (ct≠dr). |
 | 08:33 | Cursor | UI-147 | Ignore Nominatim highway wayIds; prefer address street for roadDir/ribbons/driveway; warn on street-only geocode. |

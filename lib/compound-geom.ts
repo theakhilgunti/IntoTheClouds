@@ -1,5 +1,5 @@
 /** Lot, outbuilding, and aerial-box geometry. No app imports, so node:test can load it. */
-import { normStreet, PREFER_STREET_SLACK_M, streetsMatch } from "./address";
+import { normStreet, streetsMatch } from "./address";
 
 export type Point = [number, number];
 
@@ -592,9 +592,9 @@ export function ringSeparation(a: Point[], b: Point[]): number {
  */
 export const MAX_NEIGHBOR_SHELLS = 42;
 /** Cap unique street runs (nearest first) after expanding road reach. */
-export const MAX_ROAD_RIBBONS = 36;
+export const MAX_ROAD_RIBBONS = 100;
 /** Max drawn road mesh pieces after chunking long runs for DEM-friendly slabs. */
-export const MAX_ROAD_FEATURES = 140;
+export const MAX_ROAD_FEATURES = 400;
 /** Split long street centerlines into this many meters per ribbon quad (short = follows hills). */
 export const ROAD_CHUNK_M = 24;
 /** Cap mapped + aerial trees kept around the site. */
@@ -612,16 +612,16 @@ export const ROAD_SIGN_ALONG_M = 16;
  * Outdoor fetch ceiling (meters). Neighbor/obstacle *render* disc is tighter and
  * plot-sized via neighborReach — siteReach stays a bit wider so OSM still has edge data.
  */
-export const SITE_REACH_MIN_M = 160;
-export const SITE_REACH_MAX_M = 340;
+export const SITE_REACH_MIN_M = 220;
+export const SITE_REACH_MAX_M = 480;
 
 /**
  * OSM / aerial fetch ceiling — slightly wider than the drawn outdoor disc.
  */
 export function siteReach(mainRing: Point[]): number {
   const ext = foundationExtent(mainRing);
-  // ~10 m house → ~160 m; ~40 m wing → ~200 m; ~70 m complex → ~340 m (cap).
-  const raw = Math.round(ext * 3.7 + 56);
+  // ~10 m house → ~220 m; ~40 m wing → ~280 m; ~70 m complex → ~480 m (cap).
+  const raw = Math.round(ext * 4.5 + 80);
   return Math.min(SITE_REACH_MAX_M, Math.max(SITE_REACH_MIN_M, raw));
 }
 
@@ -661,11 +661,11 @@ export function neighborReach(mainRing: Point[], parcel?: Point[] | null): numbe
 export function roadReach(mainRing: Point[], parcel?: Point[] | null): number {
   const plot = plotExtent(mainRing, parcel);
   const ext = foundationExtent(mainRing);
-  const fromPlot = Math.round(plot * 3.15 + 44);
-  const fromHouse = Math.round(ext * 3.45 + 56);
+  const fromPlot = Math.round(plot * 4.0 + 64);
+  const fromHouse = Math.round(ext * 4.4 + 80);
   const raw = Math.max(fromPlot, fromHouse);
-  const ceil = Math.round(siteReach(mainRing) * 0.96);
-  return Math.min(ceil, Math.max(110, raw));
+  const ceil = siteReach(mainRing);
+  return Math.min(ceil, Math.max(170, raw));
 }
 
 /** How many nearest neighbor shells to keep (flat cap for every footprint size). */
@@ -674,11 +674,8 @@ export function neighborShellCap(_mainRing: Point[]): number {
 }
 
 /** How many nearest street runs to keep — wider than the neighbor shell cap. */
-export function roadRibbonCap(mainRing: Point[]): number {
-  const ext = foundationExtent(mainRing);
-  if (ext < 16) return 28;
-  if (ext < 28) return 32;
-  return Math.min(MAX_ROAD_RIBBONS, 36);
+export function roadRibbonCap(_mainRing: Point[]): number {
+  return Math.min(MAX_ROAD_RIBBONS, 100);
 }
 
 /**
@@ -731,8 +728,8 @@ export function foundationSceneScale(mainRing: Point[]): number {
 
 /**
  * Outdoor disc for streets / DEM / grid / signs.
- * Always at least roadReach so tightening neighbor shells can't erase the street network,
- * then nudged slightly by foundation size for the visible grid.
+ * Always at least roadReach so tightening neighbor shells / mild foundation scale
+ * can't shrink the street network.
  */
 export function outdoorSceneReach(
   mainRing: Point[],
@@ -741,7 +738,8 @@ export function outdoorSceneReach(
 ): number {
   const cloud = neighborCloudReach(mainRing, neighborRings, parcel);
   const roads = roadReach(mainRing, parcel);
-  return Math.round(Math.max(cloud, roads) * foundationSceneScale(mainRing));
+  const scaledCloud = Math.round(cloud * foundationSceneScale(mainRing));
+  return Math.max(scaledCloud, roads);
 }
 
 /** Derive outdoor disc from compound neighbor features (viewer / DEM clip). */
@@ -1725,6 +1723,8 @@ export function accessFeatures(opts: {
   radiusM?: number;
   /** Building pads streets must not cut through (focus + neighbors + sheds). */
   avoidRings?: Point[][];
+  /** Neighbor footprints — used to seat the curb midway across the street. */
+  neighborRings?: Point[][];
   /** Normalized or raw street name from the scanned address — keep that curb first. */
   preferStreet?: string | null;
 }): SiteFeature[] {
@@ -1797,20 +1797,127 @@ export function accessFeatures(opts: {
       runStart = b;
     }
   }
-  // Soft-prefer the address street when near the closest curb, else nearest-first.
-  // Chunk each into short ribbon quads so DEM/grade can't twist a long street into the terrain.
+  // Named address street first; seat that curb mid-gap toward opposing neighbors.
   const prefer = opts.preferStreet?.trim() ? normStreet(opts.preferStreet) : null;
   const namePreferred = (name: string | null) =>
     !!(prefer && name && streetsMatch(normStreet(name), prefer));
-  const dNear = roadRuns.length ? Math.min(...roadRuns.map((r) => r.d)) : Infinity;
-  const softPreferred = (name: string | null, d: number) =>
-    namePreferred(name) && d <= dNear + PREFER_STREET_SLACK_M;
+
+  const MIN_DRIVE_M = 4; // facade → near asphalt when mid-gap would clip the house
+  const FALLBACK_DRIVE_M = 8; // no opposing neighbor → modest setback
+  const MAX_DRIVE_M = 28;
+  const MAX_CURB_SHIFT_M = 45;
+  const MAX_SHIFT_FROM_HOUSE_M = 70;
+  const fp = opts.footprint.length >= 3 ? opts.footprint : null;
+  const halfRoad = width / 2;
+
+  const namedRuns = roadRuns.filter((r) => namePreferred(r.name));
+  // Prefer named curb for seating+orientation; else nearest run (translate only).
+  const seatPool = namedRuns.length
+    ? namedRuns
+    : roadRuns.length
+      ? [roadRuns.reduce((a, b) => (a.d <= b.d ? a : b))]
+      : [];
+  const orientPool = namedRuns; // only force ⊥ driveway on the address street
+
+  // Front direction (same as house) before shifting, so the curb lands on the driveway axis.
+  const seed = seatPool.length ? seatPool.reduce((a, b) => (a.d <= b.d ? a : b)) : null;
+  const seedHit = seed ? nearestOn(here, seed.a, seed.b) : null;
+  let dir: Point = [0, -1];
+  if (seedHit) {
+    const toCurb: Point = [seedHit.at[0] - here[0], seedHit.at[1] - here[1]];
+    const tl = Math.hypot(toCurb[0], toCurb[1]) || 1;
+    dir = [toCurb[0] / tl, toCurb[1] / tl];
+    const raw = opts.streetDir;
+    const rawLen = raw ? Math.hypot(raw[0], raw[1]) : 0;
+    if (raw && rawLen > 0.5) {
+      let frontDir: Point = [raw[0] / rawLen, raw[1] / rawLen];
+      if (frontDir[0] * toCurb[0] + frontDir[1] * toCurb[1] < 0) {
+        frontDir = [-frontDir[0], -frontDir[1]];
+      }
+      dir = frontDir;
+    }
+  }
+  const side: Point = [-dir[1], dir[0]];
+  let halfSide = 0;
+  let halfFront = 0;
+  for (const p of opts.footprint) {
+    halfSide = Math.max(halfSide, Math.abs((p[0] - here[0]) * side[0] + (p[1] - here[1]) * side[1]));
+    halfFront = Math.max(halfFront, Math.abs((p[0] - here[0]) * dir[0] + (p[1] - here[1]) * dir[1]));
+  }
+
+  // Across-street neighbors: centroid ahead of our facade, not too far laterally.
+  let oppNear = Infinity;
+  for (const ring of opts.neighborRings ?? []) {
+    if (ring.length < 3) continue;
+    const c = ringCentroid(ring);
+    const along = (c[0] - here[0]) * dir[0] + (c[1] - here[1]) * dir[1];
+    if (along < halfFront + 3) continue;
+    const lat = Math.abs((c[0] - here[0]) * side[0] + (c[1] - here[1]) * side[1]);
+    if (lat > 45) continue;
+    let near = Infinity;
+    for (const p of ring) {
+      const d = (p[0] - here[0]) * dir[0] + (p[1] - here[1]) * dir[1];
+      if (d > halfFront) near = Math.min(near, d);
+    }
+    if (near < Infinity) oppNear = Math.min(oppNear, near);
+  }
+
+  // Centerline at mid-gap (house facade ↔ opposing near face), else a fallback setback.
+  // Rebuild preferred runs on that line, perpendicular to the driveway (along `side`).
+  const midGap = Number.isFinite(oppNear) ? (halfFront + oppNear) / 2 : null;
+  const targetCenterDist = Math.max(
+    halfFront + halfRoad + MIN_DRIVE_M,
+    midGap ?? halfFront + FALLBACK_DRIVE_M + halfRoad,
+  );
+  const curbOrigin: Point = [
+    here[0] + dir[0] * targetCenterDist,
+    here[1] + dir[1] * targetCenterDist,
+  ];
+  const seatIds = new Set(seatPool);
+  const orientIds = new Set(orientPool);
+  for (const r of roadRuns) {
+    if (!seatIds.has(r)) continue;
+    const hit = nearestOn(here, r.a, r.b);
+    if (hit.d > MAX_SHIFT_FROM_HOUSE_M) continue;
+    if (orientIds.has(r)) {
+      // Rebuild on the curb line, perpendicular to the driveway.
+      const runLen = dist(r.a, r.b);
+      const ta = (r.a[0] - curbOrigin[0]) * side[0] + (r.a[1] - curbOrigin[1]) * side[1];
+      const tb = (r.b[0] - curbOrigin[0]) * side[0] + (r.b[1] - curbOrigin[1]) * side[1];
+      let a: Point = [curbOrigin[0] + side[0] * ta, curbOrigin[1] + side[1] * ta];
+      let b: Point = [curbOrigin[0] + side[0] * tb, curbOrigin[1] + side[1] * tb];
+      // Nearly radial OSM run collapses when projected — keep span along the curb.
+      if (dist(a, b) < Math.max(8, runLen * 0.35)) {
+        const half = Math.max(runLen, 24) / 2;
+        const midT = (ta + tb) / 2 || 0;
+        const midClamped = Math.max(-MAX_CURB_SHIFT_M, Math.min(MAX_CURB_SHIFT_M, midT));
+        a = [curbOrigin[0] + side[0] * (midClamped - half), curbOrigin[1] + side[1] * (midClamped - half)];
+        b = [curbOrigin[0] + side[0] * (midClamped + half), curbOrigin[1] + side[1] * (midClamped + half)];
+      }
+      r.a = a;
+      r.b = b;
+    } else {
+      // No named street — translate only so connectors keep their crossings.
+      const delta = hit.d - targetCenterDist;
+      if (Math.abs(delta) >= 0.25) {
+        const shift = Math.max(-MAX_CURB_SHIFT_M, Math.min(MAX_CURB_SHIFT_M, delta));
+        const vx = here[0] - hit.at[0];
+        const vy = here[1] - hit.at[1];
+        const vd = Math.hypot(vx, vy) || 1;
+        r.a = [r.a[0] + (vx / vd) * shift, r.a[1] + (vy / vd) * shift];
+        r.b = [r.b[0] + (vx / vd) * shift, r.b[1] + (vy / vd) * shift];
+      }
+    }
+    r.d = nearestOn(here, r.a, r.b).d;
+  }
+
   const featureCap = Math.min(MAX_ROAD_FEATURES, Math.max(ribbonCap * 3, ribbonCap));
   let roadFeat = 0;
+  const roadAvoid = fp ? [fp] : avoid;
   roadRuns
     .sort((a, b) => {
-      const ap = softPreferred(a.name, a.d) ? 0 : 1;
-      const bp = softPreferred(b.name, b.d) ? 0 : 1;
+      const ap = namePreferred(a.name) ? 0 : 1;
+      const bp = namePreferred(b.name) ? 0 : 1;
       if (ap !== bp) return ap - bp;
       return a.d - b.d;
     })
@@ -1825,8 +1932,7 @@ export function accessFeatures(opts: {
         const a: Point = [r.a[0] + (r.b[0] - r.a[0]) * t0, r.a[1] + (r.b[1] - r.a[1]) * t0];
         const b: Point = [r.a[0] + (r.b[0] - r.a[0]) * t1, r.a[1] + (r.b[1] - r.a[1]) * t1];
         const mid: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-        // Only drop chunks whose centerline is inside a building (not merely curb-adjacent).
-        if (roadPointHitsBuilding(mid, avoid)) continue;
+        if (roadPointHitsBuilding(mid, roadAvoid)) continue;
         const poly = ribbon(a, b, width, ROAD_CHUNK_M + 12);
         if (!poly) continue;
         out.push({
@@ -1852,8 +1958,6 @@ export function accessFeatures(opts: {
     [p[0] - s, p[1] + s],
   ];
 
-  // OSM-mapped traffic signals along the drawn road ribbons — curb-offset so poles
-  // aren't stuck in the middle of the intersection / roadway.
   let signalN = 0;
   [...(opts.trafficSignals ?? [])]
     .map((p) => ({ p, d: dist(here, p) }))
@@ -1872,7 +1976,6 @@ export function accessFeatures(opts: {
       });
     });
 
-  // OSM-mapped stop signs — same curb nudge (OSM often tags the junction node).
   let stopN = 0;
   [...(opts.stopSigns ?? [])]
     .map((p) => ({ p, d: dist(here, p) }))
@@ -1891,8 +1994,6 @@ export function accessFeatures(opts: {
       });
     });
 
-  // Fallback: invent a light at unmapped crossings when OSM has none nearby —
-  // still curb-offset, never plant the pole on the asphalt cross.
   if (signalN === 0) {
     for (let i = 0; i < segs.length; i++) {
       for (let j = i + 1; j < segs.length; j++) {
@@ -1912,59 +2013,44 @@ export function accessFeatures(opts: {
     }
   }
 
-  // Nearest segment for driveway mouth — soft-prefer the address street when nearby.
+  // Driveway: facade → near asphalt edge (meets the road ribbon).
   let best: { a: Point; b: Point; name: string | null; at: Point; d: number } | null = null;
-  for (const s of segs) {
+  const driveSegs = segs.some((s) => namePreferred(s.name)) ? segs.filter((s) => namePreferred(s.name)) : segs;
+  for (const s of driveSegs) {
     const hit = nearestOn(here, s.a, s.b);
-    const pref = softPreferred(s.name, hit.d);
-    const bestPref = best ? softPreferred(best.name, best.d) : false;
-    if (
-      !best ||
-      (pref && !bestPref) ||
-      (pref === bestPref && hit.d < best.d)
-    ) {
+    if (!best || hit.d < best.d) {
       best = { a: s.a, b: s.b, name: s.name, at: hit.at, d: hit.d };
     }
   }
   if (!best || best.d > roadMax) {
-    // Keep roads / hydrants / signs even when the driveway cannot attach.
     return out;
   }
 
-  let dir = opts.streetDir;
-  const dirLen = dir ? Math.hypot(dir[0], dir[1]) : 0;
-  if (!dir || dirLen < 0.5) {
-    const vx = best.at[0] - here[0];
-    const vy = best.at[1] - here[1];
-    const vd = Math.hypot(vx, vy) || 1;
-    dir = [vx / vd, vy / vd];
-  } else {
-    dir = [dir[0] / dirLen, dir[1] / dirLen];
-  }
-  const side: Point = [-dir[1], dir[0]];
-  let halfSide = 0;
-  let halfFront = 0;
-  for (const p of opts.footprint) {
-    halfSide = Math.max(halfSide, Math.abs((p[0] - here[0]) * side[0] + (p[1] - here[1]) * side[1]));
-    halfFront = Math.max(halfFront, Math.abs((p[0] - here[0]) * dir[0] + (p[1] - here[1]) * dir[1]));
-  }
-
-  let drive: Point[] | null = null;
+  let lateral = 0;
   if (opts.garage && opts.garage.length >= 3) {
     const g = ringCentroid(opts.garage);
     const sign = Math.sign((g[0] - here[0]) * side[0] + (g[1] - here[1]) * side[1]) || 1;
-    const lateral = sign * (halfSide + 1.6);
-    const origin: Point = [here[0] + side[0] * lateral, here[1] + side[1] * lateral];
-    const along = (g[0] - origin[0]) * -dir[0] + (g[1] - origin[1]) * -dir[1];
-    const end: Point = [origin[0] - dir[0] * along, origin[1] - dir[1] * along];
-    const mouthTarget: Point = [origin[0] + dir[0] * (halfFront + 1), origin[1] + dir[1] * (halfFront + 1)];
-    const mouth = nearestOn(mouthTarget, best.a, best.b).at;
-    drive = ribbon(mouth, end, 2.8);
-  } else {
-    const front: Point = [here[0] + dir[0] * (halfFront + 0.6), here[1] + dir[1] * (halfFront + 0.6)];
-    const mouth = nearestOn(front, best.a, best.b).at;
-    drive = ribbon(front, mouth, 3);
+    lateral = sign * Math.min(halfSide + 1.2, 6);
   }
+  const facade: Point = [
+    here[0] + dir[0] * halfFront + side[0] * lateral,
+    here[1] + dir[1] * halfFront + side[1] * lateral,
+  ];
+  const ahead: Point = [facade[0] + dir[0] * 80, facade[1] + dir[1] * 80];
+  let centerline = nearestOn(facade, best.a, best.b).at;
+  const rayHit = segIntersect(facade, ahead, best.a, best.b);
+  if (rayHit) centerline = rayHit;
+  // Near edge of the road ribbon (toward the house) — where the driveway should touch.
+  const mouth: Point = [centerline[0] - dir[0] * halfRoad, centerline[1] - dir[1] * halfRoad];
+  const start = facade;
+  let end = mouth;
+  const span = dist(start, end);
+  if (span < 1.2) {
+    end = [start[0] + dir[0] * 1.2, start[1] + dir[1] * 1.2];
+  } else if (span > MAX_DRIVE_M) {
+    end = [start[0] + dir[0] * MAX_DRIVE_M, start[1] + dir[1] * MAX_DRIVE_M];
+  }
+  const drive = ribbon(start, end, lateral !== 0 ? 2.8 : 3, MAX_DRIVE_M + 0.5);
   if (drive) {
     out.push({ id: "driveway", kind: "driveway", label: "Driveway", polygon: drive, height: HEIGHT.driveway, source: "map" });
   }

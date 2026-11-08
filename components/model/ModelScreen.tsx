@@ -170,7 +170,7 @@ export default function ModelScreen({ id }: { id: string }) {
       const empty = model.interior?.status === "unknown" && model.floors.every((f) => f.rooms.length === 0);
       const stale =
         (model.source === "address" || model.source === "photo") &&
-        (model.compound?.basis !== "compound-v68" || model.roof?.basis !== "roof-v4");
+        (model.compound?.basis !== "compound-v81" || model.roof?.basis !== "roof-v4");
       // Neighbor reframes are already valid site data — don't background-rescan the old address.
       if (model.interior?.source?.includes("neighbor reframe")) return;
       if ((!empty && !stale) || !scan.query.address) return;
