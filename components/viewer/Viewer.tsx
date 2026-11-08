@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
 import { Edges, Line, OrbitControls } from "@react-three/drei";
@@ -27,6 +27,19 @@ import {
   terrainGridLinePositions,
 } from "@/lib/compound-geom";
 import { buildNav, routeToMarker, type Route } from "@/lib/route";
+import ProAnchors3D, { ProFirefighter, ProResponder, type DrillPhase, type FireScale } from "./ProAnchors3D";
+import { ProAnchorPanel, ProLogin } from "./ProPanels";
+import {
+  defaultAnchors,
+  fetchRemoteSetup,
+  loadAnchors,
+  loadProAuth,
+  pushRemoteSetup,
+  saveAnchors,
+  saveProAuth,
+  type ProAnchor,
+} from "@/lib/pro";
+import { LOST_AFTER_MS, useProLink } from "@/lib/proLink";
 // Model frame: x = east, y = north. Three.js frame: x = east, y = up, z = south.
 const toXZ = ([x, y]: Point): [number, number] => [x, -y];
 
@@ -1161,11 +1174,27 @@ function RoofMesh({ roof, footprint, baseY, xray }: { roof: Roof; footprint: Poi
   );
 }
 
-function MarkerPin({ marker, onDelete }: { marker: Marker; onDelete: (id: string) => void }) {
+function MarkerPin({
+  marker,
+  onDelete,
+  fire,
+}: {
+  marker: Marker;
+  onDelete: (id: string) => void;
+  /** Drill: shrinks the matching marker while the firefighter sprays it. */
+  fire?: { current: FireScale };
+}) {
   const style = MARKER_STYLE[marker.type];
   const [x, z] = toXZ(marker.pos);
+  const g = useRef<THREE.Group>(null);
+  useFrame(() => {
+    if (!g.current || !fire) return;
+    const k = fire.current.id === marker.id ? fire.current.k : 1;
+    if (g.current.scale.x !== k) g.current.scale.setScalar(k);
+  });
   return (
     <group
+      ref={g}
       position={[x, 0, z]}
       onClick={(e) => {
         e.stopPropagation(); // don't also drop a new marker on the room underneath
@@ -1351,6 +1380,75 @@ export default function Viewer({
   const [xray, setXray] = useState(false);
   const [roofOn, setRoofOn] = useState(true);
   const [hydrantBeaconOn, setHydrantBeaconOn] = useState(true);
+  // CloudScan Pro: login + 3 tracking points
+  const [proAuthed, setProAuthed] = useState(false);
+  const [proLogin, setProLogin] = useState(false);
+  const [proPanel, setProPanel] = useState(false);
+  const [proAnchors, setProAnchors] = useState<ProAnchor[]>(() => defaultAnchors(model.footprint));
+  const [proSel, setProSel] = useState<string | null>(null);
+  const proUpdatedAt = useRef(0);
+  const proLoaded = useRef(false);
+  useEffect(() => {
+    setProAuthed(loadProAuth());
+    const local = loadAnchors(model.id, model.footprint);
+    proUpdatedAt.current = local.updatedAt;
+    setProAnchors(local.anchors);
+    proLoaded.current = true;
+    let off = false;
+    // A setup saved from another device (MongoDB) wins if it is newer.
+    fetchRemoteSetup(model.id).then((remote) => {
+      if (off || !remote || remote.updatedAt <= proUpdatedAt.current) return;
+      proUpdatedAt.current = remote.updatedAt;
+      setProAnchors(remote.anchors);
+      saveAnchors(model.id, remote);
+    });
+    return () => {
+      off = true;
+    };
+  }, [model.id, model.footprint]);
+  // Save on every edit: browser at once, shared copy shortly after the last change.
+  const proDirty = useRef(false);
+  useEffect(() => {
+    if (!proLoaded.current || !proDirty.current) return;
+    const setup = { anchors: proAnchors, updatedAt: Date.now() };
+    proUpdatedAt.current = setup.updatedAt;
+    saveAnchors(model.id, setup);
+    const t = setTimeout(() => void pushRemoteSetup(model.id, setup), 800);
+    return () => clearTimeout(t);
+  }, [model.id, proAnchors]);
+  const proLink = useProLink(proAuthed, model.id, proAnchors);
+  // Which floor the tracked firefighter is drawn on (we only have x/y, so the user picks).
+  const [proFloor, setProFloor] = useState<number | null>(null);
+  // Fire drill: a simulated firefighter walks the planned route to a fire and puts it out.
+  const [drill, setDrill] = useState<{ phase: DrillPhase; fireId: string | null; path: THREE.Vector3[] }>({
+    phase: "idle",
+    fireId: null,
+    path: [],
+  });
+  const drillFire = useRef<FireScale>({ id: "", k: 1 });
+  const moveProAnchor = useCallback(
+    (id: string, x: number, y: number) => {
+      proDirty.current = true;
+      setProAnchors((all) => all.map((a) => (a.id === id ? { ...a, x, y } : a)));
+    },
+    [],
+  );
+  const selectProAnchor = useCallback((id: string) => {
+    setProSel(id);
+    setProPanel(true);
+  }, []);
+  const changeProAnchor = (id: string, patch: Partial<ProAnchor>) => {
+    proDirty.current = true;
+    setProAnchors((all) => {
+      const me = all.find((a) => a.id === id);
+      return all.map((a) => {
+        if (a.id === id) return { ...a, ...patch };
+        // choosing a type another point already has swaps the two
+        if (patch.type && a.type === patch.type) return { ...a, type: me?.type ?? null };
+        return a;
+      });
+    });
+  };
   const [tool, setTool] = useState<MarkerType | null>(null);
   const [marksOpen, setMarksOpen] = useState(false);
   const [help, setHelp] = useState<string | null>(null);
@@ -1420,7 +1518,48 @@ export default function Viewer({
     () => markers.map((m) => ({ marker: m, route: routeToMarker(nav, m) })).filter((r): r is { marker: Marker; route: Route } => !!r.route),
     [nav, markers],
   );
+
+  const fireRoutes = routes.filter((r) => r.marker.type === "fire");
+  const startDrill = () => {
+    const pick = [...fireRoutes].sort((a, b) => a.route.length - b.route.length)[0];
+    if (!pick) return;
+    const path: THREE.Vector3[] = [];
+    for (const n of pick.route.nodes) {
+      const fl = model.floors.find((f) => f.level === n.level);
+      if (!fl) continue;
+      const [x, z] = toXZ(n.pt);
+      path.push(new THREE.Vector3(x, floorY(fl) + 0.05, z));
+    }
+    if (path.length < 2) return;
+    setHidden(new Set());
+    drillFire.current = { id: pick.marker.id, k: 1 };
+    setDrill({ phase: "walking", fireId: pick.marker.id, path });
+  };
+  const stopDrill = () => {
+    drillFire.current = { id: "", k: 1 };
+    setDrill({ phase: "idle", fireId: null, path: [] });
+  };
+  /** Drop a drill fire in the room farthest from the front door on the top floor. */
+  const addTestFire = () => {
+    const fl = [...model.floors].sort((a, b) => b.level - a.level)[0];
+    if (!fl || fl.rooms.length === 0) return;
+    const door = nav.frontDoor?.at ?? [0, 0];
+    const cen = (r: Room): Point => [
+      r.polygon.reduce((s, p) => s + p[0], 0) / r.polygon.length,
+      r.polygon.reduce((s, p) => s + p[1], 0) / r.polygon.length,
+    ];
+    const room = [...fl.rooms].sort((a, b) => Math.hypot(...(cen(b).map((v, k) => v - door[k]) as [number, number])) - Math.hypot(...(cen(a).map((v, k) => v - door[k]) as [number, number])))[0];
+    setMarkers((m) => [
+      ...m,
+      { id: `fire-${Date.now()}`, type: "fire", floor: fl.level, pos: cen(room), note: "Drill", createdAt: new Date().toISOString() },
+    ]);
+  };
   const floorY = (f: Floor) => f.elevation + (exploded ? f.level * EXPLODE_GAP : 0);
+  const trackFloor =
+    model.floors.find((f) => f.level === proFloor) ??
+    model.floors.find((f) => f.level === 0) ??
+    [...model.floors].sort((a, b) => a.level - b.level)[0];
+  const trackFresh = !!proLink.site && proLink.now - proLink.site.at < LOST_AFTER_MS;
   const top = model.floors.find((f) => f.level === topLevel)!;
   const showRoof = !!model.roof && roofOn && !hidden.has(topLevel);
   // Distance-sorted as hydrant-0, hydrant-1, … — beacon every mapped hydrant in the scene.
@@ -1701,7 +1840,22 @@ export default function Viewer({
           />
         </label>
       </div>
-      {badge && <div className="pointer-events-none shrink-0" style={{ gridArea: "badge" }}>{badge}</div>}
+      <div className="flex shrink-0 flex-col items-end gap-1.5" style={{ gridArea: "badge" }}>
+        {badge && <div className="pointer-events-none">{badge}</div>}
+        <button
+          type="button"
+          onClick={() => (proAuthed ? setProPanel((v) => !v) : setProLogin(true))}
+          aria-label="CloudScan Pro"
+          className="pointer-events-auto inline-flex items-center gap-2.5 whitespace-nowrap rounded-[10px] border border-[#f59e0b] bg-bp-deep py-[0.5625rem] pl-[0.8125rem] pr-[1.125rem] font-data text-[0.875rem] font-medium uppercase tracking-[0.16em] text-[#f59e0b] transition-colors hover:border-[#fbbf24] hover:text-[#fbbf24] max-[420px]:p-2"
+          title="CloudScan Pro: place the 3 firefighter tracking points"
+        >
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="h-6 w-6 shrink-0">
+            <path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5L3 8z" />
+            <rect x="5" y="20" width="14" height="1.6" rx=".8" />
+          </svg>
+          <span className="max-[420px]:hidden">Pro</span>
+        </button>
+      </div>
         </div>
       <Canvas
         camera={{ position: camPos, fov: 45, near: camNear, far: camFar }}
@@ -1881,7 +2035,7 @@ export default function Viewer({
             {markers
               .filter((m) => m.floor === floor.level)
               .map((m) => (
-                <MarkerPin key={m.id} marker={m} onDelete={(id) => { document.body.style.cursor = ""; setMarkers((all) => all.filter((x) => x.id !== id)); }} />
+                <MarkerPin key={m.id} marker={m} fire={drillFire} onDelete={(id) => { document.body.style.cursor = ""; setMarkers((all) => all.filter((x) => x.id !== id)); }} />
               ))}
           </group>
         ))}
@@ -1930,6 +2084,35 @@ export default function Viewer({
             ),
           )}
         />
+        {proAuthed && (
+          <ProAnchors3D anchors={proAnchors} selectedId={proSel} onMove={moveProAnchor} onSelect={selectProAnchor} />
+        )}
+        {proAuthed && drill.path.length > 1 && (
+          <ProResponder
+            path={drill.path}
+            phase={drill.phase}
+            fire={drillFire}
+            onArrive={() => setDrill((d) => ({ ...d, phase: "spraying" }))}
+            onOut={() => {
+              const id = drill.fireId;
+              drillFire.current = { id: "", k: 1 };
+              if (id) setMarkers((all) => all.filter((m) => m.id !== id));
+              setDrill((d) => ({ ...d, phase: "out" }));
+            }}
+          />
+        )}
+        {proAuthed && drill.phase === "idle" && proLink.state === "linked" && trackFloor && (
+          <ProFirefighter
+            site={proLink.site}
+            trail={proLink.trail}
+            y={floorY(trackFloor) + 0.05}
+            fresh={trackFresh}
+            floorLabel={trackFloor.level < 0 ? "B" : `${trackFloor.level + 1}F`}
+            lostSeconds={proLink.site ? Math.round((proLink.now - proLink.site.at) / 1000) : null}
+            floor={trackFloor}
+            footprint={model.footprint}
+          />
+        )}
         <OrbitControls
           ref={controlsRef}
           makeDefault
@@ -1952,6 +2135,69 @@ export default function Viewer({
           }}
         />
       </Canvas>
+
+      {proAuthed && drill.phase !== "idle" && (
+        <div
+          className="pointer-events-none absolute left-1/2 top-[4.6rem] z-20 -translate-x-1/2 whitespace-nowrap border border-bp-red bg-bp-deep px-3 py-1 font-data text-[11px] uppercase tracking-[0.1em] text-bp-red"
+          role="status"
+        >
+          {drill.phase === "walking" ? "Drill · responding to fire" : drill.phase === "spraying" ? "Drill · extinguishing" : "Drill · fire out ✓"}
+        </div>
+      )}
+      {proAuthed && drill.phase === "idle" && proLink.state === "linked" && proLink.site && (
+        <div
+          className={`pointer-events-none absolute left-1/2 top-[4.6rem] z-20 -translate-x-1/2 whitespace-nowrap border px-3 py-1 font-data text-[11px] uppercase tracking-[0.1em] ${
+            trackFresh ? "border-bp-red bg-bp-deep text-bp-red" : "border-bp-line bg-bp-deep text-bp-line"
+          }`}
+          role="status"
+        >
+          {trackFresh ? "Firefighter · approximate position" : "Signal lost · last known position"}
+        </div>
+      )}
+      {proLogin && !proAuthed && (
+        <ProLogin
+          onClose={() => setProLogin(false)}
+          onSuccess={() => {
+            saveProAuth(true);
+            setProAuthed(true);
+            setProLogin(false);
+            setProPanel(true);
+          }}
+        />
+      )}
+      {proAuthed && (
+        <ProAnchorPanel
+          open={proPanel}
+          anchors={proAnchors}
+          selectedId={proSel}
+          onSelect={setProSel}
+          onChange={changeProAnchor}
+          link={proLink}
+          drill={{
+            phase: drill.phase,
+            fires: fireRoutes.length,
+            hasFireMarker: markers.some((m) => m.type === "fire"),
+            onAddFire: addTestFire,
+            onStart: startDrill,
+            onStop: stopDrill,
+          }}
+          floors={model.floors.map((f) => ({ level: f.level, name: f.name }))}
+          trackLevel={trackFloor?.level ?? 0}
+          onTrackLevel={setProFloor}
+          onReset={() => {
+            proDirty.current = true;
+            setProAnchors(defaultAnchors(model.footprint));
+            setProSel(null);
+          }}
+          onSignOut={() => {
+            saveProAuth(false);
+            setProAuthed(false);
+            setProPanel(false);
+            setProSel(null);
+          }}
+          onClose={() => setProPanel(false)}
+        />
+      )}
 
       {tip && (
         <div

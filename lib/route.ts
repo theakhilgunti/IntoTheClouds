@@ -44,7 +44,7 @@ export type Nav = {
   frontDoor: { doorId: string; level: number; at: Point; inside: Point } | null;
 };
 
-function pointInRing(p: Point, ring: Point[]): boolean {
+export function pointInRing(p: Point, ring: Point[]): boolean {
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
     const [xi, yi] = ring[i];
@@ -72,7 +72,7 @@ function hitAlong(p: Point, p2: Point, q: Point, q2: Point): number | null {
 }
 
 /** True when walking a->b on this floor would pass through a wall that has no door there. */
-function blockedByWall(floor: Floor, a: Point, b: Point): boolean {
+export function blockedByWall(floor: Floor, a: Point, b: Point): boolean {
   for (const w of floor.walls) {
     const u = hitAlong(a, b, w.a, w.b);
     if (u === null) continue;
@@ -257,7 +257,7 @@ function findFrontDoor(nav: Nav): Nav["frontDoor"] {
   return { doorId: door.id, level: floor.level, at, inside: [at[0] + nxv * 0.6, at[1] + nyv * 0.6] };
 }
 
-class MinHeap {
+export class MinHeap {
   private a: Array<[number, number]> = [];
   get size() { return this.a.length; }
   push(k: number, v: number) {

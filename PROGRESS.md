@@ -197,3 +197,14 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 07:54 | Cursor | UI-88 | Finished task |
 | 07:56 | Cursor | UI-89 | Finished task |
 | 08:00 | Cursor | UI-90 | Finished task |
+| 12:00 | Claude Code | PRO-01 | CloudScan Pro Phase 1: Pro button + demo login, 3 draggable tracking points (Origin/X/Y type + device IP panel, saved per house in the browser). UI only, no live feed yet. |
+| 12:30 | Claude Code | PRO-02 | Pro Phase 2: backend /api/pro/setup (origin/x/y frame from 3 typed points + IPs), /api/pro/simulate, site-frame position in telemetry; website Link devices + Simulate walk + live readout; setup shared via MongoDB (/api/pro/setup/[id]). 24 backend tests pass. |
+| 13:00 | Claude Code | PRO-03 | Pro Phase 3: live firefighter marker + breadcrumb trail on a chosen floor, approximate-position banner, per-anchor signal/lost status, floor picker. |
+| 13:30 | Claude Code | PRO-04 | Fire drill: simulated firefighter walks the planned route (doors, stairs, floors) to a fire marker, sprays it, removes it; Add test fire / Send firefighter in Pro panel. |
+| 14:00 | Claude Code | PRO-05 | Pro panel redesigned: 3 steps (Place / Connect / Track), monochrome blueprint ink with colour only for Origin/X/Y, rem-based sizing, bottom sheet on narrow screens. |
+| 14:20 | Claude Code | PRO-06 | Pro panel re-themed as a dark terminal (phosphor green on near-black, mono type, [1] tabs, scanlines); anchor colours now cyan/amber/pink so they stay distinct from the green UI. |
+| 14:40 | Claude Code | PRO-07 | Pro button is now an orange crown + PRO (icon-only under 420px). |
+| 15:00 | Claude Code | PRO-08 | Pro panel slides in from the right (bottom on phones) and slides back out; login box pops in. Respects reduced motion. |
+| 15:30 | Claude Code | PRO-09 | New low-poly firefighter model (helmet, coat with reflective stripes, SCBA tank, boots, walk swing) with name tags; live / drill / signal-lost variants. |
+| 15:45 | Claude Code | PRO-10 | Firefighter model scaled to real human size (1.8 m with helmet); tag and ring sized to match. |
+| 16:10 | Claude Code | PRO-11 | Tracked firefighter now respects walls: lib/walk.ts walks in straight lines when clear, otherwise A* through door openings and around the building; breadcrumbs follow the walked path. Tests in lib/walk.test.ts. |
