@@ -17,6 +17,7 @@ import type {
   Wall,
 } from "@/packages/schema/building-model";
 import { buildRoofPositions, type Pt } from "@/lib/roof-geom";
+import { buildNav, routeToMarker, type Route } from "@/lib/route";
 // Model frame: x = east, y = north. Three.js frame: x = east, y = up, z = south.
 const toXZ = ([x, y]: Point): [number, number] => [x, -y];
 
@@ -597,11 +598,24 @@ function RoofMesh({ roof, footprint, baseY, xray }: { roof: Roof; footprint: Poi
   );
 }
 
-function MarkerPin({ marker }: { marker: Marker }) {
+function MarkerPin({ marker, onDelete }: { marker: Marker; onDelete: (id: string) => void }) {
   const style = MARKER_STYLE[marker.type];
   const [x, z] = toXZ(marker.pos);
   return (
-    <group position={[x, 0, z]}>
+    <group
+      position={[x, 0, z]}
+      onClick={(e) => {
+        e.stopPropagation(); // don't also drop a new marker on the room underneath
+        onDelete(marker.id);
+      }}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        document.body.style.cursor = "pointer";
+      }}
+      onPointerOut={() => {
+        document.body.style.cursor = "";
+      }}
+    >
       <mesh position={[0, 0.6, 0]}>
         <coneGeometry args={[0.35, 1.2, 16]} />
         <meshStandardMaterial color={style.color} emissive={style.color} emissiveIntensity={0.8} />
@@ -661,6 +675,11 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
     });
 
   const shown = model.floors.filter((f) => !hidden.has(f.level));
+  const nav = useMemo(() => buildNav(model), [model]);
+  const routes = useMemo(
+    () => markers.map((m) => ({ marker: m, route: routeToMarker(nav, m) })).filter((r): r is { marker: Marker; route: Route } => !!r.route),
+    [nav, markers],
+  );
   const floorY = (f: Floor) => f.elevation + (exploded ? f.level * EXPLODE_GAP : 0);
   const top = model.floors.find((f) => f.level === topLevel)!;
   const showRoof = !!model.roof && roofOn && !hidden.has(topLevel);
@@ -826,10 +845,37 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
             {markers
               .filter((m) => m.floor === floor.level)
               .map((m) => (
-                <MarkerPin key={m.id} marker={m} />
+                <MarkerPin key={m.id} marker={m} onDelete={(id) => { document.body.style.cursor = ""; setMarkers((all) => all.filter((x) => x.id !== id)); }} />
               ))}
           </group>
         ))}
+
+        {routes.map(({ marker, route }) => {
+          // Break the line wherever a floor is hidden so it never floats in empty space.
+          const runs: THREE.Vector3[][] = [[]];
+          for (const n of route.nodes) {
+            const floor = model.floors.find((f) => f.level === n.level);
+            if (!floor || hidden.has(n.level)) { runs.push([]); continue; }
+            const [x, z] = toXZ(n.pt);
+            runs[runs.length - 1].push(new THREE.Vector3(x, floorY(floor) + 0.2, z));
+          }
+          return runs
+            .filter((pts) => pts.length > 1)
+            .map((pts, i) => (
+              <Line
+                key={`${marker.id}-${i}`}
+                points={pts}
+                color={MARKER_STYLE[marker.type].color}
+                lineWidth={3}
+                dashed
+                dashSize={route.estimated ? 0.15 : 0.25}
+                gapSize={route.estimated ? 0.3 : 0.2}
+                depthTest={false}
+                renderOrder={20}
+                raycast={noopRaycast}
+              />
+            ));
+        })}
 
         {showRoof && (
           <RoofMesh roof={model.roof!} footprint={model.footprint} baseY={floorY(top) + top.height} xray={xray} />
