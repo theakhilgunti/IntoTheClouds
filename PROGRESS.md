@@ -84,3 +84,4 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 22:25 | Cursor | UI-04 | Cut the walls, floors, and roof to the yellow mapped outline instead of the bounding rectangle. |
 | 22:31 | Claude-design | DS-01 | Finished task |
 | 23:40 | Antigravity | LC-02 | Completed LC-02: Implemented production laptop scanner with decoupled Wi-Fi/BLE, rolling median filter, dynamic anchor mapping, auto-reconnecting WS, and tests |
+| 01:25 | Antigravity | MAP-01 | Created 2D 30mx30m Wi-Fi hotspot grid mapper with native wlanapi sub-second scanning, 3-anchor trilateration HUD, and calibration |
