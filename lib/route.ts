@@ -297,8 +297,22 @@ const DIRS: Array<[number, number]> = [
   [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1],
 ];
 
-/** Route from the front door to a marker, or null when no walkable way exists. */
+/**
+ * Route from the front door to a marker, or null when no walkable way exists.
+ * When the interior is only an estimate (rooms guessed from the footprint), a blocked or unlinked path says more
+ * about our guess than about the house, so fall back to the flagged straight-line estimate instead of drawing
+ * nothing. A verified or absent interior keeps the strict answer: never draw through walls.
+ */
 export function routeToMarker(nav: Nav, marker: Pick<Marker, "floor" | "pos">): Route | null {
+  const route = walkableRoute(nav, marker);
+  if (route) return route;
+  const status = nav.model.interior?.status;
+  if (status !== "estimated" && status !== "unknown") return null;
+  const groundLevel = nav.levels.find((l) => l >= 0) ?? nav.levels[0];
+  return estimatedRoute(nav.model, marker, groundLevel);
+}
+
+function walkableRoute(nav: Nav, marker: Pick<Marker, "floor" | "pos">): Route | null {
   const door = nav.frontDoor;
   const known = (level: number) => (nav.grids.get(level)?.floor.rooms.length ?? 0) > 0;
   const groundLevel = nav.levels.find((l) => l >= 0) ?? nav.levels[0];

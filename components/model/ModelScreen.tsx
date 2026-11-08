@@ -198,66 +198,78 @@ export default function ModelScreen({ id }: { id: string }) {
 
   return (
     <div className="relative h-full w-full">
-      <Viewer key={`${model.id}-${version}`} model={model} onReady={() => setViewerReady(true)} />
-
-      <div className="pointer-events-none absolute left-3 right-3 top-3 flex items-start justify-between gap-3">
-        <div className="pointer-events-auto max-w-sm border border-bp-ink/60 bg-bp-deep px-3.5 py-2.5 text-bp-ink">
-          <div className="flex items-baseline justify-between gap-4">
-            <Link href="/" className="font-display text-base uppercase tracking-[0.14em] text-bp-ink">
-              Cloud<span className="text-bp-red">Scan</span>
-            </Link>
-            <span className="flex gap-3 font-data text-xs text-bp-line">
-              {state.kind === "scan" && !panel && (
-                <button onClick={() => setPanel(true)} className="hover:text-bp-ink">
-                  Details
-                </button>
-              )}
-              <button onClick={downloadModel} className="hover:text-bp-ink">
-                Save
-              </button>
-              <Link href="/" className="hover:text-bp-ink">
-                New
+      <Viewer
+        key={`${model.id}-${version}`}
+        model={model}
+        onReady={() => setViewerReady(true)}
+        card={
+          <div className="border border-bp-ink/60 bg-bp-deep text-bp-ink" style={{ padding: "0.65em 0.85em", maxWidth: "24em" }}>
+            <div className="flex items-baseline justify-between" style={{ gap: "1.2em" }}>
+              <Link href="/" className="font-display uppercase tracking-[0.14em] text-bp-ink" style={{ fontSize: "1.33em" }}>
+                Cloud<span className="text-bp-red">Scan</span>
               </Link>
-            </span>
-          </div>
-          <div className="mt-1 truncate font-display text-xl uppercase tracking-[0.03em] text-white">{shortAddress(model.address) || `${model.lat.toFixed(5)}, ${model.lng.toFixed(5)}`}</div>
-          <div className="font-data text-[11px] text-bp-line">
-            {rescanning ? "Updating this house…" : interiorLine}
-            {match === "nearest" ? " · closest building, confirm it's yours" : ""}
-          </div>
-          {nearby.length > 1 && (
-            <div className="mt-1">
-              <button onClick={() => setWrongOpen((v) => !v)} className="font-data text-[11px] text-bp-line underline-offset-2 hover:text-bp-ink hover:underline">
-                {wrongOpen ? "Hide nearby houses" : "Wrong house?"}
-              </button>
-              {wrongOpen && (
-                <div className="mt-1 flex max-w-xs flex-wrap gap-1">
-                  {nearby.map((house) => {
-                    const selected = model.id === `osm-${house.id}`;
-                    return (
-                      <button
-                        key={house.id}
-                        disabled={rescanning || selected}
-                        onClick={() => rescan(house.id)}
-                        className={`border px-2 py-0.5 font-data text-[11px] ${selected ? "border-bp-ink bg-bp-ink text-bp" : "border-bp-ink/45 text-bp-ink hover:bg-bp-ink/15"}`}
-                      >
-                        {shortAddress(house.label)}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+              <span className="flex font-data text-bp-line" style={{ gap: "1em" }}>
+                {state.kind === "scan" && !panel && (
+                  <button onClick={() => setPanel(true)} className="hover:text-bp-ink">
+                    Details
+                  </button>
+                )}
+                <button onClick={downloadModel} className="hover:text-bp-ink">
+                  Save
+                </button>
+                <Link href="/" className="hover:text-bp-ink">
+                  New
+                </Link>
+              </span>
             </div>
-          )}
-        </div>
-        <span
-          className={`pointer-events-none border bg-bp-deep px-2.5 py-1 font-data text-[11px] uppercase ${
-            interior?.status === "verified" || state.kind === "demo" ? "border-bp-ink text-bp-ink" : "border-dashed border-bp-red text-bp-red"
-          }`}
-        >
-          {state.kind === "demo" ? "Sample" : interior?.status === "verified" ? "Verified" : interior?.status === "estimated" ? "Estimated inside" : "Exterior only"}
-        </span>
-      </div>
+            <div className="truncate font-display uppercase tracking-[0.03em] text-white" style={{ fontSize: "1.67em", marginTop: "0.1em" }}>
+              {shortAddress(model.address) || `${model.lat.toFixed(5)}, ${model.lng.toFixed(5)}`}
+            </div>
+            <div className="font-data text-bp-line [@media(max-height:620px)]:hidden" style={{ fontSize: "0.92em" }}>
+              {rescanning ? "Updating this house…" : interiorLine}
+              {match === "nearest" ? " · closest building, confirm it's yours" : ""}
+            </div>
+            {nearby.length > 1 && (
+              <div style={{ marginTop: "0.3em" }}>
+                <button
+                  onClick={() => setWrongOpen((v) => !v)}
+                  className="font-data text-bp-line underline-offset-2 hover:text-bp-ink hover:underline"
+                  style={{ fontSize: "0.92em" }}
+                >
+                  {wrongOpen ? "Hide nearby houses" : "Wrong house?"}
+                </button>
+                {wrongOpen && (
+                  <div className="flex flex-wrap" style={{ marginTop: "0.3em", gap: "0.3em", maxWidth: "22em" }}>
+                    {nearby.map((house) => {
+                      const selected = model.id === `osm-${house.id}`;
+                      return (
+                        <button
+                          key={house.id}
+                          disabled={rescanning || selected}
+                          onClick={() => rescan(house.id)}
+                          className={`border font-data ${selected ? "border-bp-ink bg-bp-ink text-bp" : "border-bp-ink/45 text-bp-ink hover:bg-bp-ink/15"}`}
+                          style={{ padding: "0.15em 0.6em", fontSize: "0.92em" }}
+                        >
+                          {shortAddress(house.label)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        }
+        badge={
+          <span
+            className={`block whitespace-nowrap border bg-bp-deep px-2.5 py-1 font-data text-[11px] uppercase ${
+              interior?.status === "verified" || state.kind === "demo" ? "border-bp-ink text-bp-ink" : "border-dashed border-bp-red text-bp-red"
+            }`}
+          >
+            {state.kind === "demo" ? "Sample" : interior?.status === "verified" ? "Verified" : interior?.status === "estimated" ? "Estimated inside" : "Exterior only"}
+          </span>
+        }
+      />
 
       {state.kind === "scan" && panel && (
         <ScanReport

@@ -56,3 +56,10 @@ test("a house with walls only (no rooms) gets a flagged straight-line estimate",
   assert.equal(r.estimated, true);
   assert.ok(r.nodes.at(-1)!.level === 1 && r.nodes[0].level === 0);
 });
+
+test("an estimated interior with no walkable path falls back to a flagged straight-line route", () => {
+  const guessed = { ...model, interior: { ...(model.interior ?? {}), status: "estimated" } };
+  const r = routeToMarker(buildNav(guessed), { floor: -1, pos: [-4, 3] });
+  assert.ok(r, "falls back instead of drawing nothing");
+  assert.equal(r.estimated, true);
+});

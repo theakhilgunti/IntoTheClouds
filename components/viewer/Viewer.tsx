@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
 import { Edges, Line, OrbitControls } from "@react-three/drei";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
@@ -1244,7 +1244,37 @@ function streetFrontYaw(model: BuildingModel): number {
   return 0;
 }
 
-export default function Viewer({ model, onReady }: { model: BuildingModel; onReady?: () => void }) {
+// Collapsing slot for the CloudScan card. The grid-track trick animates the slot to zero size (so the row
+// closes up with no gap), while the inner box pops in with a springy scale. Font size comes from one value so the
+// card's box and text always scale together.
+function CardSlot({ open, axis, scale, children }: { open: boolean; axis: "x" | "y"; scale: number; children: ReactNode }) {
+  const track = open ? "1fr" : "0fr";
+  return (
+    <div
+      className="grid min-w-0 transition-[grid-template-columns,grid-template-rows] duration-300 ease-out"
+      style={axis === "x" ? { gridTemplateColumns: track } : { gridTemplateRows: track }}
+      aria-hidden={!open}
+      inert={!open}
+    >
+      <div className="min-h-0 min-w-0 overflow-hidden">
+        <div
+          className="pointer-events-auto w-max max-w-full origin-top-left"
+          style={{
+            fontSize: `${12 * scale}px`,
+            opacity: open ? 1 : 0,
+            transform: open ? "none" : "translateX(-16px) scale(0.85)",
+            transition: `transform 350ms cubic-bezier(.34,1.56,.64,1), opacity 200ms, visibility 0s linear ${open ? "0s" : "350ms"}`,
+            visibility: open ? "visible" : "hidden",
+          }}
+        >
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function Viewer({ model, onReady, card, badge }: { model: BuildingModel; onReady?: () => void; card?: ReactNode; badge?: ReactNode }) {
   const levels = model.floors.map((f) => f.level);
   const topLevel = Math.max(...levels);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
@@ -1460,13 +1490,123 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
       ? `Tap a room to drop a ${MARKER_STYLE[tool].label.toLowerCase()} marker. Tap the button again to stop.`
       : "Hover or tap any button to see what it does. Drag to rotate, scroll or pinch to zoom.";
 
+  const [wrapW, setWrapW] = useState(0);
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setWrapW(el.clientWidth));
+    ro.observe(el);
+    setWrapW(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
+  const [cardPref, setCardPref] = useState<boolean | null>(null);
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("cloudscan-card-open");
+      if (v === "1" || v === "0") setCardPref(v === "1");
+    } catch {}
+  }, []);
+  const narrowTop = wrapW > 0 && wrapW < 560;
+  const cardOpen = cardPref ?? !narrowTop;
+  const cardScale = Math.max(0.75, Math.min(1, wrapW / 680 || 1));
+  const toggleCard = () => {
+    const next = !cardOpen;
+    setCardPref(next);
+    try {
+      localStorage.setItem("cloudscan-card-open", next ? "1" : "0");
+    } catch {}
+  };
+
   const btn = (active: boolean) =>
     `shrink-0 border px-2.5 py-1.5 font-data text-[11px] transition ${
       active ? "border-bp-ink bg-bp-ink text-bp" : "border-bp-ink/45 text-bp-ink hover:bg-bp-ink/15"
     }`;
 
   return (
-    <div ref={wrap} className="relative h-full w-full bg-bp">
+    // Layout: one overlay row on the map (card arrow, CloudScan card, rotate/tilt bar, badge) and the toolbar
+    // below it in normal flow. The rotate/tilt bar never shrinks; the card collapses behind the arrow (and
+    // drops under the row when the view is narrow). If the window is too small for everything, the whole
+    // column scrolls so every button stays reachable.
+    <div className="flex h-full w-full flex-col overflow-y-auto bg-bp">
+      <div ref={wrap} className="relative min-h-[12rem] flex-1">
+        <div className="pointer-events-none absolute inset-x-3 top-3 z-20 flex flex-col gap-2">
+          <div className="flex flex-wrap items-start gap-2">
+            {card && (
+              <button
+                type="button"
+                onClick={toggleCard}
+                aria-expanded={cardOpen}
+                aria-label={cardOpen ? "Hide CloudScan card" : "Show CloudScan card"}
+                title={cardOpen ? "Hide CloudScan card" : "Show CloudScan card"}
+                className="pointer-events-auto flex h-9 w-8 shrink-0 items-center justify-center border border-bp-ink/60 bg-bp-deep text-bp-ink hover:bg-bp-ink/15"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  aria-hidden
+                  style={{ transform: cardOpen ? "none" : "rotate(180deg)", transition: "transform 350ms cubic-bezier(.34,1.56,.64,1)" }}
+                >
+                  <path d="M10 3 5 8l5 5" />
+                </svg>
+              </button>
+            )}
+            {card && !narrowTop && <CardSlot open={cardOpen} axis="x" scale={cardScale}>{card}</CardSlot>}
+    <div className="pointer-events-auto mx-auto flex max-w-full flex-wrap items-center justify-center gap-2 border border-bp-ink/60 bg-bp-deep px-3 py-2 text-bp-ink shadow-lg">
+        <button
+          type="button"
+          className="border border-bp-ink/45 px-2.5 py-1 font-data text-sm font-semibold hover:bg-bp-ink/15"
+          onClick={zoomIn}
+          title="Zoom in"
+          aria-label="Zoom in"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className="border border-bp-ink/45 px-2.5 py-1 font-data text-sm font-semibold hover:bg-bp-ink/15"
+          onClick={zoomOut}
+          title="Zoom out"
+          aria-label="Zoom out"
+        >
+          −
+        </button>
+        <label className="flex items-center gap-2 font-data text-[11px] text-bp-line">
+          Rotate
+          <input
+            type="range"
+            min={-Math.PI}
+            max={Math.PI}
+            step={0.01}
+            value={orbitYaw}
+            onChange={(e) => setOrbitYaw(Number(e.target.value))}
+            className="h-1.5 w-24 cursor-pointer accent-bp-ink sm:w-32"
+            aria-label="Rotate view (0 faces the front door)"
+            title="0° = looking at the front door"
+          />
+        </label>
+        <label className="flex items-center gap-2 font-data text-[11px] text-bp-line">
+          Tilt
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={tiltAmt}
+            onChange={(e) => setTiltAmt(Number(e.target.value))}
+            className="h-1.5 w-24 cursor-pointer accent-bp-ink sm:w-28"
+            aria-label="Tilt view (max is top-down)"
+            title="Max = highest top-down view"
+          />
+        </label>
+      </div>
+            {badge && wrapW >= 420 && <div className="pointer-events-none ml-auto shrink-0">{badge}</div>}
+          </div>
+          {card && narrowTop && <CardSlot open={cardOpen} axis="y" scale={cardScale}>{card}</CardSlot>}
+        </div>
       <Canvas
         camera={{ position: camPos, fov: 45, near: camNear, far: camFar }}
         shadows={false}
@@ -1694,57 +1834,6 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         />
       </Canvas>
 
-      <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-3">
-        <div className="pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-2 border border-bp-ink/60 bg-bp-deep px-3 py-2 text-bp-ink shadow-lg">
-          <button
-            type="button"
-            className="border border-bp-ink/45 px-2.5 py-1 font-data text-sm font-semibold hover:bg-bp-ink/15"
-            onClick={zoomIn}
-            title="Zoom in"
-            aria-label="Zoom in"
-          >
-            +
-          </button>
-          <button
-            type="button"
-            className="border border-bp-ink/45 px-2.5 py-1 font-data text-sm font-semibold hover:bg-bp-ink/15"
-            onClick={zoomOut}
-            title="Zoom out"
-            aria-label="Zoom out"
-          >
-            −
-          </button>
-          <label className="flex items-center gap-2 font-data text-[11px] text-bp-line">
-            Rotate
-            <input
-              type="range"
-              min={-Math.PI}
-              max={Math.PI}
-              step={0.01}
-              value={orbitYaw}
-              onChange={(e) => setOrbitYaw(Number(e.target.value))}
-              className="h-1.5 w-24 cursor-pointer accent-bp-ink sm:w-32"
-              aria-label="Rotate view (0 faces the front door)"
-              title="0° = looking at the front door"
-            />
-          </label>
-          <label className="flex items-center gap-2 font-data text-[11px] text-bp-line">
-            Tilt
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.01}
-              value={tiltAmt}
-              onChange={(e) => setTiltAmt(Number(e.target.value))}
-              className="h-1.5 w-24 cursor-pointer accent-bp-ink sm:w-28"
-              aria-label="Tilt view (max is top-down)"
-              title="Max = highest top-down view"
-            />
-          </label>
-        </div>
-      </div>
-
       {tip && (
         <div
           className="pointer-events-none absolute z-10 max-w-[11rem] border border-bp-ink/60 bg-bp-deep px-2.5 py-1.5 text-bp-ink"
@@ -1755,7 +1844,7 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         </div>
       )}
 
-      <div className="pointer-events-none absolute bottom-36 left-3 hidden flex-col gap-1.5 font-data text-[11px] text-bp-line sm:flex">
+      <div className="pointer-events-none absolute bottom-3 left-3 hidden flex-col gap-1.5 font-data text-[11px] text-bp-line sm:flex">
         <span className="flex items-center gap-2">
           <svg width="22" height="6" aria-hidden><line x1="0" y1="3" x2="22" y2="3" stroke="#eaf1ff" strokeWidth="2" /></svg>
           {assumed ? "from the map" : "from your plan"}
@@ -1772,7 +1861,9 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         </span>
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-3 flex flex-col items-center gap-1.5 px-3">
+      </div>
+
+      <div className="flex shrink-0 flex-col items-center gap-1.5 px-3 pb-3 pt-2">
         <div
           role="status"
           aria-live="polite"
@@ -1782,10 +1873,10 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         >
           {helpText}
         </div>
-        <div className="pointer-events-auto flex max-w-full items-end gap-3 overflow-x-auto border border-bp-ink/60 bg-bp-deep p-1.5">
-          <div className="flex shrink-0 flex-col gap-1">
+        <div className="flex max-w-full flex-wrap items-end gap-x-3 gap-y-2 border border-bp-ink/60 bg-bp-deep p-1.5">
+          <div className="flex max-w-full flex-col gap-1">
             <span className="px-0.5 font-data text-[9px] uppercase tracking-widest text-bp-line">Floors</span>
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               {levels.map((lv) => (
                 <button
                   key={lv}
@@ -1805,9 +1896,9 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
               )}
             </div>
           </div>
-          <div className="flex shrink-0 flex-col gap-1 border-l border-bp-ink/30 pl-3">
+          <div className="flex max-w-full flex-col gap-1 border-l border-bp-ink/30 pl-3">
             <span className="px-0.5 font-data text-[9px] uppercase tracking-widest text-bp-line">View</span>
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               <button className={btn(exploded)} onClick={() => setExploded((v) => !v)} aria-pressed={exploded} {...hint("explode")}>
                 Spread floors apart
               </button>
@@ -1827,9 +1918,9 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
               )}
             </div>
           </div>
-          <div className="flex shrink-0 flex-col gap-1 border-l border-bp-ink/30 pl-3">
+          <div className="flex max-w-full flex-col gap-1 border-l border-bp-ink/30 pl-3">
             <span className="px-0.5 font-data text-[9px] uppercase tracking-widest text-bp-line">Mark hazards</span>
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               <button className={btn(marksOpen || !!tool)} onClick={() => setMarksOpen((v) => !v)} aria-pressed={marksOpen} {...hint("markers")}>
                 {marksOpen ? "Hide tools" : "Add a marker"}
               </button>
