@@ -151,7 +151,10 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   if (!input.rescan) {
     const saved = await store.get(id);
     // Empty shells, and address scans from before the lot was drawn, get rebuilt.
-    const stale = !!saved && (saved.model.source === "address" || saved.model.source === "photo") && saved.model.compound?.basis !== "compound-v4";
+    const stale =
+      !!saved &&
+      (saved.model.source === "address" || saved.model.source === "photo") &&
+      saved.model.compound?.basis !== "compound-v5";
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -506,6 +509,15 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     ? verifiedSite.filter((f) => !(f.kind === "driveway" && f.source === "aerial"))
     : verifiedSite;
   built.model.compound = { features: [...kept, ...access], basis: "compound-v5" };
+  const hydrantN = access.filter((f) => f.kind === "hydrant").length;
+  if (hydrantN) {
+    attributes.push({
+      field: "Fire hydrants",
+      value: `${hydrantN} nearby`,
+      from: "map",
+      note: hydrantN === 1 ? "Nearest mapped hydrant on OpenStreetMap" : "Nearest mapped hydrants on OpenStreetMap",
+    });
+  }
   if (jpegSiteCues.length || geminiAerial.length || googleSat) {
     sources.push({
       id: "site-verify",

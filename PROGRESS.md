@@ -107,3 +107,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 23:46 | Cursor | UI-20 | Irregular roofs: decompose into main trunk + rectangular wings, matched pitch, no apex cones. |
 | 23:49 | Cursor | UI-21 | Roof rewrite: sealed OBB gable/hip prisms; no twisted T-join ridges or AABB snaps. |
 | 23:55 | Cursor | UI-22 | Basement clears ground cover; stable outlines; gable edge-to-ridge mesh. |
+| 00:04 | Cursor | UI-23 | Hydrants: keep radius 250 m+, Overpass supplement, larger markers. |
+| 00:12 | Cursor | UI-24 | Large sites: single floor deck, lighter ground, orbit drag no longer fights HUD. |

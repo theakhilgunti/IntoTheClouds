@@ -56,12 +56,14 @@ describe("street and driveway", () => {
       hydrants: [
         [8, -12],
         [40, -10],
-        [200, 0],
+        [140, -20],
+        [400, 0],
         [-6, -16],
       ],
     });
     const hydrants = features.filter((f) => f.kind === "hydrant");
-    assert.equal(hydrants.length, 3, "far hydrant should be dropped");
+    assert.ok(hydrants.length >= 4, `street hydrants ~140 m should stay, got ${hydrants.length}`);
+    assert.equal(hydrants.length, 4, "400 m hydrant should be dropped");
     assert.equal(hydrants[0].label, "Nearest hydrant");
     const c0 = hydrants[0].polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]).map((n) => n / 4);
     assert.ok(Math.hypot(c0[0] - 8, c0[1] + 12) < 0.5 || Math.hypot(c0[0] + 6, c0[1] + 16) < 0.5);

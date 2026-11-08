@@ -100,6 +100,39 @@ async function fetchMap(origin: LatLng, overpassQuery: string, radius = 150): Pr
   }
 }
 
+/** Dedicated hydrant node query — OSM map bbox often misses street hydrants past ~150 m. */
+async function fetchHydrantsOverpass(origin: LatLng, radius: number): Promise<Point[]> {
+  const q = `[out:json][timeout:20];
+(
+  node["emergency"="fire_hydrant"](around:${radius},${origin.lat},${origin.lng});
+  node["amenity"="fire_hydrant"](around:${radius},${origin.lat},${origin.lng});
+);
+out body;`;
+  let lastErr: unknown;
+  for (const url of ENDPOINTS) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        body: "data=" + encodeURIComponent(q),
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = await res.json();
+      const out: Point[] = [];
+      for (const e of j.elements as Array<{ type: string; lat?: number; lon?: number; tags?: Record<string, string> }>) {
+        if (e.type === "node" && e.lat != null && e.lon != null && isHydrantTags(e.tags)) {
+          out.push(toLocal(origin, { lat: e.lat, lng: e.lon }));
+        }
+      }
+      return out;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
 async function runQuery(origin: LatLng, query: string): Promise<OsmFetch> {
   let lastErr: unknown;
   for (const url of ENDPOINTS) {
@@ -157,7 +190,9 @@ function houseLabel(b: OsmBuilding): string {
  */
 export async function lookupBuilding(origin: LatLng, heading?: number | null, hint?: AddressHint): Promise<OsmContext> {
   // Wide enough for a full house lot / small campus; denser cities still stay under Overpass limits.
+  // Hydrants need extra reach — street corners are often >150 m from the geocode point.
   const R = 220;
+  const HYDRANT_R = 320;
   const q = `[out:json][timeout:25];
 (
   way["building"](around:${R},${origin.lat},${origin.lng});
@@ -166,11 +201,28 @@ export async function lookupBuilding(origin: LatLng, heading?: number | null, hi
   way["leisure"="swimming_pool"](around:${R},${origin.lat},${origin.lng});
   way["amenity"="parking"](around:${R},${origin.lat},${origin.lng});
   way["leisure"="parking"](around:${R},${origin.lat},${origin.lng});
-  node["emergency"="fire_hydrant"](around:${R},${origin.lat},${origin.lng});
-  node["amenity"="fire_hydrant"](around:${R},${origin.lat},${origin.lng});
+  node["emergency"="fire_hydrant"](around:${HYDRANT_R},${origin.lat},${origin.lng});
+  node["amenity"="fire_hydrant"](around:${HYDRANT_R},${origin.lat},${origin.lng});
 );
 out tags geom;`;
-  const { ways: els, hydrants: rawHydrants } = await fetchMap(origin, q, R);
+  // OSM map API bbox uses R; hydrant nodes farther out are filled in by Overpass when needed.
+  const { ways: els, hydrants: apiHydrants } = await fetchMap(origin, q, R);
+  let rawHydrants = apiHydrants;
+  if (rawHydrants.length < 2) {
+    try {
+      const extra = await fetchHydrantsOverpass(origin, HYDRANT_R);
+      const seen = new Set(rawHydrants.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`));
+      for (const p of extra) {
+        const key = `${p[0].toFixed(1)},${p[1].toFixed(1)}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          rawHydrants.push(p);
+        }
+      }
+    } catch (e) {
+      console.warn("Hydrant Overpass supplement failed", e);
+    }
+  }
 
   const buildings: OsmBuilding[] = [];
   const roads: { name: string | null; pts: Point[] }[] = [];
@@ -282,9 +334,9 @@ out tags geom;`;
   // Nearest mapped hydrants (keep a handful for the SAR scene).
   const hydrants = rawHydrants
     .map((p) => ({ p, d: dist(here, p) }))
-    .filter((h) => h.d < R)
+    .filter((h) => h.d < HYDRANT_R)
     .sort((a, b) => a.d - b.d)
-    .slice(0, 8)
+    .slice(0, 10)
     .map((h) => h.p);
 
   return {

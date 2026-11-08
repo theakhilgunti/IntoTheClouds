@@ -282,6 +282,7 @@ function RoomSlab({
   onPick,
   onOver,
   onOut,
+  y = 0.08,
 }: {
   room: Room;
   floorName: string;
@@ -291,6 +292,7 @@ function RoomSlab({
   onPick: (e: ThreeEvent<MouseEvent>) => void;
   onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
   onOut: (id: string) => void;
+  y?: number;
 }) {
   const geom = useMemo(() => {
     const shape = new THREE.Shape(room.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
@@ -308,7 +310,7 @@ function RoomSlab({
       <mesh
         geometry={geom}
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, 0.04, 0]}
+        position={[0, y, 0]}
         onClick={onPick}
         onPointerOver={(e) => {
           e.stopPropagation();
@@ -323,7 +325,11 @@ function RoomSlab({
           color={xray && !isStair ? "#0b2e72" : ROOM_COLORS[room.type]}
           emissive={hovered ? "#ffffff" : isStair ? "#ff8a6b" : "#000000"}
           emissiveIntensity={hovered ? 0.35 : isStair ? (xray ? 0.8 : 0.3) : 0}
-          side={THREE.DoubleSide}
+          side={THREE.FrontSide}
+          depthWrite
+          polygonOffset
+          polygonOffsetFactor={-2}
+          polygonOffsetUnits={-2}
         />
       </mesh>
       {(showLabel || hovered) && (
@@ -332,6 +338,68 @@ function RoomSlab({
         </group>
       )}
     </group>
+  );
+}
+
+/**
+ * One sealed deck per floor for big complexes — avoids dozens of overlapping room
+ * slabs z-fighting and tanking the frame rate.
+ */
+function SimpleFloorDeck({
+  floor,
+  footprint,
+  xray,
+  onPick,
+  onOver,
+  onOut,
+  tipId,
+}: {
+  floor: Floor;
+  footprint: Point[];
+  xray: boolean;
+  onPick: (e: ThreeEvent<MouseEvent>, room: Room | null) => void;
+  onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
+  onOut: (id: string) => void;
+  tipId: string | null;
+}) {
+  const ring = footprint.length >= 3 ? footprint : floor.rooms[0]?.polygon ?? [];
+  const geom = useMemo(() => {
+    if (ring.length < 3) return null;
+    const shape = new THREE.Shape(ring.map(([x, y]) => new THREE.Vector2(x, y)));
+    return new THREE.ShapeGeometry(shape);
+  }, [ring]);
+  if (!geom) return null;
+  return (
+    <mesh
+      geometry={geom}
+      rotation={[-Math.PI / 2, 0, 0]}
+      position={[0, 0.08, 0]}
+      onClick={(e) => {
+        e.stopPropagation();
+        const p: Point = [e.point.x, -e.point.z];
+        const room = floor.rooms.find((r) => pointInRing(p, r.polygon)) ?? null;
+        onPick(e, room);
+      }}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        const p: Point = [e.point.x, -e.point.z];
+        const room = floor.rooms.find((r) => pointInRing(p, r.polygon));
+        if (room) onOver(e, room.id, room.name, `${floor.name} · ${ROOM_WORDS[room.type]}`);
+        else onOver(e, `deck-${floor.level}`, floor.name, "Floor deck");
+      }}
+      onPointerOut={(e) => {
+        e.stopPropagation();
+        onOut(tipId ?? `deck-${floor.level}`);
+      }}
+    >
+      <meshStandardMaterial
+        color={xray ? "#0b2e72" : "#c5d6f4"}
+        side={THREE.FrontSide}
+        polygonOffset
+        polygonOffsetFactor={-1}
+        polygonOffsetUnits={-1}
+      />
+    </mesh>
   );
 }
 
@@ -355,7 +423,7 @@ function groundMat(color: string, hovered: boolean, opts?: { transparent?: boole
       roughness={0.95}
       transparent={opts?.transparent}
       opacity={opts?.opacity ?? 1}
-      side={THREE.DoubleSide}
+      side={THREE.FrontSide}
       depthWrite={!(opts?.transparent && (opts.opacity ?? 1) < 1)}
       polygonOffset
       polygonOffsetFactor={opts?.offset ?? -1}
@@ -471,24 +539,25 @@ function SiteFeatureMesh({
             : feature.kind === "pool"
               ? LAYER_Y.pool
               : LAYER_Y.fence;
-  const thickness =
-    feature.kind === "fence"
-      ? Math.max(0.8, feature.height)
-      : feature.kind === "yard"
-        ? 0.045
-        : feature.kind === "pool"
-          ? 0.12
-          : feature.kind === "road"
-            ? 0.07
-            : 0.055;
 
   const slabGeo = useMemo(() => {
     if (feature.kind === "trees" || feature.kind === "garage" || feature.kind === "shed" || feature.kind === "hydrant" || feature.kind === "signal") return null;
-    const shape = new THREE.Shape(feature.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
-    const g = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false });
+    const simplified =
+      feature.polygon.length > 24
+        ? feature.polygon.filter((_, i) => i % Math.ceil(feature.polygon.length / 16) === 0)
+        : feature.polygon;
+    if (simplified.length < 3) return null;
+    const shape = new THREE.Shape(simplified.map(([x, y]) => new THREE.Vector2(x, y)));
+    // Fences need height; ground pads stay flat ShapeGeometry (cheaper, less z-fight).
+    if (feature.kind === "fence") {
+      const g = new THREE.ExtrudeGeometry(shape, { depth: Math.max(0.8, feature.height), bevelEnabled: false });
+      g.rotateX(-Math.PI / 2);
+      return g;
+    }
+    const g = new THREE.ShapeGeometry(shape);
     g.rotateX(-Math.PI / 2);
     return g;
-  }, [feature.kind, feature.polygon, feature.height, thickness]);
+  }, [feature.kind, feature.polygon, feature.height]);
 
   const hover = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
@@ -538,29 +607,34 @@ function SiteFeatureMesh({
   if (feature.kind === "hydrant") {
     const red = hovered ? "#f87171" : SITE_COLOR.hydrant;
     return (
-      <group position={[center[0], 0, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
-        <mesh position={[0, 0.08, 0]}>
-          <cylinderGeometry args={[0.22, 0.26, 0.16, 10]} />
+      <group position={[center[0], 0, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)} scale={1.65}>
+        {/* Ground disc so hydrants read from orbit distance */}
+        <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} raycast={noopRaycast}>
+          <circleGeometry args={[0.55, 16]} />
+          <meshStandardMaterial color="#7f1d1d" transparent opacity={0.55} depthWrite={false} />
+        </mesh>
+        <mesh position={[0, 0.1, 0]}>
+          <cylinderGeometry args={[0.28, 0.32, 0.18, 10]} />
           <meshStandardMaterial color="#1f2937" metalness={0.35} roughness={0.55} />
         </mesh>
-        <mesh position={[0, 0.42, 0]}>
-          <cylinderGeometry args={[0.16, 0.18, 0.55, 10]} />
+        <mesh position={[0, 0.55, 0]}>
+          <cylinderGeometry args={[0.2, 0.22, 0.7, 10]} />
+          <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} emissive={red} emissiveIntensity={hovered ? 0.45 : 0.2} />
+        </mesh>
+        <mesh position={[0.26, 0.62, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <cylinderGeometry args={[0.07, 0.08, 0.22, 8]} />
           <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} />
         </mesh>
-        <mesh position={[0.2, 0.48, 0]} rotation={[0, 0, Math.PI / 2]}>
-          <cylinderGeometry args={[0.06, 0.07, 0.18, 8]} />
+        <mesh position={[-0.26, 0.62, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <cylinderGeometry args={[0.07, 0.08, 0.22, 8]} />
           <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} />
         </mesh>
-        <mesh position={[-0.2, 0.48, 0]} rotation={[0, 0, Math.PI / 2]}>
-          <cylinderGeometry args={[0.06, 0.07, 0.18, 8]} />
+        <mesh position={[0, 0.62, 0.26]} rotation={[Math.PI / 2, 0, 0]}>
+          <cylinderGeometry args={[0.065, 0.075, 0.2, 8]} />
           <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} />
         </mesh>
-        <mesh position={[0, 0.48, 0.2]} rotation={[Math.PI / 2, 0, 0]}>
-          <cylinderGeometry args={[0.055, 0.065, 0.16, 8]} />
-          <meshStandardMaterial color={red} metalness={0.25} roughness={0.45} />
-        </mesh>
-        <mesh position={[0, 0.78, 0]}>
-          <cylinderGeometry args={[0.09, 0.11, 0.16, 8]} />
+        <mesh position={[0, 1.0, 0]}>
+          <cylinderGeometry args={[0.11, 0.14, 0.2, 8]} />
           <meshStandardMaterial color="#f8fafc" metalness={0.4} roughness={0.4} />
         </mesh>
       </group>
@@ -783,6 +857,8 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const [orbitYaw, setOrbitYaw] = useState(0);
   const [tiltAmt, setTiltAmt] = useState(0.42);
   const applyingOrbit = useRef(false);
+  /** When true, orbit state came from drag — don't write angles back into OrbitControls. */
+  const orbitFromDrag = useRef(false);
   const [tip, setTip] = useState<{ id: string; title: string; detail: string; x: number; y: number } | null>(null);
 
   const showTip = (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => {
@@ -836,33 +912,47 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   const peeringBasement = shown.some((f) => f.level < 0) && !shown.some((f) => f.level >= 0);
 
   // Frame the camera on the house, whatever its size.
-  const { camPos, target, extent, minDist, maxDist, camFar } = useMemo(() => {
+  const { camPos, target, extent, minDist, maxDist, camNear, camFar, largeSite, rotateSpeed } = useMemo(() => {
     const pts = [
       ...model.floors.flatMap((f) => f.walls.flatMap((w) => [w.a, w.b])),
       ...(model.compound?.features.flatMap((f) => f.polygon) ?? []),
     ];
     const ext = Math.max(6, ...pts.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y))));
+    const roomCount = model.floors.reduce((n, f) => n + f.rooms.length, 0);
+    const large = ext > 35 || roomCount > 10;
     const height = top.elevation + top.height + (model.roof?.height ?? 0);
     // Portrait screens see less width, so back the camera off further.
     const portrait = typeof window !== "undefined" && window.innerHeight > window.innerWidth;
     const d = Math.min((ext * 2.0 + height) * (portrait ? 1.45 : 1), ext * 3.2 + 18);
-    const maxD = Math.min(Math.max(ext * 4.2, d * 1.45), 180);
-    const minD = Math.max(2.5, Math.min(6, ext * 0.15));
+    const maxD = Math.min(Math.max(ext * 4.2, d * 1.45), large ? 260 : 180);
+    const minD = Math.max(2.5, Math.min(large ? 10 : 6, ext * 0.15));
     // Start on the street-facing side (front of the house).
     const fy = streetFrontYaw(model);
+    // Large extents need a wider near/far gap or depth buffer fights and orbit jitters.
+    const near = Math.max(0.35, minD * 0.08);
+    const far = Math.max(800, maxD * 12);
     return {
       camPos: [Math.sin(fy) * d * 0.95, d * 0.52, Math.cos(fy) * d * 0.95] as [number, number, number],
       target: [0, height * 0.35, 0] as [number, number, number],
       extent: ext,
       minDist: minD,
       maxDist: maxD,
-      camFar: Math.max(2000, maxD * 20),
+      camNear: near,
+      camFar: far,
+      largeSite: large,
+      // Slower rotate on big sites so drag doesn't feel twitchy.
+      rotateSpeed: large ? Math.max(1.4, Math.min(2.6, 70 / ext)) : 3.4,
     };
   }, [model, top]);
 
   useEffect(() => {
     const c = controlsRef.current;
     if (!c) return;
+    // Drag already moved the camera — only push angles when the HUD sliders changed.
+    if (orbitFromDrag.current) {
+      orbitFromDrag.current = false;
+      return;
+    }
     applyingOrbit.current = true;
     c.setAzimuthalAngle(frontYaw + orbitYaw);
     c.setPolarAngle(polarFromTilt(tiltAmt));
@@ -940,8 +1030,10 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
   return (
     <div ref={wrap} className="relative h-full w-full bg-bp">
       <Canvas
-        camera={{ position: camPos, fov: 45, near: 0.1, far: camFar }}
+        camera={{ position: camPos, fov: 45, near: camNear, far: camFar }}
         shadows={false}
+        gl={{ antialias: !largeSite, powerPreference: "high-performance", logarithmicDepthBuffer: true }}
+        dpr={largeSite ? [1, 1.5] : [1, 2]}
         onCreated={() => requestAnimationFrame(() => requestAnimationFrame(() => onReady?.()))}
       >
         <color attach="background" args={[xray ? "#0b2e72" : "#0f3a8e"]} />
@@ -953,15 +1045,12 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
 
         {!xray && !peeringBasement && (
           <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, LAYER_Y.base, 0]} raycast={noopRaycast}>
-            <circleGeometry args={[Math.max(90, Math.min(160, extent * 5.5)), 64]} />
-            <meshStandardMaterial
+            <circleGeometry args={[Math.max(90, Math.min(largeSite ? 200 : 160, extent * 5.5)), largeSite ? 32 : 48]} />
+            <meshBasicMaterial
               color="#0d3482"
               transparent
-              opacity={hidden.size || exploded ? 0.35 : 0.8}
+              opacity={hidden.size || exploded ? 0.3 : 0.75}
               depthWrite={false}
-              polygonOffset
-              polygonOffsetFactor={-8}
-              polygonOffsetUnits={-8}
             />
           </mesh>
         )}
@@ -978,8 +1067,25 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
           depthTest={!peeringBasement}
         />
 
-        {!peeringBasement &&
-          model.compound?.features.map((feature) => (
+        {(() => {
+          const feats = model.compound?.features ?? [];
+          const filtered = peeringBasement
+            ? feats.filter((f) => f.kind === "garage" || f.kind === "shed" || f.kind === "hydrant" || f.kind === "signal" || f.kind === "fence" || f.kind === "trees")
+            : largeSite
+              ? (() => {
+                  // One yard + roads/access + structures — drop overlapping patio/pool clutter.
+                  let yardSeen = false;
+                  return feats.filter((f) => {
+                    if (f.kind === "yard") {
+                      if (yardSeen) return false;
+                      yardSeen = true;
+                      return true;
+                    }
+                    return f.kind !== "patio" && f.kind !== "pool";
+                  });
+                })()
+              : feats;
+          return filtered.map((feature) => (
             <SiteFeatureMesh
               key={feature.id}
               feature={feature}
@@ -987,35 +1093,50 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
               onOver={showTip}
               onOut={hideTip}
             />
-          ))}
-        {peeringBasement &&
-          model.compound?.features
-            .filter((f) => f.kind === "garage" || f.kind === "shed" || f.kind === "hydrant" || f.kind === "signal" || f.kind === "fence" || f.kind === "trees")
-            .map((feature) => (
-              <SiteFeatureMesh
-                key={feature.id}
-                feature={feature}
-                hovered={tip?.id === feature.id}
-                onOver={showTip}
-                onOut={hideTip}
-              />
-            ))}
+          ));
+        })()}
 
         {shown.map((floor) => (
           <group key={floor.level} position={[0, floorY(floor), 0]}>
-            {floor.rooms.map((room) => (
-              <RoomSlab
-                key={room.id}
-                room={room}
-                floorName={floor.name}
+            {largeSite || floor.rooms.length > 10 ? (
+              <SimpleFloorDeck
+                floor={floor}
+                footprint={model.footprint}
                 xray={xray}
-                showLabel={shown.length === 1 || exploded}
-                hovered={tip?.id === room.id}
-                onPick={dropMarker(floor)}
+                tipId={tip?.id ?? null}
+                onPick={(e, room) => {
+                  if (!tool) return;
+                  e.stopPropagation();
+                  setMarkers((m) => [
+                    ...m,
+                    {
+                      id: crypto.randomUUID(),
+                      type: tool,
+                      floor: floor.level,
+                      pos: [e.point.x, -e.point.z],
+                      note: room?.name ?? "",
+                      createdAt: new Date().toISOString(),
+                    },
+                  ]);
+                }}
                 onOver={showTip}
                 onOut={hideTip}
               />
-            ))}
+            ) : (
+              floor.rooms.map((room) => (
+                <RoomSlab
+                  key={room.id}
+                  room={room}
+                  floorName={floor.name}
+                  xray={xray}
+                  showLabel={shown.length === 1 || exploded}
+                  hovered={tip?.id === room.id}
+                  onPick={dropMarker(floor)}
+                  onOver={showTip}
+                  onOut={hideTip}
+                />
+              ))
+            )}
             {floor.walls.map((wall) => (
               <WallMesh key={wall.id} wall={wall} floor={floor} xray={xray} passPointer={!tool} assumed={assumed} />
             ))}
@@ -1059,7 +1180,12 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         )}
 
         <gridHelper
-          args={[Math.min(extent * 6, 200), Math.max(16, Math.round(Math.min(extent * 3, 80))), "#4a78d0", "#2a55b0"]}
+          args={[
+            Math.min(extent * 6, largeSite ? 240 : 200),
+            largeSite ? 20 : Math.max(16, Math.round(Math.min(extent * 3, 80))),
+            "#4a78d0",
+            "#2a55b0",
+          ]}
           position={[0, -2.7, 0]}
         />
         <OrbitControls
@@ -1071,13 +1197,14 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
           minDistance={minDist}
           maxDistance={maxDist}
           enableDamping={false}
-          rotateSpeed={4.2}
-          zoomSpeed={1.35}
-          panSpeed={1.4}
+          rotateSpeed={rotateSpeed}
+          zoomSpeed={largeSite ? 1.1 : 1.35}
+          panSpeed={largeSite ? 1.1 : 1.4}
           onStart={() => setTip(null)}
           onChange={() => {
             const c = controlsRef.current;
             if (!c || applyingOrbit.current) return;
+            orbitFromDrag.current = true;
             setOrbitYaw(wrapPi(c.getAzimuthalAngle() - frontYaw));
             setTiltAmt(Math.min(1, Math.max(0, tiltFromPolar(c.getPolarAngle()))));
           }}

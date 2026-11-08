@@ -482,14 +482,15 @@ export function accessFeatures(opts: {
   const width = Math.min(12, Math.max(7.2, ringExtent(opts.footprint) * 0.15));
   const out: SiteFeature[] = [];
 
-  const hydrantR = Math.max(90, keepR * 1.15);
+  // Street hydrants are often 100–200 m from the house centroid — keep a wide net.
+  const hydrantR = Math.max(250, keepR * 2.2);
   const nearestHydrants = [...(opts.hydrants ?? [])]
     .map((p) => ({ p, d: dist(here, p) }))
     .filter((h) => h.d < hydrantR)
     .sort((a, b) => a.d - b.d)
-    .slice(0, 6);
+    .slice(0, 8);
   nearestHydrants.forEach((h, i) => {
-    const s = 0.28;
+    const s = 0.45;
     out.push({
       id: `hydrant-${i}`,
       kind: "hydrant",
