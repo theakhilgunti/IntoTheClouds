@@ -657,7 +657,7 @@
           "type": "string"
         },
         "grade": {
-          "description": "Mild street-to-backyard slope for outdoor meshes",
+          "description": "Outdoor elevation: DEM when available, else mild street plane",
           "type": "object",
           "properties": {
             "downhill": {
@@ -677,6 +677,20 @@
               "items": false,
               "minItems": 2,
               "maxItems": 2
+            },
+            "dem": {
+              "description": "DEM heightfield in model meters, relative to the house slab",
+              "type": "object",
+              "properties": {
+                "x0": { "type": "number" },
+                "y0": { "type": "number" },
+                "cell": { "type": "number", "exclusiveMinimum": 0 },
+                "cols": { "type": "integer", "exclusiveMinimum": 0 },
+                "rows": { "type": "integer", "exclusiveMinimum": 0 },
+                "z": { "type": "array", "items": { "type": "number" } },
+                "source": { "type": "string" }
+              },
+              "required": ["x0", "y0", "cell", "cols", "rows", "z", "source"]
             }
           },
           "required": ["downhill", "slope", "origin"]

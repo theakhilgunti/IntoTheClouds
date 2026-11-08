@@ -59,6 +59,10 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 03:35 | Cursor | UI-55 | Street View facade cross-check (stories/garage/entry/porch) via Gemini (compound-v18). |
+| 03:28 | Cursor | UI-54 | Drop solid house building pad; warped grid/DEM convey ground. |
+| 03:25 | Cursor | UI-53 | Flat house pad (no DEM twist) + ground grid warped to lot grade/DEM. |
+| 03:20 | Cursor | UI-52 | Real outdoor DEM (OpenTopo/EPQS) + heightfield mesh; house slab stays at 0 (compound-v17). |
 | 03:00 | Cursor | UI-51 | Radius terrain disc + school/office/church layouts from OSM building=* (compound-v16). |
 | 02:55 | Cursor | UI-50 | Graded terrain pads under house + neighbors and connecting apron (compound-v15). |
 | 02:50 | Cursor | UI-49 | Neighbor shells within ~60–100 m radius of the house (compound-v14). |
@@ -138,3 +142,6 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 02:16 | Cursor | UI-41 | Finished task |
 | 02:17 | Cursor | UI-42 | Finished task |
 | 02:18 | Cursor | UI-43 | Finished task |
+| 03:19 | Cursor | UI-53 | Finished task |
+| 03:22 | Cursor | UI-54 | Finished task |
+| 03:31 | Cursor | UI-55 | Finished task |

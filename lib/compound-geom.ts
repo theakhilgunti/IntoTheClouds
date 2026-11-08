@@ -26,11 +26,24 @@ export type SiteFeature = {
   source: "map" | "aerial" | "parcel" | "estimated";
 };
 
-/** Mild lot tilt: street downhill, house slab stays at y = 0. */
+/** DEM heightfield in the model frame (heights relative to the house slab). */
+export type DemGrid = {
+  x0: number;
+  y0: number;
+  cell: number;
+  cols: number;
+  rows: number;
+  z: number[];
+  source: string;
+};
+
+/** Mild lot tilt (+ optional real DEM). House slab stays at y = 0. */
 export type LotGrade = {
   downhill: Point;
   slope: number;
   origin: Point;
+  /** Real outdoor elevation samples; preferred over the plane when present. */
+  dem?: DemGrid;
 };
 
 const OUTBUILDING: Record<string, "garage" | "shed"> = {
@@ -145,16 +158,7 @@ export function neighborhoodTerrainFeatures(
     source: "estimated",
   });
 
-  if (main && main.length >= 3) {
-    out.push({
-      id: "terrain-main",
-      kind: "terrain",
-      label: "Building pad",
-      polygon: expandRing(main, 2.8),
-      height: HEIGHT.terrain,
-      source: "estimated",
-    });
-  }
+  // Focus house has no solid pad — the warped grid / DEM mesh already reads the ground.
   neighborRings.forEach((ring, i) => {
     if (ring.length < 3) return;
     out.push({
@@ -182,12 +186,138 @@ export function buildLotGrade(footprint: Point[], streetDir: Point | null): LotG
   };
 }
 
-/** Vertical offset (m) at a model-frame point. Streetward is negative (lower). */
+/** Bilinear sample of a relative DEM grid; null if missing / invalid. */
+export function sampleDemHeight(p: Point, dem: DemGrid): number | null {
+  if (dem.cols < 2 || dem.rows < 2 || dem.z.length < dem.cols * dem.rows) return null;
+  const u = (p[0] - dem.x0) / dem.cell;
+  const v = (p[1] - dem.y0) / dem.cell;
+  const c0 = Math.max(0, Math.min(dem.cols - 2, Math.floor(u)));
+  const r0 = Math.max(0, Math.min(dem.rows - 2, Math.floor(v)));
+  const tx = Math.max(0, Math.min(1, u - c0));
+  const ty = Math.max(0, Math.min(1, v - r0));
+  const i = (c: number, r: number) => dem.z[r * dem.cols + c];
+  const z00 = i(c0, r0);
+  const z10 = i(c0 + 1, r0);
+  const z01 = i(c0, r0 + 1);
+  const z11 = i(c0 + 1, r0 + 1);
+  if (![z00, z10, z01, z11].every((n) => Number.isFinite(n))) return null;
+  return (z00 * (1 - tx) + z10 * tx) * (1 - ty) + (z01 * (1 - tx) + z11 * tx) * ty;
+}
+
+/**
+ * Vertical offset (m) at a model-frame point.
+ * Prefers DEM samples when present; otherwise the mild street plane (streetward lower).
+ */
 export function gradeHeight(p: Point, grade: LotGrade | null | undefined): number {
-  if (!grade || grade.slope <= 0) return 0;
+  if (!grade) return 0;
+  if (grade.dem) {
+    const z = sampleDemHeight(p, grade.dem);
+    if (z != null) return z;
+  }
+  if (grade.slope <= 0) return 0;
   const dx = p[0] - grade.origin[0];
   const dy = p[1] - grade.origin[1];
   return -(dx * grade.downhill[0] + dy * grade.downhill[1]) * grade.slope;
+}
+
+/** Min/max DEM heights (relative), for camera framing. */
+export function demExtent(grade: LotGrade | null | undefined): { min: number; max: number } | null {
+  const z = grade?.dem?.z;
+  if (!z?.length) return null;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const n of z) {
+    if (!Number.isFinite(n)) continue;
+    min = Math.min(min, n);
+    max = Math.max(max, n);
+  }
+  if (!Number.isFinite(min)) return null;
+  return { min, max };
+}
+
+/**
+ * Line-segment positions for a ground grid warped to lot grade / DEM.
+ * Three.js coords: x east, y up, z = −modelY. Each cell edge is subdivided so hills read clearly.
+ */
+export function terrainGridLinePositions(
+  grade: LotGrade | null | undefined,
+  size: number,
+  divisions: number,
+  opts?: { yBias?: number; /** Samples per cell edge (≥1). */ subdivide?: number },
+): Float32Array {
+  const half = Math.max(8, size) / 2;
+  const divs = Math.max(4, Math.min(64, Math.round(divisions)));
+  const step = (half * 2) / divs;
+  const sub = Math.max(1, Math.min(8, Math.round(opts?.subdivide ?? (grade?.dem ? 4 : 1))));
+  const yBias = opts?.yBias ?? -0.12;
+  const pts: number[] = [];
+  const pushSeg = (mx0: number, my0: number, mx1: number, my1: number) => {
+    for (let s = 0; s < sub; s++) {
+      const t0 = s / sub;
+      const t1 = (s + 1) / sub;
+      const ax = mx0 + (mx1 - mx0) * t0;
+      const ay = my0 + (my1 - my0) * t0;
+      const bx = mx0 + (mx1 - mx0) * t1;
+      const by = my0 + (my1 - my0) * t1;
+      pts.push(ax, gradeHeight([ax, ay], grade) + yBias, -ay, bx, gradeHeight([bx, by], grade) + yBias, -by);
+    }
+  };
+  for (let i = 0; i <= divs; i++) {
+    const t = -half + i * step;
+    for (let j = 0; j < divs; j++) {
+      const a = -half + j * step;
+      const b = a + step;
+      // Lines of constant model-Y (run east–west).
+      pushSeg(a, t, b, t);
+      // Lines of constant model-X (run north–south).
+      pushSeg(t, a, t, b);
+    }
+  }
+  return Float32Array.from(pts);
+}
+
+/**
+ * Triangle buffers for a DEM heightfield in Three.js coords (x east, y up, z = −modelY).
+ * Each DEM sample becomes a vertex so outdoor relief reads as real topography, not a plane tilt.
+ */
+export function demHeightfieldBuffers(
+  dem: DemGrid,
+  opts?: { yBias?: number; /** Keep only cells whose center is within this model-frame radius. */ radiusM?: number },
+): { positions: Float32Array; indices: Uint32Array } | null {
+  if (dem.cols < 2 || dem.rows < 2 || dem.z.length < dem.cols * dem.rows) return null;
+  const yBias = opts?.yBias ?? -0.05;
+  const radius = opts?.radiusM;
+  const r2 = radius != null && radius > 0 ? radius * radius : null;
+  const n = dem.cols * dem.rows;
+  const positions = new Float32Array(n * 3);
+  const keep = new Uint8Array(n);
+  for (let r = 0; r < dem.rows; r++) {
+    for (let c = 0; c < dem.cols; c++) {
+      const i = r * dem.cols + c;
+      const mx = dem.x0 + c * dem.cell;
+      const my = dem.y0 + r * dem.cell;
+      const inside = r2 == null || mx * mx + my * my <= r2 * 1.02;
+      keep[i] = inside ? 1 : 0;
+      const h = dem.z[i];
+      positions[i * 3] = mx;
+      positions[i * 3 + 1] = (Number.isFinite(h) ? h : 0) + yBias;
+      positions[i * 3 + 2] = -my;
+    }
+  }
+  const idx: number[] = [];
+  for (let r = 0; r < dem.rows - 1; r++) {
+    for (let c = 0; c < dem.cols - 1; c++) {
+      const i00 = r * dem.cols + c;
+      const i10 = i00 + 1;
+      const i01 = i00 + dem.cols;
+      const i11 = i01 + 1;
+      if (!keep[i00] && !keep[i10] && !keep[i01] && !keep[i11]) continue;
+      // Two triangles per cell; winding for upward normals with y-up / −modelY.
+      idx.push(i00, i01, i10, i10, i01, i11);
+    }
+  }
+  if (idx.length < 3) return null;
+  return { positions, indices: Uint32Array.from(idx) };
 }
 
 /**
@@ -881,11 +1011,12 @@ export function assembleCompound(site: {
  * Cross-check mapped site features against aerial / satellite cues (Esri JPEG + Gemini boxes).
  * Keeps OSM when aerial agrees or is silent; drops map outbuildings contradicted by clear aerial
  * evidence; fills gaps from aerial when the map omitted them.
+ * `geminiGarage` may also reflect Street View facade reading (merged upstream in the scan).
  */
 export function crossVerifySiteFeatures(opts: {
   features: SiteFeature[];
   aerialCues: { kind: CompoundKind; label?: string; polygon: Point[]; confidence?: number }[];
-  /** Gemini house-level garage reading, when available. */
+  /** Gemini (+ Street View) house-level garage reading, when available. */
   geminiGarage?: "none" | "attached_left" | "attached_right" | "detached" | "unknown";
 }): SiteFeature[] {
   const out = [...opts.features];

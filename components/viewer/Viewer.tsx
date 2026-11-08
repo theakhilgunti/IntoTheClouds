@@ -18,14 +18,21 @@ import type {
   Wall,
 } from "@/packages/schema/building-model";
 import { buildRoofPositions, type Pt } from "@/lib/roof-geom";
-import { gradeHeight } from "@/lib/compound-geom";
+import {
+  demExtent,
+  demHeightfieldBuffers,
+  gradeHeight,
+  neighborReach,
+  terrainGridLinePositions,
+} from "@/lib/compound-geom";
 import { buildNav, routeToMarker, type Route } from "@/lib/route";
 // Model frame: x = east, y = north. Three.js frame: x = east, y = up, z = south.
 const toXZ = ([x, y]: Point): [number, number] => [x, -y];
 
-/** After Shape/Extrude + rotateX(-π/2), vertices sit on XZ (z = −modelY). Lift by lot grade. */
+/** After Shape/Extrude + rotateX(-π/2), vertices sit on XZ (z = −modelY). Lift by lot grade / DEM. */
 function applyGradeToGeometry(geo: THREE.BufferGeometry, grade: LotGrade | null | undefined, extraY = 0) {
-  if (!grade || grade.slope <= 0) return geo;
+  if (!grade) return geo;
+  if (!grade.dem && grade.slope <= 0) return geo;
   const pos = geo.attributes.position;
   for (let i = 0; i < pos.count; i++) {
     const mx = pos.getX(i);
@@ -459,6 +466,83 @@ function groundMat(color: string, hovered: boolean, opts?: { transparent?: boole
   );
 }
 
+/** Real outdoor topography from the site DEM (one vertex per sample). */
+function DemTerrainMesh({
+  grade,
+  footprint,
+  hovered,
+  onOver,
+  onOut,
+}: {
+  grade: LotGrade;
+  footprint: Point[];
+  hovered: boolean;
+  onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
+  onOut: (id: string) => void;
+}) {
+  const geo = useMemo(() => {
+    const dem = grade.dem;
+    if (!dem) return null;
+    const fp =
+      footprint.length >= 3
+        ? footprint
+        : ([[-10, -10], [10, -10], [10, 10], [-10, 10]] as Point[]);
+    const radius = Math.max(40, neighborReach(fp));
+    const buf = demHeightfieldBuffers(dem, { yBias: LAYER_Y.terrain, radiusM: radius + dem.cell });
+    if (!buf) return null;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(buf.positions, 3));
+    g.setIndex(new THREE.BufferAttribute(buf.indices, 1));
+    g.computeVertexNormals();
+    return g;
+  }, [grade.dem, footprint]);
+  if (!geo || !grade.dem) return null;
+  const src = grade.dem.source;
+  return (
+    <mesh
+      geometry={geo}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        onOver(e, "terrain-dem", "Site elevation", `Outdoor ground from ${src} — heights relative to the house slab`);
+      }}
+      onPointerOut={() => onOut("terrain-dem")}
+    >
+      {groundMat(SITE_COLOR.terrain, hovered, {
+        transparent: true,
+        opacity: hovered ? 0.62 : 0.48,
+        offset: -6,
+        noHover: false,
+      })}
+    </mesh>
+  );
+}
+
+/** Ground reference grid warped to lot grade / DEM so hills read as terrain, not a flat table. */
+function TerrainGrid({
+  grade,
+  size,
+  divisions,
+}: {
+  grade: LotGrade | null | undefined;
+  size: number;
+  divisions: number;
+}) {
+  const geo = useMemo(() => {
+    const pos = terrainGridLinePositions(grade, size, divisions, {
+      yBias: -0.1,
+      subdivide: grade?.dem ? 4 : grade && grade.slope > 0 ? 2 : 1,
+    });
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    return g;
+  }, [grade, size, divisions]);
+  return (
+    <lineSegments geometry={geo} raycast={noopRaycast}>
+      <lineBasicMaterial color="#3d6ec4" transparent opacity={0.55} depthWrite={false} />
+    </lineSegments>
+  );
+}
+
 /** Attached / next-door house: faded extruded shell — obstacle context, not the focus model. */
 function NeighborMesh({
   feature,
@@ -713,6 +797,7 @@ function SiteFeatureMesh({
                   : LAYER_Y.fence;
 
   const stepRiser = 0.16;
+  const isBuildingPad = feature.kind === "terrain" && feature.id !== "terrain-radius";
   const slabGeo = useMemo(() => {
     if (
       feature.kind === "trees" ||
@@ -745,9 +830,12 @@ function SiteFeatureMesh({
     }
     const g = new THREE.ShapeGeometry(shape);
     g.rotateX(-Math.PI / 2);
+    // Building pads: keep flat and lift as a rigid plate. Vertex-warping a coarse outline
+    // against a DEM produces twisted "cheese" under the house / neighbors.
+    if (isBuildingPad) return g;
     applyGradeToGeometry(g, grade);
     return g;
-  }, [feature.kind, feature.polygon, feature.height, grade, stepRiser]);
+  }, [feature.kind, feature.polygon, feature.height, grade, stepRiser, isBuildingPad]);
 
   const hover = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
@@ -759,8 +847,12 @@ function SiteFeatureMesh({
         ? "Estimated front entry stairs"
         : feature.kind === "terrain"
           ? feature.id === "terrain-radius"
-            ? "Estimated ground grade across the mapped neighborhood radius"
-            : "Estimated ground grade under buildings"
+            ? grade?.dem
+              ? `Mapped elevation (${grade.dem.source})`
+              : "Estimated ground grade across the mapped neighborhood radius"
+            : grade?.dem
+              ? "Building pad following site elevation"
+              : "Estimated ground grade under buildings"
           : SITE_NOTE[feature.source],
     );
   };
@@ -882,8 +974,14 @@ function SiteFeatureMesh({
           : feature.kind === "driveway"
             ? -2
             : -1;
+  // Main house pad stays at slab level (DEM is relative to y=0). Neighbor pads ride the DEM as flat plates.
+  const padY = isBuildingPad
+    ? feature.id === "terrain-main"
+      ? slabY
+      : slabY + gy
+    : slabY;
   return (
-    <mesh geometry={slabGeo} position={[0, slabY, 0]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
+    <mesh geometry={slabGeo} position={[0, padY, 0]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
       {groundMat(SITE_COLOR[feature.kind], hovered, {
         transparent: feature.kind === "pool" || feature.kind === "terrain",
         opacity:
@@ -892,11 +990,12 @@ function SiteFeatureMesh({
             : feature.kind === "terrain"
               ? feature.id === "terrain-radius"
                 ? 0.42
-                : 0.78
+                : feature.id === "terrain-main"
+                  ? 0.55
+                  : 0.7
               : 1,
         offset,
-        // Yard + soft terrain stay quiet; building pads can tip for context.
-        noHover: feature.kind === "yard" || feature.id === "terrain-radius" || feature.id === "terrain-apron",
+        noHover: feature.kind === "yard" || feature.id === "terrain-radius" || feature.id === "terrain-apron" || feature.id === "terrain-main",
       })}
     </mesh>
   );
@@ -1230,13 +1329,15 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
     const roomCount = model.floors.reduce((n, f) => n + f.rooms.length, 0);
     const large = ext > 35 || roomCount > 10;
     const height = top.elevation + top.height + (model.roof?.height ?? 0);
+    const demR = demExtent(model.compound?.grade);
+    const relief = demR ? Math.max(Math.abs(demR.min), Math.abs(demR.max), demR.max - demR.min) : 0;
     // Portrait screens see less width, so back the camera off further.
     const portrait = typeof window !== "undefined" && window.innerHeight > window.innerWidth;
-    const d = Math.min((ext * 2.0 + height) * (portrait ? 1.45 : 1), ext * 3.2 + 18);
+    const d = Math.min((ext * 2.0 + height + relief * 0.85) * (portrait ? 1.45 : 1), ext * 3.2 + 18 + relief);
     // Large compounds (neighbors, yard, street pads) need more pull-back than a single house.
     const maxD = Math.min(
-      Math.max(ext * (large ? 6.8 : 4.2), d * (large ? 2.15 : 1.45)),
-      large ? 480 : 180,
+      Math.max(ext * (large ? 6.8 : 4.2), d * (large ? 2.15 : 1.45), relief * 3.5 + 40),
+      large ? 520 : 220,
     );
     const minD = Math.max(2.5, Math.min(large ? 10 : 6, ext * 0.15));
     // Start outside the front door looking in.
@@ -1373,8 +1474,16 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
         {(() => {
           const feats = model.compound?.features ?? [];
           const lotGrade = model.compound?.grade ?? null;
+          const hasDem = !!lotGrade?.dem;
           // Outside lot/yard pad + base disc stay off — keep streets, pads, and structures.
-          const noYard = feats.filter((f) => f.kind !== "yard");
+          // No solid house pad (grid/DEM convey grade). With DEM, also skip coarse radius + neighbor pads.
+          const noYard = feats.filter(
+            (f) =>
+              f.kind !== "yard" &&
+              f.id !== "terrain-main" &&
+              !(hasDem && f.id === "terrain-radius") &&
+              !(hasDem && f.id.startsWith("terrain-nbr")),
+          );
           // Draw terrain first so pads sit under structures.
           const ordered = [...noYard].sort((a, b) => Number(a.kind !== "terrain") - Number(b.kind !== "terrain"));
           const filtered = peeringBasement
@@ -1382,20 +1491,33 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
             : largeSite
               ? ordered.filter((f) => f.kind !== "patio" && f.kind !== "pool")
               : ordered;
-          return filtered.map((feature) => {
-            // Beacon POIs replace the small meshes for the closest few when the toggle is on.
-            if (hydrantBeaconOn && beaconHydrantIds.has(feature.id)) return null;
-            return (
-              <SiteFeatureMesh
-                key={feature.id}
-                feature={feature}
-                hovered={tip?.id === feature.id}
-                onOver={showTip}
-                onOut={hideTip}
-                grade={lotGrade}
-              />
-            );
-          });
+          return (
+            <>
+              {hasDem && lotGrade && (
+                <DemTerrainMesh
+                  grade={lotGrade}
+                  footprint={model.footprint}
+                  hovered={tip?.id === "terrain-dem"}
+                  onOver={showTip}
+                  onOut={hideTip}
+                />
+              )}
+              {filtered.map((feature) => {
+                // Beacon POIs replace the small meshes for the closest few when the toggle is on.
+                if (hydrantBeaconOn && beaconHydrantIds.has(feature.id)) return null;
+                return (
+                  <SiteFeatureMesh
+                    key={feature.id}
+                    feature={feature}
+                    hovered={tip?.id === feature.id}
+                    onOver={showTip}
+                    onOut={hideTip}
+                    grade={lotGrade}
+                  />
+                );
+              })}
+            </>
+          );
         })()}
 
         {hydrantBeaconOn &&
@@ -1521,14 +1643,10 @@ export default function Viewer({ model, onReady }: { model: BuildingModel; onRea
           <RoofMesh roof={model.roof!} footprint={model.footprint} baseY={floorY(top) + top.height} xray={xray} />
         )}
 
-        <gridHelper
-          args={[
-            Math.min(extent * (largeSite ? 9 : 6), largeSite ? 420 : 200),
-            largeSite ? 24 : Math.max(16, Math.round(Math.min(extent * 3, 80))),
-            "#4a78d0",
-            "#2a55b0",
-          ]}
-          position={[0, -2.7, 0]}
+        <TerrainGrid
+          grade={model.compound?.grade ?? null}
+          size={Math.min(extent * (largeSite ? 9 : 6), largeSite ? 420 : 200)}
+          divisions={largeSite ? 28 : Math.max(16, Math.round(Math.min(extent * 3, 48)))}
         />
         <OrbitControls
           ref={controlsRef}

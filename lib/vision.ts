@@ -16,6 +16,10 @@ export const HouseFacts = z.object({
   exterior_material: z.string(),
   style: z.string(),
   photo_matches_aerial: z.enum(["yes", "no", "unsure", "no_photo"]),
+  /** Front door / main entry as seen from the street. */
+  entry: z.enum(["center", "left", "right", "unknown"]).default("unknown"),
+  /** Covered porch or stoop visible on the street facade. */
+  porch: z.enum(["yes", "no", "unknown"]).default("unknown"),
   confidence: z.number().min(0).max(1),
   observations: z.array(z.string()).max(6),
 });
@@ -41,6 +45,16 @@ const RESPONSE_SCHEMA = {
     exterior_material: { type: "STRING", description: "e.g. vinyl siding, brick, wood clapboard" },
     style: { type: "STRING", description: "e.g. colonial, ranch, cape cod, row house, victorian" },
     photo_matches_aerial: { type: "STRING", enum: ["yes", "no", "unsure", "no_photo"] },
+    entry: {
+      type: "STRING",
+      enum: ["center", "left", "right", "unknown"],
+      description: "Main front entry as seen from the street looking at the facade",
+    },
+    porch: {
+      type: "STRING",
+      enum: ["yes", "no", "unknown"],
+      description: "Whether a porch or stoop is visible on the street facade",
+    },
     confidence: { type: "NUMBER", description: "0 to 1, how sure you are overall" },
     observations: {
       type: "ARRAY",
@@ -50,7 +64,7 @@ const RESPONSE_SCHEMA = {
   },
   required: [
     "stories", "roof_shape", "ridge_along", "garage", "basement", "exterior_material", "style",
-    "photo_matches_aerial", "confidence", "observations",
+    "photo_matches_aerial", "entry", "porch", "confidence", "observations",
   ],
 };
 
@@ -62,26 +76,48 @@ export function geminiModel() {
   return process.env.GEMINI_MODEL || "gemini-flash-latest";
 }
 
-export async function describeHouse(opts: { photo: Image | null; aerial: Image | null; facts: string }): Promise<HouseFacts> {
+export async function describeHouse(opts: {
+  photo: Image | null;
+  aerial: Image | null;
+  /** Google Street View facade shots (front + flanks) when available. */
+  streetViews?: Image[] | null;
+  facts: string;
+}): Promise<HouseFacts> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY not set");
 
   const parts: object[] = [];
+  let n = 0;
   if (opts.photo) {
-    parts.push({ text: "Image 1: a photo of the house, taken from the street by the user." });
+    n += 1;
+    parts.push({ text: `Image ${n}: a photo of the house, taken from the street by the user.` });
     parts.push({ inlineData: { mimeType: opts.photo.mime, data: opts.photo.base64 } });
   }
   if (opts.aerial) {
+    n += 1;
     parts.push({
-      text: `Image ${opts.photo ? 2 : 1}: aerial photo, north is up, the house in question is at the center.`,
+      text: `Image ${n}: aerial photo, north is up, the house in question is at the center.`,
     });
     parts.push({ inlineData: { mimeType: opts.aerial.mime, data: opts.aerial.base64 } });
   }
+  const street = (opts.streetViews ?? []).slice(0, 3);
+  street.forEach((img, i) => {
+    n += 1;
+    const where = i === 0 ? "front facade" : i === 1 ? "front-left flank" : "front-right flank";
+    parts.push({
+      text:
+        `Image ${n}: Google Street View of the ${where}, looking at the house from the road. ` +
+        "Use this for stories, garage side, entry, porch, basement windows, and exterior material. " +
+        "Left/right are as seen in this street view.",
+    });
+    parts.push({ inlineData: { mimeType: img.mime, data: img.base64 } });
+  });
   parts.push({
     text:
       "You help firefighters understand a house before they go in. Describe the house at the center of the " +
-      "aerial image (and in the street photo, if given). Count floors above ground carefully: a dormer or attic " +
-      "window does not count as a full floor. For roof_shape and ridge_along, prefer the aerial: a long dark " +
+      "aerial image (and in the street / Street View photos, if given). Count floors above ground carefully: a dormer or attic " +
+      "window does not count as a full floor. Prefer Street View for stories, garage left/right, entry, porch, and basement " +
+      "windows when those shots are present. For roof_shape and ridge_along, prefer the aerial: a long dark " +
       "rectangle with a center seam is usually a gable; a rectangle that tapers on all four sides is a hip; a " +
       "featureless pad is flat. Only report what the images support; use \"unknown\" when you cannot tell. Map " +
       "data we already have:\n" + opts.facts,
@@ -96,7 +132,7 @@ export async function describeHouse(opts: { photo: Image | null; aerial: Image |
         contents: [{ role: "user", parts }],
         generationConfig: { responseMimeType: "application/json", responseSchema: RESPONSE_SCHEMA, temperature: 0.2 },
       }),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(45000),
     },
   );
   if (!res.ok) {
@@ -111,6 +147,8 @@ export async function describeHouse(opts: { photo: Image | null; aerial: Image |
   raw.confidence = Math.min(1, Math.max(0, raw.confidence ?? 0.5));
   raw.observations = (raw.observations ?? []).slice(0, 6);
   if (!raw.ridge_along) raw.ridge_along = "unknown";
+  if (!raw.entry) raw.entry = "unknown";
+  if (!raw.porch) raw.porch = "unknown";
   return HouseFacts.parse(raw);
 }
 

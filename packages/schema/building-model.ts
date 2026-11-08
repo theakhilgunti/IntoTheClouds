@@ -153,14 +153,27 @@ export const CompoundKind = z.enum([
   "terrain",
 ]);
 
-/** Gentle lot tilt: street side downhill, house slab stays at y=0. */
+/** DEM heightfield in the model frame (heights relative to the house slab). */
+export const DemGrid = z.object({
+  x0: z.number(),
+  y0: z.number(),
+  cell: z.number().positive(),
+  cols: z.number().int().positive(),
+  rows: z.number().int().positive(),
+  z: z.array(z.number()),
+  source: z.string(),
+});
+
+/** Gentle lot tilt (+ optional real DEM). House slab stays at y=0. */
 export const LotGrade = z.object({
   /** Unit vector in model meters toward the street (downhill). */
   downhill: z.tuple([z.number(), z.number()]),
-  /** Meters of rise per meter of run along -downhill (typically ~0.03). */
+  /** Meters of rise per meter of run along -downhill (fallback when DEM absent). */
   slope: z.number().nonnegative(),
-  /** Point where grade offset is 0 (house centroid). */
+  /** Point where plane grade offset is 0 (house centroid). */
   origin: z.tuple([z.number(), z.number()]),
+  /** Real outdoor elevation samples; preferred over the plane when present. */
+  dem: DemGrid.optional(),
 });
 
 /** A lot, outbuilding, or surface around the house. Approximate: map lot, mapped shed, or an aerial box. */
@@ -177,7 +190,7 @@ export const CompoundFeature = z.object({
 export const Compound = z.object({
   features: z.array(CompoundFeature),
   basis: z.string().optional().describe("Set when the lot, street, and driveway pass has run"),
-  grade: LotGrade.optional().describe("Mild street-to-backyard slope for outdoor meshes"),
+  grade: LotGrade.optional().describe("Outdoor elevation: DEM when available, else mild street plane"),
 });
 
 export const BuildingModel = z.object({
@@ -212,5 +225,6 @@ export type Marker = z.infer<typeof Marker>;
 export type CompoundKind = z.infer<typeof CompoundKind>;
 export type CompoundFeature = z.infer<typeof CompoundFeature>;
 export type LotGrade = z.infer<typeof LotGrade>;
+export type DemGrid = z.infer<typeof DemGrid>;
 export type Compound = z.infer<typeof Compound>;
 export type BuildingModel = z.infer<typeof BuildingModel>;

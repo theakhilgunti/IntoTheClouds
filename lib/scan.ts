@@ -17,8 +17,11 @@ import {
   compoundReach,
   crossVerifySiteFeatures,
   entryStairFeatures,
+  neighborReach,
   pickGarage,
 } from "./compound-geom";
+import { fetchSiteDem, withDem } from "./elevation";
+import { fetchStreetViewFacade } from "./streetview";
 import { inNyc, lookupParcel, type ParcelHit } from "./parcel";
 import { buildHouse, buildingUseFromTag, type GarageSide } from "./layout";
 import { analyzeAerialRoof } from "./aerial-roof";
@@ -161,7 +164,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     const stale =
       !!saved &&
       (saved.model.source === "address" || saved.model.source === "photo") &&
-      (saved.model.compound?.basis !== "compound-v16" || saved.model.roof?.basis !== "roof-v3");
+      (saved.model.compound?.basis !== "compound-v18" || saved.model.roof?.basis !== "roof-v3");
     if (saved && saved.model.interior?.status !== "unknown" && !stale) {
       for (const k of ["imagery", "vision", "build"] as StepKey[]) step(k, "done", "Saved scan");
       emit({ type: "result", result: saved, cached: true });
@@ -257,9 +260,30 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     }
   }
 
+  // Street View facade shots — cross-check stories / garage / entry from the road.
+  const streetView = await fetchStreetViewFacade(center, { streetDir: osm?.roadDir ?? null }).catch((e) => {
+    console.warn("Street View fetch failed", e);
+    return {
+      shots: [] as Awaited<ReturnType<typeof fetchStreetViewFacade>>["shots"],
+      pano: center,
+      lookHeading: 0,
+      status: "failed" as const,
+      detail: String(e).slice(0, 160),
+    };
+  });
+  if (streetView.status !== "skipped" || process.env.GOOGLE_MAPS_API_KEY) {
+    sources.push({
+      id: "streetview",
+      name: "Google Street View",
+      status: streetView.status,
+      detail: streetView.detail,
+    });
+  }
+
   // 4. Read the house from the photos (Gemini). The site boxes run alongside that, and a missing key just skips both.
   step("vision", "active");
   let facts: HouseFacts | null = null;
+  const streetViewImages = streetView.shots.map((s) => s.image);
   const sitePromise = geminiAvailable() && aerial
     ? describeSite(aerial, googleSat).catch((e) => {
         console.warn("aerial site read failed", e);
@@ -272,15 +296,26 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
       detail: "No GEMINI_API_KEY configured, so floors, roof and garage come from map data or typical values.",
     });
     step("vision", "skipped", "Not configured");
-  } else if (!input.photo && !aerial) {
+  } else if (!input.photo && !aerial && streetViewImages.length === 0) {
     sources.push({ id: "gemini", name: "Google Gemini (photo reading)", status: "skipped", detail: "No images to read." });
     step("vision", "skipped", "No images");
   } else {
     try {
-      facts = await describeHouse({ photo: input.photo ?? null, aerial, facts: mapFacts });
+      facts = await describeHouse({
+        photo: input.photo ?? null,
+        aerial,
+        streetViews: streetViewImages,
+        facts: mapFacts,
+      });
+      const views = [
+        input.photo && "your photo",
+        aerial && "the aerial photo",
+        googleSat && "Google satellite",
+        streetViewImages.length > 0 && `Street View (${streetViewImages.length})`,
+      ].filter(Boolean);
       sources.push({
         id: "gemini", name: `Google Gemini (${geminiModel()})`, status: "used",
-        detail: `Read ${[input.photo && "your photo", aerial && "the aerial photo", googleSat && "Google satellite"].filter(Boolean).join(" and ")}. ` +
+        detail: `Read ${views.join(" and ")}. ` +
           `Looks like a ${facts.stories}-story ${facts.style} with ${facts.exterior_material}.`,
       });
       if (facts.photo_matches_aerial === "no") {
@@ -301,9 +336,14 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   let stories = 2;
   const osmLevels = parseInt(tags["building:levels"] ?? "", 10);
   const osmHeight = parseFloat(tags.height ?? "");
+  const photoNote = streetViewImages.length
+    ? input.photo
+      ? "User photo + Street View facade"
+      : "Street View facade (+ aerial when available)"
+    : undefined;
   if (input.photo && sure) {
     stories = sure.stories;
-    attributes.push({ field: "Floors above ground", value: String(stories), from: "photos" });
+    attributes.push({ field: "Floors above ground", value: String(stories), from: "photos", note: photoNote });
   } else if (osmLevels >= 1 && osmLevels <= 5) {
     stories = osmLevels;
     attributes.push({ field: "Floors above ground", value: String(stories), from: "map", note: "OpenStreetMap building:levels" });
@@ -315,7 +355,7 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     attributes.push({ field: "Floors above ground", value: String(stories), from: "map", note: `From mapped height ${osmHeight} m` });
   } else if (sure) {
     stories = sure.stories;
-    attributes.push({ field: "Floors above ground", value: String(stories), from: "photos" });
+    attributes.push({ field: "Floors above ground", value: String(stories), from: "photos", note: photoNote });
   } else {
     attributes.push({ field: "Floors above ground", value: "2", from: "estimated", note: "Most common for houses in the area" });
   }
@@ -384,19 +424,61 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   let garage: GarageSide = "none";
   if (sure && (sure.garage === "attached_left" || sure.garage === "attached_right")) {
     garage = sure.garage === "attached_left" ? "left" : "right";
-    attributes.push({ field: "Garage", value: `Attached, ${garage} side`, from: "photos" });
+    attributes.push({
+      field: "Garage",
+      value: `Attached, ${garage} side`,
+      from: "photos",
+      note: streetViewImages.length ? "Cross-checked with Street View facade" : undefined,
+    });
   } else if (sure && sure.garage === "detached") {
-    attributes.push({ field: "Garage", value: "Detached (not modeled)", from: "photos" });
+    attributes.push({
+      field: "Garage",
+      value: "Detached (not modeled)",
+      from: "photos",
+      note: streetViewImages.length ? "Cross-checked with Street View facade" : undefined,
+    });
   } else if (sure && sure.garage === "none") {
-    attributes.push({ field: "Garage", value: "None", from: "photos" });
+    attributes.push({
+      field: "Garage",
+      value: "None",
+      from: "photos",
+      note: streetViewImages.length ? "No garage door visible on Street View / photos" : undefined,
+    });
   } else {
     attributes.push({ field: "Garage", value: "None shown", from: "estimated", note: "Couldn't tell from the data" });
+  }
+
+  if (sure && sure.entry && sure.entry !== "unknown") {
+    attributes.push({
+      field: "Front entry",
+      value: sure.entry === "center" ? "Center of facade" : sure.entry === "left" ? "Left side of facade" : "Right side of facade",
+      from: "photos",
+      note: streetViewImages.length ? "From Street View / street photos" : "From street photos",
+    });
+  }
+  if (sure && sure.porch && sure.porch !== "unknown") {
+    attributes.push({
+      field: "Porch",
+      value: sure.porch === "yes" ? "Visible" : "None visible",
+      from: "photos",
+      note: streetViewImages.length ? "Street View facade check" : undefined,
+    });
   }
 
   let basement = center.lat > 37;
   if (sure && (sure.basement === "visible" || sure.basement === "likely")) {
     basement = true;
-    attributes.push({ field: "Basement", value: "Yes", from: "photos", note: sure.basement === "visible" ? "Visible in photo" : "Likely from the photos" });
+    attributes.push({
+      field: "Basement",
+      value: "Yes",
+      from: "photos",
+      note:
+        sure.basement === "visible"
+          ? streetViewImages.length
+            ? "Visible basement windows on Street View / photos"
+            : "Visible in photo"
+          : "Likely from the photos",
+    });
   } else if (sure && sure.basement === "unlikely") {
     basement = false;
     attributes.push({ field: "Basement", value: "No", from: "photos" });
@@ -556,7 +638,18 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const kept = access.some((f) => f.kind === "driveway")
     ? verifiedSite.filter((f) => !(f.kind === "driveway" && f.source === "aerial"))
     : verifiedSite;
-  const grade = buildLotGrade(built.model.footprint, streetDir);
+  const planeGrade = buildLotGrade(built.model.footprint, streetDir);
+  // Model (0,0) is the building centroid — sample DEM in that frame.
+  const modelGeoOrigin = fromLocal(origin, originShift);
+  // Cover the full neighbor radius (+ a little edge padding) with ~18 m samples.
+  const demHalf = Math.max(60, neighborReach(built.model.footprint) + 8);
+  let dem = null as Awaited<ReturnType<typeof fetchSiteDem>>;
+  try {
+    dem = await fetchSiteDem({ geoOrigin: modelGeoOrigin, halfExtentM: demHalf, cellM: 18 });
+  } catch (e) {
+    console.warn("Site DEM fetch failed", e);
+  }
+  const grade = withDem(planeGrade, dem);
   const exits: Point[] = [];
   for (const floor of built.model.floors) {
     if (floor.level !== 0) continue;
@@ -573,17 +666,36 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
   const entrySteps = entryStairFeatures({ streetDir, grade, exits });
   built.model.compound = {
     features: [...kept, ...access, ...entrySteps],
-    basis: "compound-v16",
+    basis: "compound-v18",
     grade: grade ?? undefined,
   };
-  if (grade) {
+  if (grade?.dem) {
+    const zs = grade.dem.z;
+    const drop = Math.max(...zs.map(Math.abs), 0);
+    attributes.push({
+      field: "Site elevation",
+      value: drop >= 1 ? `~${Math.round(drop)} m relief (DEM)` : "Nearly level (DEM)",
+      from: "map",
+      note: `Outdoor meshes follow ${grade.dem.source}; house slab stays at grade zero`,
+    });
+    sources.push({
+      id: "dem",
+      name: "Terrain elevation",
+      status: "used",
+      detail: `${grade.dem.cols}×${grade.dem.rows} samples @ ${grade.dem.cell} m (${grade.dem.source}).`,
+    });
+  } else if (grade) {
     attributes.push({
       field: "Lot grade",
       value: `~${Math.round(grade.slope * 100)}% toward street`,
       from: "estimated",
-      note: entrySteps.length
-        ? "Mild street-side slope, entry stairs, and ground pads under houses"
-        : "Mild street-side slope with ground pads under houses and neighbors",
+      note: "DEM unavailable — mild street-side slope with entry stairs and ground pads",
+    });
+    sources.push({
+      id: "dem",
+      name: "Terrain elevation",
+      status: "failed",
+      detail: "No DEM samples; using estimated street plane.",
     });
   }
   const hydrantN = access.filter((f) => f.kind === "hydrant").length;
@@ -681,7 +793,13 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     sources,
     attributes,
     warnings,
-    images: aerial ? [{ label: "Aerial view · Esri World Imagery", url: `data:${aerial.mime};base64,${aerial.base64}` }] : [],
+    images: [
+      ...(aerial ? [{ label: "Aerial view · Esri World Imagery", url: `data:${aerial.mime};base64,${aerial.base64}` }] : []),
+      ...streetView.shots.slice(0, 2).map((s) => ({
+        label: s.label,
+        url: `data:${s.image.mime};base64,${s.image.base64}`,
+      })),
+    ],
     summary: {
       width: built.width, depth: built.depth, area: Math.round(footprint ? polygonArea(footprint) : built.width * built.depth), facing: built.facing, stories, streetDir,
       nearby: osm?.nearby ?? [],

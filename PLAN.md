@@ -45,6 +45,7 @@ interface ScanStore {
 ## Env vars (`.env.local` locally, Vercel → Settings → Environment Variables in prod; never commit)
 - `GEMINI_API_KEY` — free key from Google AI Studio (mlh.link/aistudio). Without it, step 4 is skipped and the app still works.
 - `GEMINI_MODEL` — optional, defaults to `gemini-flash-latest`.
+- `GOOGLE_MAPS_API_KEY` — optional. Enables Google Static satellite + Street View facade cross-check (stories, garage, entry, porch). Enable Street View Static + Maps Static APIs on the key.
 - Backend keys (e.g. `MONGODB_URI`) once the store lands.
 
 ## Deployment

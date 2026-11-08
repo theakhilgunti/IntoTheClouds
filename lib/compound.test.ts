@@ -8,6 +8,8 @@ import {
   buildLotGrade,
   compoundReach,
   crossVerifySiteFeatures,
+  demExtent,
+  demHeightfieldBuffers,
   entryStairFeatures,
   expandRing,
   foundationExtent,
@@ -18,7 +20,10 @@ import {
   pointInRing,
   ringSeparation,
   roomBays,
+  sampleDemHeight,
   siteHull,
+  terrainGridLinePositions,
+  type DemGrid,
 } from "./compound-geom.ts";
 
 describe("street and driveway", () => {
@@ -182,7 +187,7 @@ describe("compound assembly", () => {
     const grown = expandRing(house, 2);
     assert.ok(grown.every((p, i) => Math.hypot(p[0], p[1]) > Math.hypot(house[i][0], house[i][1]) - 0.01));
     const pads = neighborhoodTerrainFeatures(house, [nbr]);
-    assert.ok(pads.some((f) => f.id === "terrain-main"));
+    assert.equal(pads.filter((f) => f.id === "terrain-main").length, 0, "no solid house pad");
     assert.ok(pads.some((f) => f.id.startsWith("terrain-nbr")));
     assert.ok(pads.some((f) => f.id === "terrain-radius"));
     const disc = pads.find((f) => f.id === "terrain-radius")!;
@@ -203,7 +208,8 @@ describe("compound assembly", () => {
       streetDir: [0, -1],
     });
     const terrain = features.filter((f) => f.kind === "terrain");
-    assert.ok(terrain.length >= 3, `expected radius + house + neighbor pads, got ${terrain.length}`);
+    assert.ok(terrain.length >= 2, `expected radius + neighbor pads, got ${terrain.length}`);
+    assert.equal(terrain.filter((f) => f.id === "terrain-main").length, 0);
   });
 
   it("keeps every house-like building inside the neighbor radius around the focus house", () => {
@@ -394,6 +400,55 @@ describe("compound assembly", () => {
     const tops = steps.map((s) => s.height).sort((a, b) => a - b);
     assert.ok(tops[0] < tops[tops.length - 1], "treads rise toward the door");
     assert.ok(Math.abs(tops[tops.length - 1]) < 0.08, "top tread meets the slab");
+  });
+
+  it("prefers DEM samples over the plane grade and builds a heightfield mesh", () => {
+    // 3×3 grid: flat slab at origin, street (−y) 4 m lower, backyard (+y) 2 m higher.
+    const dem: DemGrid = {
+      x0: -20,
+      y0: -20,
+      cell: 20,
+      cols: 3,
+      rows: 3,
+      z: [
+        -4, -4, -4, // y = -20
+        0, 0, 0, // y = 0
+        2, 2, 2, // y = 20
+      ],
+      source: "test-dem",
+    };
+    const plane = buildLotGrade(
+      [[-5, -4], [5, -4], [5, 4], [-5, 4]],
+      [0, -1],
+    );
+    assert.ok(plane);
+    const grade = { ...plane!, dem };
+    assert.ok(grade.dem);
+    assert.ok(Math.abs(gradeHeight([0, 0], grade)!) < 0.05, "slab stays near 0");
+    assert.ok(gradeHeight([0, -20], grade)! < -3.5, "street side follows DEM drop");
+    assert.ok(gradeHeight([0, 20], grade)! > 1.5, "backyard follows DEM rise");
+    // Plane alone would be tiny (~0.7 m at 20 m); DEM must dominate.
+    assert.ok(Math.abs(gradeHeight([0, -20], grade)!) > 3, "DEM not plane");
+    const atCorner = sampleDemHeight([10, 10], dem);
+    assert.ok(atCorner != null && atCorner > 0.5 && atCorner < 1.5);
+    const ext = demExtent(grade);
+    assert.deepEqual(ext, { min: -4, max: 2 });
+    const buf = demHeightfieldBuffers(dem, { radiusM: 25 });
+    assert.ok(buf);
+    assert.equal(buf!.positions.length, 3 * 3 * 3);
+    assert.ok(buf!.indices.length >= 6);
+    // Stairs should climb from DEM street grade up to the slab.
+    const steps = entryStairFeatures({
+      streetDir: [0, -1],
+      grade,
+      exits: [[0, -4]],
+    });
+    assert.ok(steps.length >= 3, `DEM drop should need more treads, got ${steps.length}`);
+    const grid = terrainGridLinePositions(grade, 40, 4, { subdivide: 2 });
+    assert.ok(grid.length >= 6 * 2 * 4 * 4, "warped grid should emit subdivided segments");
+    // Y values must vary with DEM (not a flat table).
+    const ys = Array.from({ length: grid.length / 3 }, (_, i) => grid[i * 3 + 1]);
+    assert.ok(Math.max(...ys) - Math.min(...ys) > 2, "grid should follow DEM relief");
   });
 
   it("infers a backyard fence and trees when the rear lot is empty", () => {
