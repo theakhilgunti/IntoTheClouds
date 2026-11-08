@@ -5,7 +5,7 @@
 | Role | Device | Job |
 | :-- | :-- | :-- |
 | Beacons | 3 stationary laptops | Each broadcasts a Wi-Fi hotspot named `ITC-A1`, `ITC-A2`, `ITC-A3` |
-| Walker | 4th Windows laptop (carried) | Scans the beacons' signal strength, runs the backend and dashboard |
+| Walker | Mac (carried) | Scans the beacons' signal strength, runs the backend and dashboard |
 | Heading and steps | iPhone carried with the walker | Compass + gyro heading and step count, sent to the backend |
 
 ## 1. Beacon laptops (x3)
@@ -18,7 +18,14 @@
 ## 2. Positions
 Pick one corner as origin (0, 0). For each beacon laptop measure **x** and **y** in metres along two perpendicular walls, and **z** (height, about 1.0). Use the same axes for all three. Write them into `anchors.json` (copy `anchors.example.json`).
 
-## 3. Walker laptop
+## 3. Walker Mac
+The walker is a **Mac**, so `netsh` / `win_scan_benchmark.py` do not apply to it (they are only for the Windows beacon laptops). Use `mac_wifi_radar.py` (LC-04), which scans with CoreWLAN and gives real dBm.
+1. Allow your terminal app in System Settings > Privacy & Security > **Location Services**. Without it macOS hides all network names and nothing can be matched to `ITC-A1`.
+2. See what it sees: `python3 mac_wifi_radar.py --list` (needs Xcode command line tools for `swiftc`). If it reports hidden networks, grant permission and retry, or add `--ssid ITC-A1 --ssid ITC-A2 --ssid ITC-A3` to scan for each beacon by name.
+3. Serve readings for the other tools: `python3 mac_wifi_radar.py --ssid ITC-A1 --ssid ITC-A2 --ssid ITC-A3` (http://127.0.0.1:8888/api/telemetry), then `spot_survey.py collect --wifi radar ...` or `radar_bridge.py` work unchanged.
+4. Old steps below that say "walker laptop" / Windows mean this Mac, except Location services (Windows only).
+
+### (old Windows walker notes)
 1. Turn on Windows **Location services** (needed to see Wi-Fi networks) and keep Wi-Fi on.
 2. Check it sees all three: `python win_scan_benchmark.py --ssid-prefix ITC- --duration 60 --label check`.
 3. Hotspot BSSIDs can be virtual MAC addresses that differ from what the beacon laptop shows. Read BSSIDs from a scan **on the walker laptop** when registering anchors by BSSID, or match by SSID name in `anchors.json` (`"match": "ITC-A1"`).

@@ -96,3 +96,5 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 05:40 | Claude Code | DOC-09 | Docs for 3 laptop beacons + walker laptop + iPhone heading: new laptop_client/LAPTOP_ANCHORS.md (untested on hardware), updated README, DEMO_GUIDE, PITCH_OUTLINE, laptop_client/README; IPHONE_ANCHORS.md marked alternative |
 | 06:05 | Claude Code | LC-03 | spot_survey.py collect: --wifi netsh (default on Windows, matches laptop hotspot SSID/BSSID), --wifi radar, --bluetooth now opt-in; 2 new tests (13 pass); not run on Windows hardware |
 | 04:42 | Claude Code | LC-03 | Finished task |
+| 04:58 | Claude Code | LC-04 | Finished task |
+| 06:40 | Claude Code | LC-04 | Mac walker Wi-Fi: laptop_client/mac_wifi_radar.py + mac_wifi_scan.swift (CoreWLAN, real dBm) serving radar /api/telemetry format for spot_survey --wifi radar and radar_bridge; 3 tests (16 pass). Needs Location permission; untested against ITC- hotspots; not committed |
