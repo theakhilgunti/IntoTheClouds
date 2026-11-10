@@ -17,18 +17,39 @@
 
 To avoid collision, each member and agent has a defined territory based on the hackathon PRD:
 
-| *None* | *(No active locks — all modules available)* | — | — | ⚪ Open | — |
+| Role / Member | Primary Scope | Permitted File Boundaries | Prohibited (Unless Coordinated) |
+| :--- | :--- | :--- | :--- |
+| **Member A (Backend)** | FastAPI, Math, Fusion | `project/backend/app/**`, `project/backend/tests/**` | `project/frontend/**`, `project/pi_client/**` |
+| **Member B (Hardware/Pi)** | nmcli Scanner, Pi Setup | `project/pi_client/**`, `project/PRD.md` | `project/frontend/**`, `project/backend/app/fusion/**` |
+| **Member C (Frontend)** | Three.js, React, UI HUD | `project/frontend/src/**`, `project/frontend/public/**`, CloudScan `components/viewer/**` | `project/backend/**`, `project/pi_client/**` |
+| **Member D (Voice & Demo)**| Voice Radio, Pitch, Docs | `project/frontend/src/components/IncidentCommandHUD.tsx`, `project/DEMO_GUIDE.md` | Core Math & Backend endpoints |
 
 ---
 
 ## 🚦 Task Backlog & Execution Pipeline
 
 ### 1. 🟡 In Progress (Claimed)
-- None
+*(None currently claimed.)*
 
 ---
 
 ### 2. ⚪ Ready to Claim (Backlog)
+
+#### 🔹 Firefighter Tactics HUD (`FF` / CloudScan)
+- [x] **`FF-A` Size-Up + dual egress**: `computeSizeUp`, `dualEgress` / `stairCutOff`, `SizeUpCard`.
+- [x] **`FF-C` Hose-lay**: `planHoseLays` + `HoseLayOverlay` (hydrant → Alpha entry).
+- [x] **`FF-5` Structure risk**: `scoreRooms` / `confidenceRisk` + `RiskHeatmap`.
+- [x] **`FF-6` Vent paths**: `buildVentGraph` / `smokeLikelyStacks` + `VentOverlay`.
+- [x] **`FF-UI` Viewer wiring**: Tactics toolbar toggles Size-up / Dual egress / Hose-lay / Risk / Vent.
+
+#### 🔹 Photoreal Exterior (`TEX` / CloudScan Viewer)
+- [x] **`TEX-01` / `TEX-02` Schema exterior block**: Optional `BuildingModel.exterior` (`material`, `facadePreset`, `aerial.halfSize`).
+- [x] **`TEX-03` Scan pipeline assets**: Promote `exterior_material` + aerial halfSize onto the model; keep base64 on `ScanResult.images`.
+- [x] **`TEX-04` Exterior UV helpers**: `lib/exterior-uv.ts` wall/roof/ground UV mapping + tests.
+- [x] **`TEX-05` Viewer textured mode**: Aerial roof/ground + facade presets; Textured/Blueprint toggle.
+- [x] **`TEX-06` Photorealistic 3D Tiles underlay**: Cesium/Google tiles opacity slider + API-key fallback (`GOOGLE_MAPS_3D_API_KEY`).
+- [x] **`TEX-09` Maps terrain mode**: Kill blue floor in Realistic; DEM hillshade vertex tint; thicker asphalt streets; soft-ground underlay.
+- [x] **`TEX-10` East Hills accuracy**: Compare vs Street View; fix 3D tiles session 400; East Hills pins/overrides; same-street OSM match.
 
 #### 🔹 Backend & Fusion Math (`Member A / Backend Agent`)
 - [ ] **`BE-01` RF Attenuation Tomography**: Ray tracing path attenuation between anchors and firefighter to identify dense walls ($RSSI_{\text{measured}} \ll RSSI_{\text{expected}}$).
@@ -54,6 +75,13 @@ To avoid collision, each member and agent has a defined territory based on the h
 
 | Time | Agent / Member | Action / Commit | Summary |
 | :--- | :--- | :--- | :--- |
+| 14:52 | Cursor-FF | FF-A/C/5/6/UI | Firefighter tactics: Size-Up card, dual egress, hose-lay, risk heatmap, vent shafts; Viewer Tactics toolbar. |
+| 15:45 | Cursor-TEX | TEX-10 | East Hills vs Street View: tiles key-only root (no 2D session), Andover same-street match, brick/vinyl overrides. |
+| 14:42 | Cursor-TEX | TEX-09 | Maps terrain mode: kill blue floor, DEM hillshade tints, thicker asphalt roads, soft-ground underlay. |
+| 13:05 | Cursor-TEX | TEX-08 | Terrain+building polish: siteMaterials, tiles framing/heading, quiet façades, exterior-overrides (BARH/Schuyler). |
+| 12:30 | Cursor-TEX | TEX-07 | Kill satellite drape; photogrammetry default + terrain-style fallback; Realistic/Blueprint HUD. |
+| 11:55 | Cursor-TEX | TEX-01…06 | Photoreal hybrid: schema exterior, UV helpers, textured Viewer + Blueprint toggle, Cesium 3D Tiles underlay + `/api/tiles/status`. |
+| 11:46 | Cursor-TEX | TEX-01 | Branch `agent/frontend/TEX-01-photoreal-exteriors`; claimed schema/viewer/scan for photoreal exteriors. |
 | 06:28 | Cursor | UI-134 | Widen roadReach floor/scale (~110 m+) so street ribbons stretch farther (compound-v63). |
 | 06:19 | Cursor | UI-133 | Raise scan/floorplan maxDuration to 300s; longer Overpass/DEM/Gemini fetch timeouts. |
 | 06:16 | Cursor | UI-132 | Restore roads/signs: outdoor disc follows roadReach; street ribbon cap decoupled from shells (compound-v62). |
@@ -263,3 +291,13 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 15:30 | Claude Code | PRO-09 | New low-poly firefighter model (helmet, coat with reflective stripes, SCBA tank, boots, walk swing) with name tags; live / drill / signal-lost variants. |
 | 15:45 | Claude Code | PRO-10 | Firefighter model scaled to real human size (1.8 m with helmet); tag and ring sized to match. |
 | 16:10 | Claude Code | PRO-11 | Tracked firefighter now respects walls: lib/walk.ts walks in straight lines when clear, otherwise A* through door openings and around the building; breadcrumbs follow the walked path. Tests in lib/walk.test.ts. |
+| 11:52 | Cursor-TEX | TEX-01 | Finished task |
+| 12:31 | Cursor-TEX | TEX-07 | Finished task |
+| 13:00 | Cursor-TEX | TEX-08 | Finished task |
+| 14:41 | Cursor-TEX | TEX-09 | Finished task |
+| 14:51 | FF-A-SizeUp | FF-A | Finished task |
+| 14:51 | FF-C-HoseLay | FF-C | Finished task |
+| 14:51 | FF-5-Risk | FF-5 | Finished task |
+| 14:51 | FF-6-Vent | FF-6 | Finished task |
+| 14:51 | FF-UI-Integrator | FF-UI | Finished task |
+| 15:49 | Cursor-TEX | TEX-10 | Finished task |

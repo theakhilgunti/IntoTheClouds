@@ -317,6 +317,41 @@ function houseLabel(b: OsmBuilding): string {
   return num && street ? `${num} ${street}` : `Building ${b.id}`;
 }
 
+/** Fetch a single OSM way by id; return a building only when tagged as one with a closed ring. */
+async function fetchBuildingWay(wayId: number, origin: LatLng): Promise<OsmBuilding | null> {
+  const q = `[out:json][timeout:25];way(${wayId});out tags geom;`;
+  let lastErr: unknown;
+  for (const url of ENDPOINTS) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        body: "data=" + encodeURIComponent(q),
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA },
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = await res.json();
+      const w = (j.elements as Array<{
+        id: number;
+        tags?: Record<string, string>;
+        geometry?: { lat: number; lon: number }[];
+      }>)?.[0];
+      if (!w?.geometry || w.geometry.length < 3 || !w.tags?.building) return null;
+      const pts = w.geometry.map((g) => toLocal(origin, { lat: g.lat, lng: g.lon }));
+      const ring =
+        pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]
+          ? pts.slice(0, -1)
+          : pts;
+      if (ring.length < 3) return null;
+      return { id: w.id, tags: w.tags, ring, area: polygonArea(ring) };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (lastErr) throw lastErr;
+  return null;
+}
+
 /**
  * Find the house at `origin`. If `heading` (compass degrees the camera faced) is given and the point
  * is not inside any outline, prefer buildings in that direction.
@@ -438,7 +473,20 @@ out tags geom;`;
   const sameNumber = want
     ? buildings.filter((b) => b.tags["addr:housenumber"]?.toLowerCase() === want.num)
     : [];
-  const byWay = hint?.wayId ? buildings.find((b) => b.id === hint.wayId) : undefined;
+  let byWay = hint?.wayId ? buildings.find((b) => b.id === hint.wayId) : undefined;
+  // Nominatim sometimes returns a place/node way without building=* (e.g. East Hills "1 Andover").
+  // Fetch that id once; only honor it when it actually has a building footprint.
+  if (hint?.wayId && !byWay) {
+    try {
+      const forced = await fetchBuildingWay(hint.wayId, origin);
+      if (forced) {
+        buildings.push(forced);
+        byWay = forced;
+      }
+    } catch (e) {
+      console.warn("Forced OSM way fetch failed", e);
+    }
+  }
   const inside = pool.find((b) => pointInPolygon(here, b.ring));
   if (hint?.force && byWay) {
     building = byWay;
@@ -463,7 +511,20 @@ out tags geom;`;
         return { b, d: distToRing(here, b.ring), off: heading != null ? angleDiff(brg, heading) : 0 };
       })
       .filter((s) => s.d < 60);
-    if (heading != null) {
+    // Prefer same mapped street before any nearest neighbor (avoids Brighton vs Andover swaps).
+    if (want && !building) {
+      const onStreet = scored
+        .filter((s) => {
+          const st = s.b.tags["addr:street"];
+          return !!st && streetsMatch(normStreet(st), want.street);
+        })
+        .sort((a, b) => a.d - b.d)[0];
+      if (onStreet) {
+        building = onStreet.b;
+        chosenBy = "nearest";
+      }
+    }
+    if (heading != null && !building) {
       const inView = scored.filter((s) => s.off <= 35).sort((a, b) => a.d - b.d)[0];
       if (inView) {
         building = inView.b;

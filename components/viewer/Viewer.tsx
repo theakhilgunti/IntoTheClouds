@@ -1,14 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
+import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Edges, Line, OrbitControls } from "@react-three/drei";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import * as THREE from "three";
 import type {
   BuildingModel,
   CompoundFeature,
+  FacadePreset,
   Floor,
   LotGrade,
   Marker,
@@ -18,7 +19,18 @@ import type {
   Room,
   Wall,
 } from "@/packages/schema/building-model";
+import { wallRepeat } from "@/lib/exterior-uv";
 import { buildRoofPositions, type Pt } from "@/lib/roof-geom";
+import PhotorealTiles, { useTilesAvailable } from "./PhotorealTiles";
+import { FACADE_TINT, facadeTexture } from "./exteriorTextures";
+import { SOFT_GROUND, TERRAIN_SKY, demHillshadeRgb, siteColor, siteHover } from "./siteMaterials";
+import { exteriorOverrideForAddress } from "@/lib/exterior-overrides";
+
+/** Realistic vs blueprint lot materials — read inside site meshes without prop drilling. */
+const SiteThemeCtx = createContext(false);
+function useSiteRealistic() {
+  return useContext(SiteThemeCtx);
+}
 import {
   buildingDemPads,
   demExtent,
@@ -32,7 +44,14 @@ import {
   wallAbutsNeighbor,
   type DemPad,
 } from "@/lib/compound-geom";
-import { buildNav, routeToMarker, type Route } from "@/lib/route";
+import { buildNav, dualEgress, routeToMarker, stairCutOff, type Route } from "@/lib/route";
+import { planHoseLays } from "@/lib/hose-lay";
+import { scoreRooms } from "@/lib/structural-risk";
+import { buildVentGraph, smokeLikelyStacks } from "@/lib/vent-paths";
+import HoseLayOverlay from "./HoseLayOverlay";
+import RiskHeatmap from "./RiskHeatmap";
+import VentOverlay from "./VentOverlay";
+import SizeUpCard from "@/components/model/SizeUpCard";
 import ProAnchors3D, { ProFirefighter, ProResponder, type DrillPhase, type FireScale } from "./ProAnchors3D";
 import { ProAnchorPanel, ProLogin } from "./ProPanels";
 import {
@@ -107,12 +126,14 @@ function footprintGradeFit(poly: Point[], grade: LotGrade | null | undefined) {
 /**
  * Street ribbon → triangle strip draped on DEM (left/right rails).
  * Soft deck height + along-rail blur so DEM cell noise doesn't spike the asphalt.
+ * `widen` expands half-width from the centerline (Realistic streets read thicker).
  */
 function roadStripGeometry(
   poly: Point[],
   grade: LotGrade | null | undefined,
   yBias: number,
   stepM = 6,
+  widen = 1,
 ): THREE.BufferGeometry | null {
   if (poly.length !== 4) return null;
   const [aL, bL, bR, aR] = poly;
@@ -124,10 +145,17 @@ function roadStripGeometry(
   const right: Point[] = [];
   const yL: number[] = [];
   const yR: number[] = [];
+  const w = Math.max(1, widen);
   for (let i = 0; i <= n; i++) {
     const t = i / n;
-    const L: Point = [aL[0] + (bL[0] - aL[0]) * t, aL[1] + (bL[1] - aL[1]) * t];
-    const R: Point = [aR[0] + (bR[0] - aR[0]) * t, aR[1] + (bR[1] - aR[1]) * t];
+    let L: Point = [aL[0] + (bL[0] - aL[0]) * t, aL[1] + (bL[1] - aL[1]) * t];
+    let R: Point = [aR[0] + (bR[0] - aR[0]) * t, aR[1] + (bR[1] - aR[1]) * t];
+    if (w !== 1) {
+      const mx = (L[0] + R[0]) * 0.5;
+      const my = (L[1] + R[1]) * 0.5;
+      L = [mx + (L[0] - mx) * w, my + (L[1] - my) * w];
+      R = [mx + (R[0] - mx) * w, my + (R[1] - my) * w];
+    }
     left.push(L);
     right.push(R);
     yL.push(roadDeckHeight(L, grade));
@@ -197,6 +225,15 @@ function LabelSprite({
 
 function noopRaycast() {}
 
+/** Keep WebGL clear alpha in sync when photogrammetry tiles show through. */
+function CanvasClear({ transparent }: { transparent: boolean }) {
+  const { gl } = useThree();
+  useEffect(() => {
+    gl.setClearColor(0x000000, transparent ? 0 : 1);
+  }, [gl, transparent]);
+  return null;
+}
+
 /** Stable outline lines — plain Edges flicker away at glancing angles / fog. */
 function SolidEdges({ color, threshold = 12 }: { color: string; threshold?: number }) {
   return (
@@ -220,24 +257,6 @@ const ROOM_WORDS: Record<Room["type"], string> = {
   office: "Office",
   basement: "Basement",
   other: "Room / classroom",
-};
-
-const SITE_COLOR: Record<CompoundFeature["kind"], string> = {
-  yard: "#14439c",
-  driveway: "#3a68c4",
-  patio: "#4a78d0",
-  pool: "#6fa0ff",
-  garage: "#2a5ab8",
-  shed: "#2a5ab8",
-  fence: "#9ebcff",
-  trees: "#2f6bd0",
-  road: "#0a2a68",
-  signal: "#facc15",
-  stop: "#ef4444",
-  hydrant: "#dc2626",
-  neighbor: "#8eb0e8",
-  steps: "#c5d6f4",
-  terrain: "#123a8a",
 };
 
 const SITE_NOTE: Record<CompoundFeature["source"], string> = {
@@ -358,6 +377,10 @@ function WallMesh({
   passPointer,
   assumed,
   neighborRings,
+  realistic,
+  facadePreset,
+  hideShell,
+  quietFacade = false,
 }: {
   wall: Wall;
   floor: Floor;
@@ -365,11 +388,19 @@ function WallMesh({
   passPointer: boolean;
   assumed: boolean;
   neighborRings: Point[][];
+  /** Terrain-style solid façades (no satellite drape). */
+  realistic: boolean;
+  facadePreset: FacadePreset;
+  /** Hide exterior shell when Photorealistic 3D Tiles are primary. */
+  hideShell: boolean;
+  /** Large footprints — fewer windows. */
+  quietFacade?: boolean;
 }) {
   const [ax, ay] = wall.a;
   const [bx, by] = wall.b;
   const len = Math.hypot(bx - ax, by - ay);
   if (len < 0.01) return null;
+  if (hideShell && wall.exterior) return null;
   const ux = (bx - ax) / len, uy = (by - ay) / len;
   const angle = Math.atan2(by - ay, bx - ax);
   const raycast = passPointer ? noopRaycast : undefined;
@@ -378,6 +409,8 @@ function WallMesh({
   const faded = assumed && !wall.exterior;
   const showWindows = !xray && wall.exterior && floor.level >= 0;
   const doors = floor.doors.filter((d) => d.wallId === wall.id);
+  const facadeBase = realistic && wall.exterior && !xray ? facadeTexture(facadePreset) : null;
+  const facadeTint = FACADE_TINT[facadePreset];
 
   return (
     <>
@@ -392,30 +425,53 @@ function WallMesh({
           wallAbutsNeighbor([ax + ux * s, ay + uy * s], [ax + ux * e, ay + uy * e], neighborRings);
         const beside = showWindows && !segParty ? roomBeside(wall, floor, segMid) : null;
         const budget = beside ? WINDOW_FOR[beside.type] : null;
-        const nWin = budget ? Math.max(0, Math.min(budget.max, Math.floor((segLen - 0.5) / budget.every))) : 0;
+        // Realistic mode: fewer windows; large footprints (BARH-scale) even quieter.
+        const rawWin = budget ? Math.max(0, Math.min(budget.max, Math.floor((segLen - 0.5) / budget.every))) : 0;
+        const spacing = quietFacade ? 6.5 : 4.5;
+        const nWin = realistic
+          ? Math.min(rawWin, Math.max(0, Math.floor(segLen / spacing)), quietFacade ? 3 : 8)
+          : rawWin;
         const winH = budget?.h ?? 1.1;
         const winY = budget?.y ?? 0.2;
+        const [ru, rv] = wallRepeat(segLen, floor.height);
+        const facadeMap = facadeBase
+          ? (() => {
+              const t = facadeBase.clone();
+              t.repeat.set(ru, rv);
+              t.needsUpdate = true;
+              return t;
+            })()
+          : null;
         return (
           <group key={i} position={[x, floor.height / 2, z]} rotation={[0, angle, 0]}>
             <mesh raycast={raycast}>
               <boxGeometry args={[segLen, floor.height, wall.thickness]} />
               <meshStandardMaterial
-                color={color}
-                emissive={color}
-                emissiveIntensity={xray ? 0 : 0.3}
+                color={facadeMap ? facadeTint : color}
+                map={facadeMap ?? undefined}
+                emissive={facadeMap ? "#000000" : color}
+                emissiveIntensity={facadeMap ? 0 : xray ? 0 : 0.3}
                 wireframe={xray}
                 transparent={xray || !wall.exterior}
                 opacity={xray ? 0.9 : wall.exterior ? 1 : faded ? 0.55 : 0.92}
+                roughness={facadeMap ? 0.78 : 0.5}
+                metalness={facadeMap ? 0.02 : 0}
               />
-              {!xray && <SolidEdges color={edge} threshold={12} />}
+              {!xray && !realistic && <SolidEdges color={edge} threshold={12} />}
             </mesh>
             {Array.from({ length: nWin }, (_, k) => {
               const off = -segLen / 2 + (segLen / (nWin + 1)) * (k + 1);
               return (
                 <mesh key={k} position={[off, winY, 0]} raycast={raycast}>
-                  <boxGeometry args={[Math.min(0.95, segLen * 0.42), winH, wall.thickness + 0.04]} />
-                  <meshStandardMaterial color="#0f3a8e" transparent opacity={0.85} />
-                  <SolidEdges color="#0b2e72" threshold={1} />
+                  <boxGeometry args={[Math.min(realistic ? 1.15 : 0.95, segLen * 0.28), winH, wall.thickness + 0.04]} />
+                  <meshStandardMaterial
+                    color={realistic ? "#7eb6e8" : "#0f3a8e"}
+                    transparent
+                    opacity={realistic ? 0.55 : 0.85}
+                    roughness={0.15}
+                    metalness={realistic ? 0.35 : 0}
+                  />
+                  {!realistic && <SolidEdges color="#0b2e72" threshold={1} />}
                 </mesh>
               );
             })}
@@ -442,13 +498,14 @@ function WallMesh({
             <mesh key={d.id} position={[x, h / 2, z]} rotation={[0, angle, 0]} raycast={raycast}>
               <boxGeometry args={[d.width, h, wall.thickness * 0.5]} />
               <meshStandardMaterial
-                color="#ff8a6b"
-                emissive="#ff8a6b"
-                emissiveIntensity={xray ? 0.6 : 0.15}
+                color={realistic ? "#5c4033" : "#ff8a6b"}
+                emissive={realistic ? "#000000" : "#ff8a6b"}
+                emissiveIntensity={xray ? 0.6 : realistic ? 0 : 0.15}
                 transparent={xray}
                 opacity={xray ? 0.75 : 1}
+                roughness={0.7}
               />
-              {!xray && <SolidEdges color="#7a2e18" threshold={1} />}
+              {!xray && !realistic && <SolidEdges color="#7a2e18" threshold={1} />}
             </mesh>
           );
         })}
@@ -656,6 +713,7 @@ function DemTerrainMesh({
   onOver: (e: ThreeEvent<PointerEvent>, id: string, title: string, detail: string) => void;
   onOut: (id: string) => void;
 }) {
+  const realistic = useSiteRealistic();
   const geo = useMemo(() => {
     const dem = grade.dem;
     if (!dem) return null;
@@ -669,9 +727,28 @@ function DemTerrainMesh({
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(buf.positions, 3));
     g.setIndex(new THREE.BufferAttribute(buf.indices, 1));
+    // Maps-style height tint so hills read without a flat cyan plate showing through.
+    if (realistic) {
+      const pos = buf.positions;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (let i = 1; i < pos.length; i += 3) {
+        const y = pos[i]!;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      const colors = new Float32Array((pos.length / 3) * 3);
+      for (let i = 0, c = 0; i < pos.length; i += 3, c += 3) {
+        const [r, gCh, b] = demHillshadeRgb(pos[i + 1]!, minY, maxY);
+        colors[c] = r;
+        colors[c + 1] = gCh;
+        colors[c + 2] = b;
+      }
+      g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    }
     g.computeVertexNormals();
     return g;
-  }, [grade.dem, footprint, features, pads]);
+  }, [grade.dem, footprint, features, pads, realistic]);
   if (!geo || !grade.dem) return null;
   const src = grade.dem.source;
   return (
@@ -683,12 +760,27 @@ function DemTerrainMesh({
       }}
       onPointerOut={() => onOut("terrain-dem")}
     >
-      {groundMat(SITE_COLOR.terrain, hovered, {
-        transparent: true,
-        opacity: hovered ? 0.62 : 0.48,
-        offset: -6,
-        noHover: false,
-      })}
+      {realistic ? (
+        <meshStandardMaterial
+          vertexColors
+          color={hovered ? "#ffffff" : "#d8d8d8"}
+          emissive={hovered ? "#ffffff" : "#000000"}
+          emissiveIntensity={hovered ? 0.12 : 0}
+          roughness={0.92}
+          metalness={0}
+          transparent={false}
+          polygonOffset
+          polygonOffsetFactor={-6}
+          polygonOffsetUnits={-6}
+        />
+      ) : (
+        groundMat(siteColor("terrain", false), hovered, {
+          transparent: true,
+          opacity: hovered ? 0.62 : 0.48,
+          offset: -6,
+          noHover: false,
+        })
+      )}
     </mesh>
   );
 }
@@ -705,6 +797,7 @@ function TerrainGrid({
   divisions: number;
   pads?: DemPad[];
 }) {
+  const realistic = useSiteRealistic();
   const geo = useMemo(() => {
     const pos = terrainGridLinePositions(grade, size, divisions, {
       yBias: -0.1,
@@ -717,7 +810,12 @@ function TerrainGrid({
   }, [grade, size, divisions, pads]);
   return (
     <lineSegments geometry={geo} raycast={noopRaycast} renderOrder={8}>
-      <lineBasicMaterial color="#7eb6ff" transparent opacity={0.88} depthWrite={false} />
+      <lineBasicMaterial
+        color={realistic ? "#6a7a68" : "#7eb6ff"}
+        transparent
+        opacity={realistic ? 0.35 : 0.88}
+        depthWrite={false}
+      />
     </lineSegments>
   );
 }
@@ -736,6 +834,7 @@ function NeighborMesh({
   onOut: (id: string) => void;
   grade?: LotGrade | null;
 }) {
+  const realistic = useSiteRealistic();
   const wallH = Math.max(3.5, Math.min(14, feature.height || 5.5));
   // Full per-vertex DEM warp shears big footprints (Burdett-scale) over ledges into floating corners
   // and crumpled walls. Damp or rigid-sit from median grade; small houses still pitch gently.
@@ -763,15 +862,15 @@ function NeighborMesh({
   return (
     <mesh geometry={geo} position={[0, sitY, 0]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
       <meshStandardMaterial
-        color={hovered ? "#c5d6f4" : SITE_COLOR.neighbor}
+        color={hovered ? siteHover("neighbor", realistic) : siteColor("neighbor", realistic)}
         transparent
-        opacity={hovered ? 0.42 : 0.22}
+        opacity={hovered ? (realistic ? 0.5 : 0.42) : realistic ? 0.28 : 0.22}
         depthWrite={false}
         roughness={0.95}
         metalness={0}
         side={THREE.DoubleSide}
       />
-      <SolidEdges color="#eaf1ff" threshold={18} />
+      {!realistic && <SolidEdges color="#eaf1ff" threshold={18} />}
     </mesh>
   );
 }
@@ -832,7 +931,8 @@ function OutbuildingMesh({
     e.stopPropagation();
     onOver(e, feature.id, feature.label, SITE_NOTE[feature.source]);
   };
-  const color = hovered ? "#cfdcf6" : SITE_COLOR[feature.kind];
+  const realistic = useSiteRealistic();
+  const color = hovered ? siteHover(feature.kind, realistic) : siteColor(feature.kind, realistic);
   return (
     <group onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
       {walls.map((w) => (
@@ -843,20 +943,20 @@ function OutbuildingMesh({
       ))}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, baseY + 0.02, 0]}>
         <shapeGeometry args={[new THREE.Shape(feature.polygon.map(([x, y]) => new THREE.Vector2(x, y)))]} />
-        <meshStandardMaterial color="#2a5ab8" roughness={1} />
+        <meshStandardMaterial color={realistic ? "#6a6e74" : "#2a5ab8"} roughness={1} />
       </mesh>
       {roofGeo && (
         <group position={[0, baseY + wallH, 0]}>
           <mesh geometry={roofGeo} raycast={noopRaycast}>
             <meshStandardMaterial
-              color="#1c3f86"
+              color={realistic ? "#5a5f66" : "#1c3f86"}
               roughness={0.92}
               metalness={0}
               flatShading
               depthWrite
               side={THREE.DoubleSide}
             />
-            <SolidEdges color="#eaf1ff" threshold={15} />
+            {!realistic && <SolidEdges color="#eaf1ff" threshold={15} />}
           </mesh>
         </group>
       )}
@@ -963,6 +1063,7 @@ function SiteFeatureMesh({
   beaconRank?: number;
   grade?: LotGrade | null;
 }) {
+  const realistic = useSiteRealistic();
   const centerModel = useMemo(() => {
     const n = feature.polygon.length || 1;
     const c = feature.polygon.reduce((s, p) => [s[0] + p[0], s[1] + p[1]] as Point, [0, 0] as Point);
@@ -1016,7 +1117,8 @@ function SiteFeatureMesh({
       return g;
     }
     if (roadFollowsGrade) {
-      const strip = roadStripGeometry(feature.polygon, grade, slabY, stripStep);
+      const widen = realistic ? (feature.kind === "road" ? 1.35 : 1.15) : 1;
+      const strip = roadStripGeometry(feature.polygon, grade, slabY, stripStep, widen);
       if (strip) return strip;
     }
     const simplified =
@@ -1049,6 +1151,7 @@ function SiteFeatureMesh({
     roadFollowsGrade,
     slabY,
     stripStep,
+    realistic,
   ]);
 
   const hover = (e: ThreeEvent<PointerEvent>) => {
@@ -1085,7 +1188,7 @@ function SiteFeatureMesh({
         onPointerOut={() => onOut(feature.id)}
       >
         <meshStandardMaterial
-          color={hovered ? "#eaf1ff" : SITE_COLOR.steps}
+          color={hovered ? siteHover("steps", realistic) : siteColor("steps", realistic)}
           roughness={0.85}
           emissive={hovered ? "#ffffff" : "#000000"}
           emissiveIntensity={hovered ? 0.2 : 0}
@@ -1103,7 +1206,7 @@ function SiteFeatureMesh({
         </mesh>
         <mesh position={[0, 2.8, 0]}>
           <coneGeometry args={[1.3, 2.4, 7]} />
-          <meshStandardMaterial color={hovered ? "#6fa0ff" : SITE_COLOR.trees} />
+          <meshStandardMaterial color={hovered ? siteHover("trees", realistic) : siteColor("trees", realistic)} />
         </mesh>
       </group>
     );
@@ -1135,7 +1238,7 @@ function SiteFeatureMesh({
   }
 
   if (feature.kind === "stop") {
-    const red = hovered ? "#f87171" : SITE_COLOR.stop;
+    const red = hovered ? siteHover("stop", realistic) : siteColor("stop", realistic);
     return (
       <group position={[center[0], gy, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)}>
         <mesh position={[0, 1.2, 0]}>
@@ -1170,7 +1273,7 @@ function SiteFeatureMesh({
         />
       );
     }
-    const red = hovered ? "#f87171" : SITE_COLOR.hydrant;
+    const red = hovered ? siteHover("hydrant", realistic) : siteColor("hydrant", realistic);
     return (
       <group position={[center[0], gy, center[1]]} onPointerOver={hover} onPointerOut={() => onOut(feature.id)} scale={1.35}>
         <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} raycast={noopRaycast}>
@@ -1235,17 +1338,23 @@ function SiteFeatureMesh({
       onPointerOver={hover}
       onPointerOut={() => onOut(feature.id)}
     >
-      {groundMat(SITE_COLOR[feature.kind], hovered, {
-        transparent: feature.kind === "pool" || feature.kind === "terrain",
+      {groundMat(siteColor(feature.kind, realistic), hovered, {
+        transparent: feature.kind === "pool" || (feature.kind === "terrain" && !realistic),
         opacity:
           feature.kind === "pool"
             ? 0.88
             : feature.kind === "terrain"
               ? feature.id === "terrain-radius"
-                ? 0.42
+                ? realistic
+                  ? 0.85
+                  : 0.42
                 : feature.id === "terrain-main"
-                  ? 0.55
-                  : 0.7
+                  ? realistic
+                    ? 0.92
+                    : 0.55
+                  : realistic
+                    ? 0.9
+                    : 0.7
               : 1,
         offset,
         doubleSide: roadFollowsGrade,
@@ -1259,7 +1368,22 @@ function SiteFeatureMesh({
  * Roof sits on the mapped eaves outline.
  * Stepped / concave footprints get a hip-style falloff so the mesh does not tear.
  */
-function RoofMesh({ roof, footprint, baseY, xray }: { roof: Roof; footprint: Point[]; baseY: number; xray: boolean }) {
+function RoofMesh({
+  roof,
+  footprint,
+  baseY,
+  xray,
+  realistic,
+  hideShell,
+}: {
+  roof: Roof;
+  footprint: Point[];
+  baseY: number;
+  xray: boolean;
+  /** Solid slate roof in terrain mode — no satellite drape. */
+  realistic: boolean;
+  hideShell: boolean;
+}) {
   const geometry = useMemo(() => {
     // Inferred plans are already in the model frame (east/north); mesh them in place.
     if (roof.plan?.wings?.length) {
@@ -1301,21 +1425,22 @@ function RoofMesh({ roof, footprint, baseY, xray }: { roof: Roof; footprint: Poi
     return { geo, framed: true as const };
   }, [roof, footprint]);
 
+  if (hideShell) return null;
   if (!geometry) return null;
   const roofMat = (
     <>
       <meshStandardMaterial
-        color={xray ? "#9ebcff" : "#1c3f86"}
+        color={xray ? "#9ebcff" : realistic ? "#5a5f66" : "#1c3f86"}
         wireframe={xray}
         transparent={!!xray}
         opacity={xray ? 0.35 : 1}
-        roughness={0.92}
-        metalness={0}
+        roughness={0.9}
+        metalness={0.05}
         flatShading
         depthWrite={!xray}
         side={THREE.DoubleSide}
       />
-      {!xray && <SolidEdges color="#eaf1ff" threshold={15} />}
+      {!xray && !realistic && <SolidEdges color="#eaf1ff" threshold={15} />}
     </>
   );
   if (!geometry.framed) {
@@ -1675,6 +1800,54 @@ export default function Viewer({
   const [xray, setXray] = useState(false);
   const [roofOn, setRoofOn] = useState(true);
   const [hydrantBeaconOn, setHydrantBeaconOn] = useState(true);
+  /** Firefighter tactics overlays (Size-Up / dual egress / hose / risk / vent). */
+  const [sizeUpOpen, setSizeUpOpen] = useState(false);
+  const [dualEgressOn, setDualEgressOn] = useState(false);
+  const [hoseLayOn, setHoseLayOn] = useState(false);
+  const [hoseSelectedId, setHoseSelectedId] = useState<string | null>(null);
+  const [riskOn, setRiskOn] = useState(false);
+  const [ventOn, setVentOn] = useState(false);
+  /** Realistic = photogrammetry tiles or terrain-style shell; Blueprint = tactical cyan. */
+  const [realistic, setRealistic] = useState(true);
+  const [tilesOpacity, setTilesOpacity] = useState(0);
+  const tilesMeta = useTilesAvailable();
+  const extOverride = useMemo(() => exteriorOverrideForAddress(model.address), [model.address]);
+  const facadePreset: FacadePreset =
+    extOverride?.facadePreset ?? model.exterior?.facadePreset ?? "unknown";
+  const storiesAbove = useMemo(
+    () => Math.max(1, model.floors.filter((f) => f.level >= 0).length),
+    [model.floors],
+  );
+  const footprintArea = useMemo(() => {
+    const fp = model.footprint;
+    if (fp.length < 3) return 0;
+    let a = 0;
+    for (let i = 0; i < fp.length; i++) {
+      const [x0, y0] = fp[i];
+      const [x1, y1] = fp[(i + 1) % fp.length];
+      a += x0 * y1 - x1 * y0;
+    }
+    return Math.abs(a) / 2;
+  }, [model.footprint]);
+  const quietFacade = realistic && footprintArea >= 400;
+  // Auto-enable Photorealistic 3D Tiles once when the session answers.
+  const tilesInit = useRef(false);
+  useEffect(() => {
+    if (!tilesMeta.ready || tilesInit.current) return;
+    tilesInit.current = true;
+    if (!tilesMeta.available) {
+      setTilesOpacity(0);
+      return;
+    }
+    const prefer = extOverride?.preferTiles !== false;
+    const def = extOverride?.tilesDefaultOpacity ?? 0.9;
+    setTilesOpacity(prefer ? def : 0);
+  }, [tilesMeta.ready, tilesMeta.available, extOverride]);
+  const onTilesFail = useCallback((_reason: string) => {
+    setTilesOpacity(0);
+  }, []);
+  const hideShell = realistic && tilesOpacity > 0.55;
+  const showCityMesh = realistic && tilesOpacity > 0.01;
   // CloudScan Pro: login + 3 tracking points
   const [proAuthed, setProAuthed] = useState(false);
   const [proLogin, setProLogin] = useState(false);
@@ -1822,6 +1995,25 @@ export default function Viewer({
     () => markers.map((m) => ({ marker: m, route: routeToMarker(nav, m) })).filter((r): r is { marker: Marker; route: Route } => !!r.route),
     [nav, markers],
   );
+  const bailoutRoutes = useMemo(() => {
+    if (!dualEgressOn) return [] as Array<{ marker: Marker; route: Route }>;
+    const out: Array<{ marker: Marker; route: Route }> = [];
+    for (const m of markers) {
+      if (m.type !== "fire" && m.type !== "victim") continue;
+      const { secondary } = dualEgress(nav, m);
+      if (secondary) out.push({ marker: m, route: secondary });
+    }
+    return out;
+  }, [dualEgressOn, nav, markers]);
+  const cutOff = useMemo(() => stairCutOff(nav, markers), [nav, markers]);
+  const hoseLays = useMemo(() => planHoseLays(model), [model]);
+  const roomRisks = useMemo(() => scoreRooms(model), [model]);
+  const ventGraph = useMemo(() => buildVentGraph(model), [model]);
+  const fireFloor = useMemo(() => markers.find((m) => m.type === "fire")?.floor, [markers]);
+  const ventHighlights = useMemo(
+    () => (fireFloor == null ? [] : smokeLikelyStacks(ventGraph, fireFloor).map((s) => s.id)),
+    [ventGraph, fireFloor],
+  );
 
   const fireRoutes = routes.filter((r) => r.marker.type === "fire");
   const startDrill = () => {
@@ -1859,6 +2051,14 @@ export default function Viewer({
     ]);
   };
   const floorY = (f: Floor) => f.elevation + (exploded ? f.level * EXPLODE_GAP : 0);
+  const floorYByLevel = (level: number) => {
+    const fl = model.floors.find((f) => f.level === level);
+    return fl ? floorY(fl) : level * 2.7 + (exploded ? level * EXPLODE_GAP : 0);
+  };
+  const ceilingYByLevel = (level: number) => {
+    const fl = model.floors.find((f) => f.level === level);
+    return floorYByLevel(level) + (fl?.height ?? 2.7);
+  };
   const trackFloor =
     model.floors.find((f) => f.level === proFloor) ??
     model.floors.find((f) => f.level === 0) ??
@@ -1991,11 +2191,20 @@ export default function Viewer({
     hydrant: "Red sky beacons on every mapped fire hydrant nearby. Tap again to hide the POIs.",
     explode: "Pulls the floors apart vertically so you can see every level at once. Tap again to stack them back.",
     xray: "See-through mode: walls turn to outlines so you can spot exits (green) and stairs (yellow) through them.",
+    texture: "Realistic uses Google Photorealistic 3D Tiles when available, otherwise a clean terrain-style shell tinted from Street View / photo cues. Blueprint is the tactical cyan look.",
+    tiles: tilesMeta.available
+      ? "Photogrammetry city mesh. Past halfway, our exterior shell hides so rooms stay readable. Drag to 0 for terrain-style shell."
+      : `City mesh unavailable — terrain style active. ${tilesMeta.reason}`,
     markers: "Open the hazard tools. Pick one, then tap a room to pin it so everyone sees it.",
     fire: "Pin FIRE in a room. Tap the button, then tap the room.",
     victim: "Pin a PERSON who needs rescue in a room. Tap the button, then tap the room.",
     gas: "Pin a GAS hazard in a room. Tap the button, then tap the room.",
     shutoff: "Pin a utility SHUT-OFF (gas, power, water). Tap the button, then tap the room.",
+    sizeup: "30-second IC size-up: stories, hydrants, shutoffs, egress lengths, exposures.",
+    dualEgress: "Draw primary (marker color) plus cyan bailout route via a second exit for fire/victim pins.",
+    hose: "Hose-lay ribbons from nearest hydrants to the Alpha entry. Tap a ribbon to select; length shows load hint.",
+    risk: "Unknown-structure / confidence hatch — amber to red. Not a collapse prediction.",
+    vent: "Vertical stair/atrium shafts as smoke-travel paths. Fire pin highlights stacks on that floor.",
   };
   const hint = (key: string) => ({
     onMouseEnter: () => setHelp(key),
@@ -2048,8 +2257,25 @@ export default function Viewer({
     // rotate/tilt bar and badge beside them, all overlaid on the map; the toolbar below in normal flow. The
     // rotate/tilt bar never shrinks; the card collapses upward behind the arrow. If the window is too small for everything, the whole
     // column scrolls so every button stays reachable.
-    <div className="flex h-full w-full flex-col overflow-y-auto bg-bp">
-      <div ref={wrap} className="relative min-h-[12rem] flex-1">
+    <div
+      className={`relative flex h-full w-full flex-col overflow-y-auto ${realistic ? "" : "bg-bp"}`}
+      style={realistic ? { background: TERRAIN_SKY } : undefined}
+    >
+      <div
+        ref={wrap}
+        className={`relative min-h-[12rem] flex-1 ${hideShell ? "bg-[#0b1520]" : realistic ? "" : "bg-bp"}`}
+        style={!hideShell && realistic ? { background: TERRAIN_SKY } : undefined}
+      >
+        <PhotorealTiles
+          lat={model.lat}
+          lng={model.lng}
+          opacity={tilesOpacity}
+          enabled={showCityMesh}
+          viewRangeM={extent}
+          headingRad={frontYaw}
+          stories={storiesAbove}
+          onFail={onTilesFail}
+        />
         <div
           className="pointer-events-none absolute inset-x-3 top-3 z-20 grid items-start gap-2"
           style={{
@@ -2169,18 +2395,38 @@ export default function Viewer({
       </div>
         </div>
       <Canvas
+        className="relative z-[1]"
         camera={{ position: camPos, fov: 45, near: camNear, far: camFar }}
         shadows={false}
-        gl={{ antialias: !largeSite, powerPreference: "high-performance", logarithmicDepthBuffer: true }}
+        gl={{ antialias: !largeSite, powerPreference: "high-performance", logarithmicDepthBuffer: true, alpha: true }}
         dpr={largeSite ? [1, 1.5] : [1, 2]}
         onCreated={() => requestAnimationFrame(() => requestAnimationFrame(() => onReady?.()))}
       >
-        <color attach="background" args={[xray ? "#0b2e72" : "#0f3a8e"]} />
-        {/* Keep fog beyond max orbit distance so zoom-out never whites out the house */}
-        <fog attach="fog" args={[xray ? "#0b2e72" : "#0f3a8e", maxDist * 1.35, Math.max(camFar * 0.55, maxDist * 3.5)]} />
-        <hemisphereLight args={["#ffffff", "#3a5fb0", 1.05]} />
-        <directionalLight position={[extent * 2, extent * 3, extent * 1.5]} intensity={1.0} />
-        <directionalLight position={[-extent * 2, extent, -extent * 2]} intensity={0.35} />
+        <CanvasClear transparent={hideShell} />
+        {/* Transparent clear when photogrammetry tiles show through; else blueprint / terrain sky. */}
+        {!hideShell && <color attach="background" args={[xray ? "#0b2e72" : realistic ? TERRAIN_SKY : "#0f3a8e"]} />}
+        {!hideShell && (
+          <fog
+            attach="fog"
+            args={[
+              xray ? "#0b2e72" : realistic ? TERRAIN_SKY : "#0f3a8e",
+              maxDist * 1.35,
+              Math.max(camFar * 0.55, maxDist * 3.5),
+            ]}
+          />
+        )}
+        <hemisphereLight args={["#e8eef4", realistic ? "#5a6a58" : "#3a5fb0", realistic ? 0.85 : 1.05]} />
+        {/* Harder key light = Maps-style hillshade on DEM normals. */}
+        <directionalLight position={[extent * 2.2, extent * 3.4, extent * 1.2]} intensity={realistic ? 1.45 : 1.0} />
+        <directionalLight position={[-extent * 1.8, extent * 0.9, -extent * 2.2]} intensity={realistic ? 0.28 : 0.35} />
+        {/* Soft ground underlay — kills blue plate bleed under translucent DEM / no-DEM fallback. */}
+        <SiteThemeCtx.Provider value={realistic}>
+        {realistic && !hideShell && (
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.12, 0]} raycast={noopRaycast}>
+            <circleGeometry args={[Math.max(extent * 1.55, 48), 64]} />
+            <meshStandardMaterial color={SOFT_GROUND.realistic} roughness={0.98} metalness={0} />
+          </mesh>
+        )}
 
         <Line
           points={footprintLine}
@@ -2205,7 +2451,8 @@ export default function Viewer({
               f.kind !== "yard" &&
               f.id !== "terrain-main" &&
               !(hasDem && f.id === "terrain-radius") &&
-              !(hasDem && f.id.startsWith("terrain-nbr")),
+              !(hasDem && f.id.startsWith("terrain-nbr")) &&
+              !(extOverride?.hideNeighbors && f.kind === "neighbor"),
           );
           // Draw terrain first so pads sit under structures.
           const ordered = [...noYard].sort((a, b) => Number(a.kind !== "terrain") - Number(b.kind !== "terrain"));
@@ -2349,6 +2596,10 @@ export default function Viewer({
                 passPointer={!tool}
                 assumed={assumed}
                 neighborRings={neighborRings}
+                realistic={realistic && !xray}
+                facadePreset={facadePreset}
+                hideShell={hideShell}
+                quietFacade={quietFacade}
               />
             ))}
             {markers
@@ -2386,8 +2637,66 @@ export default function Viewer({
             ));
         })}
 
+        {/* Secondary / bailout egress — distinct cyan dash when dual-egress tactics on. */}
+        {bailoutRoutes.map(({ marker, route }) => {
+          const runs: THREE.Vector3[][] = [[]];
+          for (const n of route.nodes) {
+            const floor = model.floors.find((f) => f.level === n.level);
+            if (!floor || hidden.has(n.level)) {
+              runs.push([]);
+              continue;
+            }
+            const [x, z] = toXZ(n.pt);
+            runs[runs.length - 1].push(new THREE.Vector3(x, floorY(floor) + 0.28, z));
+          }
+          return runs
+            .filter((pts) => pts.length > 1)
+            .map((pts, i) => (
+              <Line
+                key={`bailout-${marker.id}-${i}`}
+                points={pts}
+                color="#22d3ee"
+                lineWidth={2.5}
+                dashed
+                dashSize={0.35}
+                gapSize={0.18}
+                depthTest={false}
+                renderOrder={21}
+                raycast={noopRaycast}
+              />
+            ));
+        })}
+
+        <HoseLayOverlay
+          lays={hoseLays}
+          selectedId={hoseSelectedId ?? hoseLays[0]?.hydrantId ?? null}
+          onSelect={setHoseSelectedId}
+          visible={hoseLayOn}
+        />
+        <RiskHeatmap
+          model={model}
+          risks={roomRisks}
+          visible={riskOn}
+          floorY={floorYByLevel}
+          activeLevel={hidden.size > 0 && shown.length === 1 ? shown[0].level : null}
+        />
+        <VentOverlay
+          graph={ventGraph}
+          highlightStacks={ventHighlights}
+          floorY={floorYByLevel}
+          ceilingY={ceilingYByLevel}
+          visible={ventOn}
+        />
+
         {showRoof && (
-          <RoofMesh roof={model.roof!} footprint={model.footprint} baseY={floorY(top) + top.height} xray={xray} />
+          <RoofMesh
+            roof={model.roof!}
+            footprint={model.footprint}
+            baseY={floorY(top) + top.height}
+            xray={xray}
+            realistic={realistic && !xray}
+            hideShell={hideShell}
+          />
         )}
 
         <GasServiceLines markers={markers} floors={model.floors} floorY={floorY} hidden={hidden} />
@@ -2456,8 +2765,25 @@ export default function Viewer({
             setTiltAmt(Math.min(1, Math.max(0, tiltFromPolar(c.getPolarAngle()))));
           }}
         />
+        </SiteThemeCtx.Provider>
       </Canvas>
 
+      {cutOff && (
+        <div
+          className="pointer-events-none absolute left-1/2 top-[4.6rem] z-20 -translate-x-1/2 whitespace-nowrap border border-bp-red bg-bp-deep px-3 py-1 font-data text-[11px] uppercase tracking-[0.1em] text-bp-red"
+          role="alert"
+        >
+          Stair cut-off · sole vertical path may be blocked
+        </div>
+      )}
+      {dualEgressOn && bailoutRoutes.length > 0 && !cutOff && (
+        <div
+          className="pointer-events-none absolute left-1/2 top-[4.6rem] z-20 -translate-x-1/2 whitespace-nowrap border border-cyan-400/80 bg-bp-deep px-3 py-1 font-data text-[11px] uppercase tracking-[0.1em] text-cyan-300"
+          role="status"
+        >
+          Dual egress · cyan = bailout exit
+        </div>
+      )}
       {proAuthed && drill.phase !== "idle" && (
         <div
           className="pointer-events-none absolute left-1/2 top-[4.6rem] z-20 -translate-x-1/2 whitespace-nowrap border border-bp-red bg-bp-deep px-3 py-1 font-data text-[11px] uppercase tracking-[0.1em] text-bp-red"
@@ -2475,6 +2801,9 @@ export default function Viewer({
         >
           {trackFresh ? "Firefighter · approximate position" : "Signal lost · last known position"}
         </div>
+      )}
+      {sizeUpOpen && (
+        <SizeUpCard model={model} markers={markers} onClose={() => setSizeUpOpen(false)} />
       )}
       {proLogin && !proAuthed && (
         <ProLogin
@@ -2592,6 +2921,38 @@ export default function Viewer({
               <button className={btn(xray)} onClick={() => setXray((v) => !v)} aria-pressed={xray} {...hint("xray")}>
                 See through walls
               </button>
+              <button
+                className={btn(realistic)}
+                onClick={() => setRealistic((v) => !v)}
+                aria-pressed={realistic}
+                title={
+                  model.exterior?.material
+                    ? `Facade: ${model.exterior.material}`
+                    : tilesMeta.available
+                      ? "Photogrammetry / terrain shell"
+                      : "Terrain-style shell"
+                }
+                {...hint("texture")}
+              >
+                {realistic ? "Realistic" : "Blueprint"}
+              </button>
+              <label
+                className="flex items-center gap-1.5 border border-bp-ink/45 px-2 py-1 font-data text-[11px] text-bp-ink"
+                {...hint("tiles")}
+                title={tilesMeta.reason}
+              >
+                City mesh
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={Math.round(tilesOpacity * 100)}
+                  disabled={!tilesMeta.available}
+                  onChange={(e) => setTilesOpacity(Number(e.target.value) / 100)}
+                  className="w-16 accent-bp-ink disabled:opacity-40"
+                  aria-label="Photorealistic 3D Tiles opacity"
+                />
+              </label>
               {beaconHydrants.length > 0 && (
                 <button
                   className={btn(hydrantBeaconOn)}
@@ -2603,6 +2964,60 @@ export default function Viewer({
                   Hydrant beacons ({beaconHydrants.length})
                 </button>
               )}
+            </div>
+          </div>
+          <div className="flex max-w-full flex-col gap-1 border-l border-bp-ink/30 pl-3">
+            <span className="px-0.5 font-data text-[9px] uppercase tracking-widest text-bp-line">Tactics</span>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                className={btn(sizeUpOpen)}
+                onClick={() => setSizeUpOpen((v) => !v)}
+                aria-pressed={sizeUpOpen}
+                {...hint("sizeup")}
+              >
+                Size-up
+              </button>
+              <button
+                className={btn(dualEgressOn)}
+                onClick={() => setDualEgressOn((v) => !v)}
+                aria-pressed={dualEgressOn}
+                {...hint("dualEgress")}
+              >
+                Dual egress
+              </button>
+              <button
+                className={btn(hoseLayOn)}
+                onClick={() => {
+                  setHoseLayOn((v) => {
+                    const next = !v;
+                    if (next && !hoseSelectedId && hoseLays[0]) setHoseSelectedId(hoseLays[0].hydrantId);
+                    return next;
+                  });
+                }}
+                aria-pressed={hoseLayOn}
+                disabled={hoseLays.length === 0}
+                {...hint("hose")}
+              >
+                Hose-lay{hoseLays.length ? ` (${hoseLays.length})` : ""}
+              </button>
+              <button
+                className={btn(riskOn)}
+                onClick={() => setRiskOn((v) => !v)}
+                aria-pressed={riskOn}
+                disabled={roomRisks.length === 0}
+                {...hint("risk")}
+              >
+                Structure risk
+              </button>
+              <button
+                className={btn(ventOn)}
+                onClick={() => setVentOn((v) => !v)}
+                aria-pressed={ventOn}
+                disabled={ventGraph.stacks.length === 0}
+                {...hint("vent")}
+              >
+                Vent paths{ventGraph.stacks.length ? ` (${ventGraph.stacks.length})` : ""}
+              </button>
             </div>
           </div>
           <div className="flex max-w-full flex-col gap-1 border-l border-bp-ink/30 pl-3">

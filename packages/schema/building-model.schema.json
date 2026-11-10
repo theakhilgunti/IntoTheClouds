@@ -215,6 +215,14 @@
                   "default": false,
                   "description": "True if it leads outside",
                   "type": "boolean"
+                },
+                "kind": {
+                  "default": "door",
+                  "type": "string",
+                  "enum": [
+                    "door",
+                    "open"
+                  ]
                 }
               },
               "required": [
@@ -514,7 +522,6 @@
           ]
         },
         "basis": {
-          "description": "Generation tag — bump when roof meshing/inference changes so old scans auto-rebuild",
           "type": "string"
         }
       },
@@ -599,6 +606,7 @@
                   "trees",
                   "road",
                   "signal",
+                  "stop",
                   "hydrant",
                   "neighbor",
                   "steps",
@@ -630,7 +638,6 @@
               },
               "height": {
                 "default": 0,
-                "description": "Extrude depth, neighbor eave, or step tread top Y (entry stairs may be below slab)",
                 "type": "number"
               },
               "source": {
@@ -662,7 +669,14 @@
           "properties": {
             "downhill": {
               "type": "array",
-              "prefixItems": [{ "type": "number" }, { "type": "number" }],
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
               "items": false,
               "minItems": 2,
               "maxItems": 2
@@ -673,32 +687,108 @@
             },
             "origin": {
               "type": "array",
-              "prefixItems": [{ "type": "number" }, { "type": "number" }],
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
               "items": false,
               "minItems": 2,
               "maxItems": 2
             },
             "dem": {
-              "description": "DEM heightfield in model meters, relative to the house slab",
               "type": "object",
               "properties": {
-                "x0": { "type": "number" },
-                "y0": { "type": "number" },
-                "cell": { "type": "number", "exclusiveMinimum": 0 },
-                "cols": { "type": "integer", "exclusiveMinimum": 0 },
-                "rows": { "type": "integer", "exclusiveMinimum": 0 },
-                "z": { "type": "array", "items": { "type": "number" } },
-                "source": { "type": "string" }
+                "x0": {
+                  "type": "number"
+                },
+                "y0": {
+                  "type": "number"
+                },
+                "cell": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "cols": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "rows": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "z": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "source": {
+                  "type": "string"
+                }
               },
-              "required": ["x0", "y0", "cell", "cols", "rows", "z", "source"]
+              "required": [
+                "x0",
+                "y0",
+                "cell",
+                "cols",
+                "rows",
+                "z",
+                "source"
+              ]
             }
           },
-          "required": ["downhill", "slope", "origin"]
+          "required": [
+            "downhill",
+            "slope",
+            "origin"
+          ]
         }
       },
       "required": [
         "features"
       ]
+    },
+    "exterior": {
+      "description": "Facade/aerial cues for photoreal textured mode. Absent on older scans.",
+      "type": "object",
+      "properties": {
+        "material": {
+          "default": "",
+          "description": "Human-readable material, e.g. 'vinyl siding'",
+          "type": "string"
+        },
+        "facadePreset": {
+          "default": "unknown",
+          "type": "string",
+          "enum": [
+            "brick",
+            "vinyl",
+            "stucco",
+            "wood",
+            "concrete",
+            "unknown"
+          ]
+        },
+        "aerial": {
+          "type": "object",
+          "properties": {
+            "halfSize": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Meters from center to edge of the aerial crop"
+            }
+          },
+          "required": [
+            "halfSize"
+          ]
+        }
+      }
     }
   },
   "required": [

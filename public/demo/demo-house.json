@@ -186,14 +186,16 @@
           "wallId": "b-w1",
           "t": 0.5,
           "width": 0.85,
-          "exit": false
+          "exit": false,
+          "kind": "door"
         },
         {
           "id": "b-d2",
           "wallId": "b-w2",
           "t": 0.5,
           "width": 0.85,
-          "exit": false
+          "exit": false,
+          "kind": "door"
         }
       ],
       "stairs": [
@@ -478,56 +480,64 @@
           "wallId": "g-ext-0",
           "t": 0.5,
           "width": 1,
-          "exit": true
+          "exit": true,
+          "kind": "door"
         },
         {
           "id": "g-d-back",
           "wallId": "g-ext-2",
           "t": 0.25,
           "width": 1,
-          "exit": true
+          "exit": true,
+          "kind": "door"
         },
         {
           "id": "g-d1",
           "wallId": "g-w1",
           "t": 0.25,
           "width": 0.85,
-          "exit": false
+          "exit": false,
+          "kind": "door"
         },
         {
           "id": "g-d2",
           "wallId": "g-w2",
           "t": 0.25,
           "width": 0.85,
-          "exit": false
+          "exit": false,
+          "kind": "door"
         },
         {
           "id": "g-d3",
           "wallId": "g-w1",
           "t": 0.75,
           "width": 0.85,
-          "exit": false
+          "exit": false,
+          "kind": "door"
         },
         {
           "id": "g-d4",
           "wallId": "g-w2",
           "t": 0.75,
           "width": 0.85,
-          "exit": false
+          "exit": false,
+          "kind": "door"
         },
         {
           "id": "g-d5",
           "wallId": "g-w3",
           "t": 0.5,
           "width": 0.85,
-          "exit": false
+          "exit": false,
+          "kind": "door"
         },
         {
           "id": "g-d6",
           "wallId": "g-w4",
           "t": 0.5,
           "width": 0.85,
-          "exit": false
+          "exit": false,
+          "kind": "door"
         }
       ],
       "stairs": [
@@ -812,28 +822,32 @@
           "wallId": "u-w1",
           "t": 0.25,
           "width": 0.85,
-          "exit": false
+          "exit": false,
+          "kind": "door"
         },
         {
           "id": "u-d2",
           "wallId": "u-w2",
           "t": 0.25,
           "width": 0.85,
-          "exit": false
+          "exit": false,
+          "kind": "door"
         },
         {
           "id": "u-d3",
           "wallId": "u-w1",
           "t": 0.75,
           "width": 0.85,
-          "exit": false
+          "exit": false,
+          "kind": "door"
         },
         {
           "id": "u-d4",
           "wallId": "u-w2",
           "t": 0.75,
           "width": 0.85,
-          "exit": false
+          "exit": false,
+          "kind": "door"
         }
       ],
       "stairs": []

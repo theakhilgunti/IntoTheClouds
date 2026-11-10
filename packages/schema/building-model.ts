@@ -196,6 +196,23 @@ export const Compound = z.object({
   grade: LotGrade.optional().describe("Outdoor elevation: DEM when available, else mild street plane"),
 });
 
+/** Facade texture preset used by the 3D viewer (maps from Gemini/OSM material strings). */
+export const FacadePreset = z.enum(["brick", "vinyl", "stucco", "wood", "concrete", "unknown"]);
+
+/**
+ * Exterior appearance hints for textured extrusion.
+ * Large aerial bytes stay on ScanResult.images; only halfSize meters are stored here.
+ */
+export const Exterior = z.object({
+  material: z.string().default("").describe("Human-readable material, e.g. 'vinyl siding'"),
+  facadePreset: FacadePreset.default("unknown"),
+  aerial: z
+    .object({
+      halfSize: z.number().positive().describe("Meters from center to edge of the aerial crop"),
+    })
+    .optional(),
+});
+
 export const BuildingModel = z.object({
   id: z.string(),
   source: z.enum(["photo", "address", "wifi", "upload", "demo"]),
@@ -209,6 +226,7 @@ export const BuildingModel = z.object({
   roof: Roof.optional(),
   interior: Interior.optional().describe("Absent on old scans and the demo house"),
   compound: Compound.optional().describe("Lot, outbuildings, and surfaces around the house. Absent on older scans."),
+  exterior: Exterior.optional().describe("Facade/aerial cues for photoreal textured mode. Absent on older scans."),
 });
 
 export type Interior = z.infer<typeof Interior>;
@@ -230,4 +248,6 @@ export type CompoundFeature = z.infer<typeof CompoundFeature>;
 export type LotGrade = z.infer<typeof LotGrade>;
 export type DemGrid = z.infer<typeof DemGrid>;
 export type Compound = z.infer<typeof Compound>;
+export type FacadePreset = z.infer<typeof FacadePreset>;
+export type Exterior = z.infer<typeof Exterior>;
 export type BuildingModel = z.infer<typeof BuildingModel>;

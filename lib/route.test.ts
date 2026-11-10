@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { buildNav, routeToMarker } from "./route.ts";
+import {
+  alternateEgressRoute,
+  buildNav,
+  dualEgress,
+  exitsFromPoint,
+  listExitDoors,
+  routeToMarker,
+  stairCutOff,
+} from "./route.ts";
 
 const raw = JSON.parse(readFileSync(new URL("../public/demo/demo-house.json", import.meta.url), "utf8"));
 const model = raw.model ?? raw;
@@ -62,4 +70,51 @@ test("an estimated interior with no walkable path falls back to a flagged straig
   const r = routeToMarker(buildNav(guessed), { floor: -1, pos: [-4, 3] });
   assert.ok(r, "falls back instead of drawing nothing");
   assert.equal(r.estimated, true);
+});
+
+test("listExitDoors finds front and back on the demo house", () => {
+  const exits = listExitDoors(nav);
+  assert.ok(exits.some((e) => e.doorId === "g-d-front"));
+  assert.ok(exits.some((e) => e.doorId === "g-d-back"));
+});
+
+test("alternateEgressRoute uses a different exit door than the primary", () => {
+  const marker = { floor: 0, pos: [-4, 3] as [number, number] };
+  const primary = routeToMarker(nav, marker);
+  assert.ok(primary);
+  const secondary = alternateEgressRoute(nav, marker, primary.doorId);
+  assert.ok(secondary, "secondary route found");
+  assert.notEqual(secondary.doorId, primary.doorId);
+  assert.equal(secondary.doorId, "g-d-back");
+});
+
+test("dualEgress returns primary front and secondary back", () => {
+  const { primary, secondary } = dualEgress(nav, { floor: 1, pos: [4, -2] });
+  assert.ok(primary);
+  assert.equal(primary.doorId, "g-d-front");
+  assert.ok(secondary);
+  assert.equal(secondary.doorId, "g-d-back");
+  assert.ok(primary.assumedStairs && secondary.assumedStairs);
+});
+
+test("exitsFromPoint returns bailout routes sorted by length", () => {
+  const routes = exitsFromPoint(nav, { floor: 0, pos: [4, 3] });
+  assert.ok(routes.length >= 2);
+  for (let i = 1; i < routes.length; i++) {
+    assert.ok(routes[i].length >= routes[i - 1].length);
+  }
+  // Path runs from the point out to the door.
+  assert.deepEqual(routes[0].nodes[0].pt, [4, 3]);
+});
+
+test("stairCutOff is true when fire sits in the only stair", () => {
+  assert.equal(
+    stairCutOff(nav, [{ type: "fire", floor: 0, pos: [0, 2.25] }]),
+    true,
+  );
+  assert.equal(
+    stairCutOff(nav, [{ type: "fire", floor: 0, pos: [-4, 3] }]),
+    false,
+  );
+  assert.equal(stairCutOff(nav, []), false);
 });

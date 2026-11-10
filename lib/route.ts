@@ -25,6 +25,9 @@ export type Route = {
   estimated?: boolean;
 };
 
+/** An exterior exit door with street-side and just-inside poses. */
+export type ExitDoor = { doorId: string; level: number; at: Point; inside: Point };
+
 type FloorGrid = {
   floor: Floor;
   walkable: Uint8Array;
@@ -227,6 +230,38 @@ export function stairEnds(poly: Point[]): { ends: [Point, Point]; run: number; w
   };
 }
 
+function doorPose(floor: Floor, door: Floor["doors"][number]): Omit<ExitDoor, "doorId" | "level"> | null {
+  const w = floor.walls.find((wall) => wall.id === door.wallId);
+  if (!w) return null;
+  const at: Point = [w.a[0] + (w.b[0] - w.a[0]) * door.t, w.a[1] + (w.b[1] - w.a[1]) * door.t];
+  const mid =
+    floor.rooms.length > 0
+      ? centroid(floor.rooms.flatMap((r) => r.polygon))
+      : ([at[0], at[1] + 1] as Point);
+  const dx = w.b[0] - w.a[0];
+  const dy = w.b[1] - w.a[1];
+  const len = Math.hypot(dx, dy) || 1;
+  let nxv = -dy / len;
+  let nyv = dx / len;
+  if ((mid[0] - at[0]) * nxv + (mid[1] - at[1]) * nyv < 0) {
+    nxv = -nxv;
+    nyv = -nyv;
+  }
+  return { at, inside: [at[0] + nxv * 0.6, at[1] + nyv * 0.6] };
+}
+
+/** Every exterior exit door on the building, with inside/outside poses. */
+export function listExitDoors(nav: Nav): ExitDoor[] {
+  const out: ExitDoor[] = [];
+  for (const floor of nav.model.floors) {
+    for (const d of floor.doors.filter((door) => door.exit)) {
+      const pose = doorPose(floor, d);
+      if (pose) out.push({ doorId: d.id, level: floor.level, ...pose });
+    }
+  }
+  return out;
+}
+
 function findFrontDoor(nav: Nav): Nav["frontDoor"] {
   // Ground-level (or lowest non-basement) floor that has an exterior door.
   const candidates = nav.model.floors
@@ -234,27 +269,19 @@ function findFrontDoor(nav: Nav): Nav["frontDoor"] {
     .sort((a, b) => a.level - b.level);
   const floor = candidates[0] ?? nav.model.floors.find((f) => f.doors.some((d) => d.exit));
   if (!floor) return null;
-  const exits = floor.doors.filter((d) => d.exit);
-  const pos = (d: (typeof exits)[number]) => {
-    const w = floor.walls.find((w) => w.id === d.wallId)!;
-    return { w, at: [w.a[0] + (w.b[0] - w.a[0]) * d.t, w.a[1] + (w.b[1] - w.a[1]) * d.t] as Point };
-  };
-  const withWall = exits.filter((d) => floor.walls.some((w) => w.id === d.wallId));
+  const withWall = floor.doors.filter((d) => d.exit && floor.walls.some((w) => w.id === d.wallId));
   if (!withWall.length) return null;
   // Prefer a door named "front"; otherwise the southernmost (templates put the front at -y).
   const door =
     withWall.find((d) => /front/i.test(d.id)) ??
-    [...withWall].sort((a, b) => pos(a).at[1] - pos(b).at[1])[0];
-  const { w, at } = pos(door);
-  // Step inside: along the wall normal, toward the middle of the floor's rooms.
-  const mid = centroid(floor.rooms.flatMap((r) => r.polygon));
-  const dx = w.b[0] - w.a[0];
-  const dy = w.b[1] - w.a[1];
-  const len = Math.hypot(dx, dy) || 1;
-  let nxv = -dy / len;
-  let nyv = dx / len;
-  if ((mid[0] - at[0]) * nxv + (mid[1] - at[1]) * nyv < 0) { nxv = -nxv; nyv = -nyv; }
-  return { doorId: door.id, level: floor.level, at, inside: [at[0] + nxv * 0.6, at[1] + nyv * 0.6] };
+    [...withWall].sort((a, b) => {
+      const pa = doorPose(floor, a)!;
+      const pb = doorPose(floor, b)!;
+      return pa.at[1] - pb.at[1];
+    })[0];
+  const pose = doorPose(floor, door);
+  if (!pose) return null;
+  return { doorId: door.id, level: floor.level, ...pose };
 }
 
 export class MinHeap {
@@ -304,20 +331,126 @@ const DIRS: Array<[number, number]> = [
  * nothing. A verified or absent interior keeps the strict answer: never draw through walls.
  */
 export function routeToMarker(nav: Nav, marker: Pick<Marker, "floor" | "pos">): Route | null {
-  const route = walkableRoute(nav, marker);
+  const door = nav.frontDoor;
+  const groundLevel = nav.levels.find((l) => l >= 0) ?? nav.levels[0];
+  // No exterior door on file: still give a street-edge estimate (same as a bare shell).
+  if (!door) return estimatedRoute(nav.model, marker, groundLevel, "front");
+  return routeFromExit(nav, door, marker);
+}
+
+/**
+ * Second-best approach: shortest walkable route to the marker that uses a different exit door
+ * than `avoidDoorId` (typically the primary front-door route). Falls back to a flagged
+ * straight-line estimate from the opposite footprint edge when the interior is only a guess.
+ */
+export function alternateEgressRoute(
+  nav: Nav,
+  marker: Pick<Marker, "floor" | "pos">,
+  avoidDoorId: string,
+): Route | null {
+  let best: Route | null = null;
+  for (const door of listExitDoors(nav)) {
+    if (door.doorId === avoidDoorId) continue;
+    const r = routeFromExit(nav, door, marker);
+    if (r && (!best || r.length < best.length)) best = r;
+  }
+  if (best) return best;
+  // No second exit door (or all blocked): for guessed interiors, use the opposite footprint edge.
+  const status = nav.model.interior?.status;
+  const bare = nav.model.floors.every((f) => f.rooms.length === 0);
+  if (status !== "estimated" && status !== "unknown" && !bare) return null;
+  const groundLevel = nav.levels.find((l) => l >= 0) ?? nav.levels[0];
+  return estimatedRoute(nav.model, marker, groundLevel, "back");
+}
+
+/** Primary (front) + secondary (different exit) approach routes to a marker. */
+export function dualEgress(
+  nav: Nav,
+  marker: Pick<Marker, "floor" | "pos">,
+): { primary: Route | null; secondary: Route | null } {
+  const primary = routeToMarker(nav, marker);
+  const secondary = primary ? alternateEgressRoute(nav, marker, primary.doorId) : alternateEgressRoute(nav, marker, "");
+  return { primary, secondary };
+}
+
+/**
+ * Bailout routes: from an interior point out through every exit door (shortest first).
+ * Nodes run point → exit (reverse of the approach path).
+ */
+export function exitsFromPoint(nav: Nav, point: Pick<Marker, "floor" | "pos">): Route[] {
+  const routes: Route[] = [];
+  for (const door of listExitDoors(nav)) {
+    const approach = walkableRouteFrom(nav, door, point);
+    if (!approach) continue;
+    routes.push({
+      ...approach,
+      nodes: [...approach.nodes].reverse(),
+    });
+  }
+  return routes.sort((a, b) => a.length - b.length);
+}
+
+/**
+ * True when occupied floors share only one stair link and a fire marker sits in that stair
+ * (blocks the sole vertical connection between floors).
+ */
+export function stairCutOff(
+  nav: Nav,
+  markers: Array<Pick<Marker, "floor" | "pos" | "type">>,
+): boolean {
+  const fires = markers.filter((m) => m.type === "fire");
+  if (!fires.length) return false;
+
+  let hasSingleStairPair = false;
+  for (let li = 0; li + 1 < nav.levels.length; li++) {
+    const lo = nav.grids.get(nav.levels[li])?.floor;
+    const hi = nav.grids.get(nav.levels[li + 1])?.floor;
+    if (!lo || !hi) continue;
+    if (lo.rooms.length === 0 || hi.rooms.length === 0) continue;
+    const links = countStairLinks(lo, hi);
+    if (links === 1) hasSingleStairPair = true;
+  }
+  if (!hasSingleStairPair) return false;
+
+  for (const fire of fires) {
+    const floor = nav.grids.get(fire.floor)?.floor;
+    if (!floor) continue;
+    if (floor.rooms.some((r) => r.type === "stair" && pointInRing(fire.pos, r.polygon))) return true;
+  }
+  return false;
+}
+
+function countStairLinks(lo: Floor, hi: Floor): number {
+  let n = 0;
+  for (const loRoom of lo.rooms.filter((r) => r.type === "stair")) {
+    const c = centroid(loRoom.polygon);
+    const hiRoom = hi.rooms.find(
+      (r) => r.type === "stair" && (pointInRing(c, r.polygon) || pointInRing(centroid(r.polygon), loRoom.polygon)),
+    );
+    if (hiRoom) n++;
+  }
+  return n;
+}
+
+function routeFromExit(nav: Nav, door: ExitDoor, marker: Pick<Marker, "floor" | "pos">): Route | null {
+  const known = (level: number) => (nav.grids.get(level)?.floor.rooms.length ?? 0) > 0;
+  const groundLevel = nav.levels.find((l) => l >= 0) ?? nav.levels[0];
+  const edge: "front" | "back" = /back|rear|north/i.test(door.doorId) ? "back" : "front";
+  // No rooms/doors on file (typical for scanned houses): draw an honest straight-line estimate.
+  if (!known(door.level) || !known(marker.floor)) {
+    return estimatedRoute(nav.model, marker, groundLevel, edge, door.doorId);
+  }
+  const route = walkableRouteFrom(nav, door, marker);
   if (route) return route;
   const status = nav.model.interior?.status;
   if (status !== "estimated" && status !== "unknown") return null;
-  const groundLevel = nav.levels.find((l) => l >= 0) ?? nav.levels[0];
-  return estimatedRoute(nav.model, marker, groundLevel);
+  return estimatedRoute(nav.model, marker, groundLevel, edge, door.doorId);
 }
 
-function walkableRoute(nav: Nav, marker: Pick<Marker, "floor" | "pos">): Route | null {
-  const door = nav.frontDoor;
+function walkableRouteFrom(nav: Nav, door: ExitDoor, marker: Pick<Marker, "floor" | "pos">): Route | null {
   const known = (level: number) => (nav.grids.get(level)?.floor.rooms.length ?? 0) > 0;
-  const groundLevel = nav.levels.find((l) => l >= 0) ?? nav.levels[0];
-  // No rooms/doors on file (typical for scanned houses): draw an honest straight-line estimate.
-  if (!door || !known(door.level) || !known(marker.floor)) return estimatedRoute(nav.model, marker, groundLevel);
+  // No rooms on file: caller decides whether to fall back to an estimate.
+  if (!known(door.level) || !known(marker.floor)) return null;
   const startLi = nav.levels.indexOf(door.level);
   const goalLi = nav.levels.indexOf(marker.floor);
   if (startLi < 0 || goalLi < 0) return null;
@@ -416,10 +549,16 @@ function straighten(nav: Nav, nodes: RouteNode[]): RouteNode[] {
 }
 
 /**
- * Fallback when the interior is unknown: from the street-side wall (southernmost footprint edge,
- * where templates put the front) straight to the marker, then up/down to its floor.
+ * Fallback when the interior is unknown: from a footprint edge straight to the marker,
+ * then up/down to its floor. `edgePreference` "front" = southernmost, "back" = northernmost.
  */
-function estimatedRoute(model: BuildingModel, marker: Pick<Marker, "floor" | "pos">, groundLevel: number): Route | null {
+function estimatedRoute(
+  model: BuildingModel,
+  marker: Pick<Marker, "floor" | "pos">,
+  groundLevel: number,
+  edgePreference: "front" | "back" = "front",
+  doorId?: string,
+): Route | null {
   const fp = model.footprint;
   if (fp.length < 3 || groundLevel === undefined) return null;
   let best: { mid: Point; edge: [Point, Point] } | null = null;
@@ -428,12 +567,23 @@ function estimatedRoute(model: BuildingModel, marker: Pick<Marker, "floor" | "po
     const b = fp[(i + 1) % fp.length];
     if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 2) continue;
     const mid: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-    if (!best || mid[1] < best.mid[1]) best = { mid, edge: [a, b] };
+    if (!best) {
+      best = { mid, edge: [a, b] };
+      continue;
+    }
+    const preferSouth = edgePreference === "front";
+    if (preferSouth ? mid[1] < best.mid[1] : mid[1] > best.mid[1]) best = { mid, edge: [a, b] };
   }
   if (!best) return null;
   const nodes: RouteNode[] = [{ level: groundLevel, pt: best.mid }];
   if (marker.floor !== groundLevel) nodes.push({ level: groundLevel, pt: marker.pos });
   nodes.push({ level: marker.floor, pt: marker.pos });
   const length = Math.hypot(marker.pos[0] - best.mid[0], marker.pos[1] - best.mid[1]);
-  return { doorId: "estimated-front", nodes, length, assumedStairs: marker.floor !== groundLevel, estimated: true };
+  return {
+    doorId: doorId ?? (edgePreference === "front" ? "estimated-front" : "estimated-back"),
+    nodes,
+    length,
+    assumedStairs: marker.floor !== groundLevel,
+    estimated: true,
+  };
 }

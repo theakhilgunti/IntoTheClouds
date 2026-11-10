@@ -46,6 +46,7 @@ interface ScanStore {
 - `GEMINI_API_KEY` — free key from Google AI Studio (mlh.link/aistudio). Without it, step 4 is skipped and the app still works.
 - `GEMINI_MODEL` — optional, defaults to `gemini-flash-latest`.
 - `GOOGLE_MAPS_API_KEY` — optional. Enables Google Static satellite + Street View facade cross-check (stories, garage, entry, porch). Enable Street View Static + Maps Static APIs on the key.
+- `GOOGLE_MAPS_3D_API_KEY` — optional. Enables the Photorealistic 3D Tiles city-mesh underlay (`GET /api/tiles/status` + Cesium). Restrict the key; do not long-term cache tiles (Maps Tile API ToS). Without it, Textured/Blueprint mode still works.
 - Backend keys (e.g. `MONGODB_URI`) once the store lands.
 
 ## Deployment

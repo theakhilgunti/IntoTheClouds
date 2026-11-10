@@ -42,6 +42,8 @@ import { inferRoofPlan } from "./roof-infer";
 import { store } from "./store";
 import type { AttributeReport, ScanEvent, ScanResult, SourceReport, StepKey } from "./sources";
 import type { Point, RoofPlan, RoofShape } from "@/packages/schema/building-model";
+import { facadePresetFromMaterial } from "./exterior-uv";
+import { exteriorOverrideForAddress } from "./exterior-overrides";
 
 export type ScanInput = {
   address?: string;
@@ -1128,6 +1130,24 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     status: shown.length ? "used" : "skipped",
     detail: lotLabels.length ? lotLabels.slice(0, 8).join(", ") : "Nothing around the house was mapped.",
   });
+  // Exterior cues for textured 3D: Gemini/OSM material + aerial halfSize (bytes stay on images[]).
+  const materialRaw =
+    facts?.exterior_material && facts.exterior_material.toLowerCase() !== "unknown"
+      ? facts.exterior_material
+      : (b?.tags["building:material"] ?? "");
+  const extOverride = exteriorOverrideForAddress(address);
+  built.model.exterior = {
+    material: extOverride?.material || materialRaw,
+    facadePreset: extOverride?.facadePreset ?? facadePresetFromMaterial(materialRaw),
+    aerial: aerial ? { halfSize: aerialHalf } : undefined,
+  };
+  if (extOverride?.hideNeighbors && built.model.compound?.features) {
+    built.model.compound = {
+      ...built.model.compound,
+      features: built.model.compound.features.filter((f) => f.kind !== "neighbor"),
+    };
+  }
+
   step("build", "done");
 
   const result: ScanResult = {
@@ -1136,6 +1156,10 @@ export async function runScan(input: ScanInput, emit: (e: ScanEvent) => void): P
     attributes,
     warnings,
     images: [
+      // Prefer Google Static (scale=2) for 3D draping when available — cleaner on large roofs.
+      ...(googleSat
+        ? [{ label: "Aerial view · Google Satellite", url: `data:${googleSat.mime};base64,${googleSat.base64}` }]
+        : []),
       ...(aerial ? [{ label: "Aerial view · Esri World Imagery", url: `data:${aerial.mime};base64,${aerial.base64}` }] : []),
       ...streetView.shots.slice(0, 2).map((s) => ({
         label: s.label,

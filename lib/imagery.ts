@@ -3,13 +3,16 @@ import type { LatLng } from "./geo";
 
 export type Image = { base64: string; mime: "image/jpeg" | "image/png" | "image/webp" };
 
-function exportUrl(c: LatLng, halfSize: number) {
+/** Esri export pixel size — 1280 reads cleaner on roofs/grounds than 640. */
+const AERIAL_PX = 1280;
+
+function exportUrl(c: LatLng, halfSize: number, px = AERIAL_PX) {
   const dLat = halfSize / 111320;
   const dLng = halfSize / (111320 * Math.cos((c.lat * Math.PI) / 180));
   const bbox = [c.lng - dLng, c.lat - dLat, c.lng + dLng, c.lat + dLat].join(",");
   return (
     "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export" +
-    `?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=640,640&format=jpg&f=image`
+    `?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=${px},${px}&format=jpg&f=image`
   );
 }
 
@@ -30,9 +33,10 @@ export async function googleSatelliteImage(c: LatLng, halfSize: number): Promise
   const key = process.env.GOOGLE_MAPS_API_KEY;
   if (!key) return null;
   const zoom = zoomForHalfSize(halfSize);
+  // scale=2 → 1280×1280 effective for cleaner roof/ground drapes.
   const url =
     "https://maps.googleapis.com/maps/api/staticmap" +
-    `?center=${c.lat},${c.lng}&zoom=${zoom}&size=640x640&maptype=satellite&key=${encodeURIComponent(key)}`;
+    `?center=${c.lat},${c.lng}&zoom=${zoom}&size=640x640&scale=2&maptype=satellite&key=${encodeURIComponent(key)}`;
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return null;
@@ -51,17 +55,21 @@ export async function googleSatelliteImage(c: LatLng, halfSize: number): Promise
  */
 export async function aerialImage(c: LatLng, halfSize: number): Promise<{ image: Image; halfSize: number }> {
   // Step outward until Esri has a cached tile; larger footprints need a wider first ask.
-  const sizes = [halfSize, 60, 80, 110, 150, 200].filter((s, i, a) => s >= halfSize * 0.95 && a.indexOf(s) === i);
+  // Prefer 1280px; fall back if Esri rejects the export size.
+  const sizes = [halfSize, 60, 80, 110, 150, 200, 280].filter((s, i, a) => s >= halfSize * 0.95 && a.indexOf(s) === i);
+  const pixels = [AERIAL_PX, 1024, 640];
   let lastErr: unknown;
   for (const size of sizes) {
-    try {
-      const res = await fetch(exportUrl(c, size), { signal: AbortSignal.timeout(10000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length < 2000) throw new Error("empty image");
-      return { image: { base64: buf.toString("base64"), mime: "image/jpeg" }, halfSize: size };
-    } catch (e) {
-      lastErr = e;
+    for (const px of pixels) {
+      try {
+        const res = await fetch(exportUrl(c, size, px), { signal: AbortSignal.timeout(12000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length < 2000) throw new Error("empty image");
+        return { image: { base64: buf.toString("base64"), mime: "image/jpeg" }, halfSize: size };
+      } catch (e) {
+        lastErr = e;
+      }
     }
   }
   throw lastErr;

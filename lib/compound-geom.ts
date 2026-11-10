@@ -1697,7 +1697,8 @@ export function accessFeatures(opts: {
   const keepR = Math.max(opts.radiusM ?? 0, roadReach(opts.footprint));
   const ribbonCap = roadRibbonCap(opts.footprint);
   const roadMax = Math.max(70, keepR * 0.95);
-  const width = Math.min(12, Math.max(7.2, ringExtent(opts.footprint) * 0.15));
+  // Slightly wider ribbons so streets read as asphalt bands (Maps terrain vibe).
+  const width = Math.min(14, Math.max(8.5, ringExtent(opts.footprint) * 0.18));
   const out: SiteFeature[] = [];
 
   // Hydrants follow the same outdoor disc as streets / neighbors.
