@@ -1,0 +1,5 @@
+bleak
+numpy
+scipy
+pyobjc-framework-CoreWLAN
+websockets

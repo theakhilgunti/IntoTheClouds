@@ -103,3 +103,31 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 09:33 | Claude Code | MAP-10 | Finished task |
 | 04:56 | Claude Code | MAP-12 | Walk recorder + offline analyzer: mapper follows the /walker collection session (REC-01) and writes recordings/walk_<id>.jsonl (beacon scans, compass/gyro, accel, steps, filter output, your arrive/leave taps as ground truth); dashboard recorder status panel; project/laptop_client/analyze_walk.py fits per-beacon A/n on true distances, stride per leg, heading offset + drift, live vs replay error, recommends settings (--apply sends to the local mapper); recordings/ git-ignored; 39 mapper + 9 analyzer tests |
 | 09:56 | Claude Code | MAP-12 | Finished task |
+| 00:38 | Claude Code | BE-01b | Finished task |
+| 00:51 | Claude-Anchors | LC-02 | Finished task |
+| 22:00 | Claude-Anchors | LC-02 | Added laptop_client/IPHONE_ANCHORS.md, anchors.example.json and offline test_radar_bridge.py (7 tests pass); match_devices verified for BLE name/stale/rotated keys |
+| 00:59 | Claude Code | FE-01 | Finished task |
+| 02:24 | Claude Code | BE-09 | Finished task |
+| 03:41 | Claude Code | BE-09b | Finished task |
+| 04:08 | Claude Code | BE-10 | Finished task |
+| 04:21 | Claude Code | BE-11 | Finished task |
+| 05:10 | Claude Code | BE-11 | Baseline-differential RSSI: SpotMap2D.add(baseline_rssi=) and spot_survey.py map --baseline empty.json (shortfall = baseline - now, model fallback); 3 new tests |
+| 04:36 | Claude Code | DOC-09 | Finished task |
+| 05:40 | Claude Code | DOC-09 | Docs for 3 laptop beacons + walker laptop + iPhone heading: new laptop_client/LAPTOP_ANCHORS.md (untested on hardware), updated README, DEMO_GUIDE, PITCH_OUTLINE, laptop_client/README; IPHONE_ANCHORS.md marked alternative |
+| 06:05 | Claude Code | LC-03 | spot_survey.py collect: --wifi netsh (default on Windows, matches laptop hotspot SSID/BSSID), --wifi radar, --bluetooth now opt-in; 2 new tests (13 pass); not run on Windows hardware |
+| 04:42 | Claude Code | LC-03 | Finished task |
+| 04:58 | Claude Code | LC-04 | Finished task |
+| 06:40 | Claude Code | LC-04 | Mac walker Wi-Fi: laptop_client/mac_wifi_radar.py + mac_wifi_scan.swift (CoreWLAN, real dBm) serving radar /api/telemetry format for spot_survey --wifi radar and radar_bridge; 3 tests (16 pass). Needs Location permission; untested against ITC- hotspots; not committed |
+| 05:27 | Claude Code | LC-05 | Finished task |
+| 05:32 | Claude Code | BE-12 | Finished task |
+| 07:30 | Claude Code | BE-12 | iPhone telemetry: /walker now streams GPS (+accuracy), 3D orientation, gyro rate, accel via /ws/pdr; backend records them (fusion/geo.py), GET /api/phone and /api/phone/log, GPS->local metres gated on accuracy <= 15 m; 5 new tests (38 pass); not fused into position; untested on a real iPhone |
+| 06:01 | Claude Code | BE-13 | Finished task |
+| 08:10 | Claude Code | BE-13 | Step detector: low-pass + peak-only counting, 0.4 s gap, on-page sensitivity box (default 1.6), step events with peak logged to /api/phone/log; 1 new test (39 pass); not yet retested on iPhone |
+| 06:21 | Claude Code | BE-14b | Finished task |
+| 08:45 | Claude Code | BE-14 | User-set room size: GET/POST /api/room (width, length, height, margin, voxel, rf cell) resizes localizer, signal map and voxel grid, clears walk, reset keeps size; /walker page gets room inputs and a live top-down map (beacons, trail, heading arrow); 3 new tests (42 pass); frontend 3D view not updated; not yet tested on iPhone |
+| 06:36 | Claude Code | LC-06 | Finished task |
+| 09:30 | Claude Code | LC-06 | radar_bridge.py --insecure: accepts the self-signed https backend (wss + https POST); 16 tests pass; not yet run against live beacons |
+| 04:16 | Claude Code | PRIV-01 | Removed phone GPS end to end: /walker no longer requests or shows location, backend /api/phone and /api/phone/log no longer carry gps/gps_usable/gps_origin/gps_local, clean_sensors allow-lists compass/gyro/accel only (location keys from old clients are dropped), latlon_to_local removed; tests prove GPS is rejected; 41 backend tests |
+| 09:16 | Claude Code | PRIV-01 | Finished task |
+| 04:48 | Claude Code | REC-01 | /walker data-collection card: Start/Stop collecting, big Leaving/Arrived tap button, Undo; backend GET/POST /api/record keeps the L-walk session (A2>A1>A3 x rounds, ends at A3) with timed taps; the mapper polls it; no location data; 47 backend tests |
+| 09:48 | Claude Code | REC-01 | Finished task |

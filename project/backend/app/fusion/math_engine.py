@@ -32,6 +32,12 @@ class ParticleFilterLocalizer:
         self.estimated_z = 1.0
         self.step_count = 0
 
+    def set_start(self, x: float, y: float, sigma_m: float = 0.3):
+        """Known start point (e.g. a taped spot): put every particle near (x, y)."""
+        self.particles[:, 0] = np.clip(np.random.normal(x, sigma_m, self.num_particles), self.min_x, self.max_x)
+        self.particles[:, 1] = np.clip(np.random.normal(y, sigma_m, self.num_particles), self.min_y, self.max_y)
+        self.weights = np.ones(self.num_particles) / self.num_particles
+
     def predict(self, step_detected: bool, step_length_m: float, heading_deg: float):
         """Dead Reckoning motion update."""
         if not step_detected or step_length_m <= 0:

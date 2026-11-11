@@ -1,0 +1,135 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IntoTheClouds walker</title>
+<style>
+ body{font-family:-apple-system,sans-serif;background:#0a0e17;color:#e2e8f0;margin:0;padding:16px}
+ h1{font-size:1.1rem;margin:0 0 8px} button{font-size:1rem;padding:12px;margin:6px 0;width:100%;border-radius:8px;border:1px solid #22d3ee;background:#0f1a2b;color:#22d3ee}
+ input{font-size:1rem;padding:8px;width:70px;background:#0f1a2b;color:#e2e8f0;border:1px solid #334155;border-radius:6px}
+ .card{border:1px solid #1e293b;border-radius:8px;padding:10px;margin:10px 0} .big{font-size:2rem;font-family:ui-monospace,monospace}
+ .muted{color:#94a3b8;font-size:.85rem} #st.ok{color:#34d399} #st.bad{color:#f87171}
+</style></head><body>
+<h1>IntoTheClouds // walker</h1>
+<div class="card muted">Hold the phone <b>flat</b>, top edge pointing the way you walk. Keep this page open and the screen on.</div>
+<button id="go">1. Start sensors</button>
+<div class="card"><div class="muted">Heading (compass)</div><div class="big" id="hd">--</div>
+ <div class="muted">Steps <span id="sc">0</span> &middot; link <span id="st" class="bad">disconnected</span></div></div>
+<div class="card"><div class="muted">2. Point the phone along the map's +X axis (iPad &rarr; iPhone anchor), then:</div>
+ <button id="align">Set this direction as +X</button></div>
+<div class="card"><div class="muted">3. Stand on your start spot (map metres) and:</div>
+ x <input id="sx" type="number" step="0.1" value="0"> y <input id="sy" type="number" step="0.1" value="0">
+ <button id="start">Set start position</button></div>
+<div class="card"><div class="muted">0. Room size (metres). x runs 0..width, y runs 0..length from your origin corner. Applying clears the current walk.</div>
+ width <input id="rw" type="number" step="0.5" value="10"> length <input id="rl" type="number" step="0.5" value="10">
+ <button id="room">Apply room size</button><div class="muted" id="rmsg"></div></div>
+<div class="card"><div class="muted">Live map: dots = beacons, arrow = you and the way the phone points. Walk along +X: the arrow should move right.</div>
+ <canvas id="map" width="340" height="340" style="width:100%;background:#0f1a2b;border-radius:8px"></canvas>
+ <div class="muted" id="pos">position --</div></div>
+<div class="card"><div class="muted">Phone sensors (sent ~10 Hz)</div>
+ <div>Tilt <span id="tl">--</span></div><div>Turn rate <span id="rr">--</span></div>
+ <div class="muted">Motion sensors only: compass, gyro and accelerometer. This page never asks for or sends location.</div></div>
+<div class="card" id="rec" style="border-color:#22d3ee">
+ <div class="muted"><b>Data collection</b> (L walk: A2 &rarr; A1 &rarr; A3, repeated, ending at A3)</div>
+ Rounds <input id="rr_n" type="number" min="1" max="10" value="3" style="width:60px">
+ <button id="recToggle" style="background:#064e3b;border-color:#34d399;color:#34d399">&#9679; Start collecting data</button>
+ <button id="recMark" style="display:none;font-size:1.2rem;padding:18px"></button>
+ <button id="recUndo" style="display:none;padding:6px;font-size:.85rem">Undo last tap</button>
+ <div id="recStatus" class="muted">Not collecting</div>
+ <div class="muted">Stand at A2 and press Start. Stay put about 10 s at each beacon (a Wi-Fi scan takes ~8 s), press the big button when you set off and again when you arrive. Hold the phone flat, screen on.</div></div>
+<div class="card">Step length (m) <input id="sl" type="number" step="0.05" value="0.7">
+ <br>Step sensitivity (m/s&sup2;, lower = more steps) <input id="th" type="number" step="0.1" value="1.6">
+ <div class="muted">Last peak <span id="pk">--</span></div></div>
+<script>
+const $=id=>document.getElementById(id);
+let lp=0,prevHp=0,prevPrev=0,sens={},ws,compass=null,steps=0,smooth=null,lastStep=0,hp=0,gAvg=9.8;
+function connect(){
+  ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws/pdr");
+  ws.onopen=()=>{$("st").textContent="connected";$("st").className="ok"};
+  ws.onclose=()=>{$("st").textContent="disconnected";$("st").className="bad";setTimeout(connect,1500)};
+}
+const send=o=>ws&&ws.readyState===1&&ws.send(JSON.stringify(o));
+function circ(prev,cur,a){ if(prev===null) return cur; let d=((cur-prev+540)%360)-180; return (prev+a*d+360)%360; }
+function onOrient(e){
+  // iOS: webkitCompassHeading is clockwise from magnetic north and already blends gyro + magnetometer.
+  let h = typeof e.webkitCompassHeading==="number" ? e.webkitCompassHeading : (e.absolute && e.alpha!=null ? (360-e.alpha)%360 : null);
+  if(h===null) return;
+  smooth=circ(smooth,h,0.25); compass=smooth; $("hd").textContent=compass.toFixed(0)+"°";
+  sens.orient={alpha:e.alpha,beta:e.beta,gamma:e.gamma,compass:compass};
+  $("tl").textContent="pitch "+(e.beta||0).toFixed(0)+"° roll "+(e.gamma||0).toFixed(0)+"°";
+}
+function onMotion(e){
+  const rr=e.rotationRate; if(rr){ sens.gyro={alpha:rr.alpha,beta:rr.beta,gamma:rr.gamma};
+    $("rr").textContent=Math.hypot(rr.alpha||0,rr.beta||0,rr.gamma||0).toFixed(0)+"°/s"; }
+  if(e.acceleration) sens.accel={x:e.acceleration.x,y:e.acceleration.y,z:e.acceleration.z};
+  const a=e.accelerationIncludingGravity; if(!a) return;
+  sens.accel_g={x:a.x,y:a.y,z:a.z};
+  const m=Math.hypot(a.x||0,a.y||0,a.z||0);
+  gAvg+=0.02*(m-gAvg); const raw=m-gAvg;        // high-pass: removes gravity
+  lp+=0.35*(raw-lp); hp=lp;                      // low-pass: removes hand jitter (one bump = one peak)
+  const now=performance.now(), th=parseFloat($("th").value)||1.6;
+  // count only the top of a bump: previous sample was a local max above the threshold
+  if(prevHp>th && prevHp>=prevPrev && prevHp>=hp && now-lastStep>400){ lastStep=now; steps++; $("sc").textContent=steps;
+    $("pk").textContent=prevHp.toFixed(2);
+    send({compass_deg:compass,step:true,step_length_m:parseFloat($("sl").value)||0.7,peak:prevHp,threshold:th}); }
+  prevPrev=prevHp; prevHp=hp;
+}
+$("go").onclick=async()=>{
+  try{
+    if(typeof DeviceMotionEvent!=="undefined" && DeviceMotionEvent.requestPermission){
+      const r=await DeviceMotionEvent.requestPermission(); if(r!=="granted") throw new Error("permission "+r);
+      await DeviceOrientationEvent.requestPermission();
+    }
+    addEventListener("deviceorientation",onOrient,true); addEventListener("devicemotion",onMotion,true);
+    connect(); setInterval(()=>{ if(compass!==null) send({compass_deg:compass,sensors:sens}); },100);
+    $("go").textContent="Sensors running";
+  }catch(err){ $("go").textContent="Failed: "+err.message+" (needs HTTPS)"; }
+};
+let room={width_m:10,length_m:10,margin_m:2},anchors=[],me=null,trail=[];
+async function loadRoom(){ try{ room=await (await fetch("/api/room")).json(); $("rw").value=room.width_m; $("rl").value=room.length_m;
+  anchors=await (await fetch("/api/anchors")).json(); }catch(e){} draw(); }
+$("room").onclick=async()=>{ try{ const r=await fetch("/api/room",{method:"POST",headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({width_m:parseFloat($("rw").value),length_m:parseFloat($("rl").value)})});
+  if(!r.ok){ $("rmsg").textContent="Rejected: "+((await r.json()).detail||r.status); return; }
+  trail=[]; me=null; $("rmsg").textContent="Room set."; loadRoom(); }catch(e){ $("rmsg").textContent="Failed: "+e.message; } };
+function draw(){
+  const c=$("map"),g=c.getContext("2d"),m=room.margin_m||0,W=room.width_m+2*m,L=room.length_m+2*m,k=Math.min(c.width/W,c.height/L);
+  const X=x=>(x+m)*k, Y=y=>c.height-(y+m)*k; g.clearRect(0,0,c.width,c.height);
+  g.strokeStyle="#334155"; g.strokeRect(X(0),Y(room.length_m),room.width_m*k,room.length_m*k);
+  g.fillStyle="#94a3b8"; g.font="11px sans-serif"; g.fillText("0,0",X(0)+2,Y(0)-3); g.fillText("+X",X(room.width_m)-18,Y(0)-3);
+  g.strokeStyle="#22d3ee"; g.beginPath(); trail.forEach((p,i)=>i?g.lineTo(X(p.x),Y(p.y)):g.moveTo(X(p.x),Y(p.y))); g.stroke();
+  g.fillStyle="#fbbf24"; anchors.forEach(a=>{ g.beginPath(); g.arc(X(a.x),Y(a.y),6,0,7); g.fill(); g.fillText(a.id,X(a.x)+8,Y(a.y)+4); });
+  if(me){ const t=(me.heading_deg||0)*Math.PI/180, x=X(me.x), y=Y(me.y);   // map heading: 0 = +x, counter-clockwise
+    g.fillStyle="#34d399"; g.beginPath(); g.moveTo(x+14*Math.cos(t),y-14*Math.sin(t));
+    g.lineTo(x+7*Math.cos(t+2.5),y-7*Math.sin(t+2.5)); g.lineTo(x+7*Math.cos(t-2.5),y-7*Math.sin(t-2.5)); g.fill();
+    $("pos").textContent="position x "+me.x.toFixed(2)+" y "+me.y.toFixed(2)+" m, heading "+Math.round(me.heading_deg||0)+"° (0 = +X, counter-clockwise), steps "+(me.step_count||0); }
+}
+function liveMap(){
+  const d=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws/dashboard");
+  d.onmessage=ev=>{ let m; try{ m=JSON.parse(ev.data); }catch(e){ return; }
+    if(m.type==="session_reset"){ trail=[]; me=null; loadRoom(); return; }
+    const st=m.state; if(!st) return; me=st; if(m.breadcrumb||m.type==="init_state"){ trail.push({x:st.x,y:st.y}); if(trail.length>300) trail.shift(); } draw(); };
+  d.onclose=()=>setTimeout(liveMap,2000);
+}
+loadRoom(); liveMap();
+$("align").onclick=()=>{ if(compass===null) return alert("No compass reading yet"); send({type:"align",compass_deg:compass}); };
+$("start").onclick=()=>send({type:"start",x:parseFloat($("sx").value)||0,y:parseFloat($("sy").value)||0});
+
+// ---- data collection (REC-01): the mapper records its own streams while a session is active
+let recActive=false;
+const recCall=a=>fetch("/api/record",{method:"POST",headers:{"Content-Type":"application/json"},
+  body:JSON.stringify(Object.assign({action:a},a==="start"?{rounds:parseInt($("rr_n").value)||3}:{}))}).then(async r=>{
+    const d=await r.json(); if(!r.ok){ $("recStatus").textContent="Error: "+(d.detail||r.status); return null; } recShow(d); return d; });
+function recShow(d){
+  recActive=!!d.active;
+  const t=$("recToggle"); t.innerHTML=recActive?"&#9632; Stop collecting data":"&#9679; Start collecting data";
+  t.style.background=recActive?"#7f1d1d":"#064e3b"; t.style.borderColor=recActive?"#f87171":"#34d399"; t.style.color=recActive?"#f87171":"#34d399";
+  $("recMark").style.display=$("recUndo").style.display=(recActive&&!d.done)?"block":"none";
+  $("recMark").textContent=d.button||"";
+  $("recStatus").textContent=d.active?(d.prompt+"  |  "+d.elapsed_s.toFixed(0)+" s, "+d.n_marks+" taps"+(d.route&&d.route.length?", route "+d.route.join(" > "):"")):
+    (d.id&&d.stopped_t?"Stopped. "+d.n_marks+" taps saved ("+d.elapsed_s.toFixed(0)+" s). Analyse with analyze_walk.py":"Not collecting");
+}
+$("recToggle").onclick=()=>recCall(recActive?"stop":"start");
+$("recMark").onclick=()=>{ recCall("mark"); if(navigator.vibrate) navigator.vibrate(40); };
+$("recUndo").onclick=()=>recCall("undo");
+setInterval(()=>fetch("/api/record").then(r=>r.json()).then(recShow).catch(()=>{}),1500);
+fetch("/api/record").then(r=>r.json()).then(recShow).catch(()=>{});
+</script></body></html>
