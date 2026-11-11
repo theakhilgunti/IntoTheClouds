@@ -3,6 +3,17 @@ HackRPI Hackathon "Into The Clouds"
 
 **CloudScan** — point your phone at a building (or type an address) and get a 3D layout of its floors, rooms, stairs and exits for firefighters. Live at [cloudscan.us](https://cloudscan.us).
 
+## Quick start (macOS)
+
+```bash
+./intotheclouds.sh start     # or double-click IntoTheClouds.command
+```
+
+First run builds the virtualenvs (needs Python 3.10+). It starts the phone backend (HTTPS :8443) and the mapper dashboard (:8899),
+regenerates the TLS cert for the Mac's current IP, and prints the **WALKER LINK** to open on the iPhone.
+Other commands: `stop`, `restart`, `status`, `link`, `logs`, `setup`. Logs and certs live in `.run/` (git-ignored).
+Join the FireBeacon hotspot first; beacon positions and calibration are read from `anchors_config.json`.
+
 ## Run locally
 ```bash
 npm install

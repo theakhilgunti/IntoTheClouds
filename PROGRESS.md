@@ -131,3 +131,4 @@ To avoid collision, each member and agent has a defined territory based on the h
 | 09:16 | Claude Code | PRIV-01 | Finished task |
 | 04:48 | Claude Code | REC-01 | /walker data-collection card: Start/Stop collecting, big Leaving/Arrived tap button, Undo; backend GET/POST /api/record keeps the L-walk session (A2>A1>A3 x rounds, ends at A3) with timed taps; the mapper polls it; no location data; 47 backend tests |
 | 09:48 | Claude Code | REC-01 | Finished task |
+- [x] [PKG-01] One-command launcher: `./intotheclouds.sh start|stop|status|link` + `IntoTheClouds.command`; merges mapper (MAP-*) and phone backend (BE-01) on one branch.

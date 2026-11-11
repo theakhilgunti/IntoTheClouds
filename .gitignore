@@ -67,3 +67,6 @@ hw03_results.json
 
 # walk recordings (local sensor data from field tests)
 /recordings/
+
+# launcher runtime (logs, certs)
+.run/
